@@ -17,14 +17,43 @@ extern crate collections;
 use rustc::lib;
 use rustc::lib::llvm::llvm;
 use rustc::lib::llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect};
-use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef};
+use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef};
 use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, TypeKind};
 
 use std::libc::{c_uint, c_longlong, c_ulonglong, c_char};
 use std::vec_ng::Vec;
 
+trait UseTr {
+}
+
+impl UseTr for UseRef {
+    fn user(self) -> ValueRef {
+        unsafe { llvm::LLVMGetUser(self) }
+    }
+    fn used(self) -> ValueRef {
+        unsafe { llvm::LLVMGetUsedValue(self) }
+    }
+}
+
+struct UseList {
+    use_: UseRef
+}
+
+impl Iterator<UseRef> for UseList {
+    fn next(&mut self) -> Option<UseRef> {
+        let use_ = self.use_;
+        if use_.is_null() {
+            None
+        } else {
+            self.use_ = unsafe { llvm::LLVMGetNextUse(use_) };
+            use_
+        }
+    }
+}
+
 trait ValueTr {
     fn ty(self) -> TypeRef;
+    fn uses(self) -> UseList;
 }
 
 impl ValueTr for ValueRef {
@@ -32,6 +61,9 @@ impl ValueTr for ValueRef {
         unsafe {
             llvm::LLVMTypeOf(self)
         }
+    }
+    fn uses(self) -> UseList {
+        UseList { use_: unsafe { llvm::LLVMGetFirstUse(self) } }
     }
 }
 
