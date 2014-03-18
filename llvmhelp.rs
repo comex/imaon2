@@ -12,7 +12,7 @@
 
 extern crate rustc;
 extern crate collections;
-
+extern crate llvmshim;
 
 use rustc::lib;
 use rustc::lib::llvm::llvm;
@@ -24,6 +24,9 @@ use std::libc::{c_uint, c_longlong, c_ulonglong, c_char};
 use std::vec_ng::Vec;
 
 trait UseTr {
+    fn user(self) -> ValueRef;
+    fn used(self) -> ValueRef;
+    fn set_used(self, ValueRef);
 }
 
 impl UseTr for UseRef {
@@ -32,6 +35,9 @@ impl UseTr for UseRef {
     }
     fn used(self) -> ValueRef {
         unsafe { llvm::LLVMGetUsedValue(self) }
+    }
+    fn set_used(self, repl: ValueRef) {
+        unsafe { llvmshim::LLVMShimReplaceUse(self, repl) }
     }
 }
 
@@ -46,7 +52,7 @@ impl Iterator<UseRef> for UseList {
             None
         } else {
             self.use_ = unsafe { llvm::LLVMGetNextUse(use_) };
-            use_
+            Some(use_)
         }
     }
 }
@@ -54,6 +60,7 @@ impl Iterator<UseRef> for UseList {
 trait ValueTr {
     fn ty(self) -> TypeRef;
     fn uses(self) -> UseList;
+    fn operands(self) -> OperandList;
 }
 
 impl ValueTr for ValueRef {
