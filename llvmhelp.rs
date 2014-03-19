@@ -1,5 +1,5 @@
 // imaon2 note: Adapted from rustc's middle/trans/{builder,common,type_}.rs (presently from revision 871e5708106c5ee3ad8d2bd6ec68fca60428b77e).
-#[feature(struct_variant)];
+#[feature(struct_variant, macro_rules)];
 
 // Copyright 2013 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
@@ -36,7 +36,8 @@ impl UseTr for UseRef {
         unsafe { llvm::LLVMGetUser(self) }
     }
     fn used(self) -> ValueRef {
-        unsafe { llvm::LLVMGetUsedValue(self) }
+        //unsafe { llvm::LLVMGetUsedValue(self) }
+        unsafe { *cast::transmute::<UseRef, *ValueRef>(self) }
     }
     fn set_used(self, repl: ValueRef) {
         unsafe { llvmshim::LLVMShimReplaceUse(self, repl) }
@@ -59,21 +60,56 @@ impl Iterator<UseRef> for UseList {
     }
 }
 
+// Note: get() should be reasonably cheap, so not bundling things like switch cases in the enum for now.
+
+#[deriving(Show, Eq, FromPrimitive)]
+enum BinOpType { Add, FAdd, Sub, FSub, Mul, FMul, UDiv, SDiv, FDiv, URem, SRem, FRem, Shl, LShr, AShr, And, Or, Xor }
+
+#[deriving(Show, Eq, FromPrimitive)]
+enum CastType { Trunc, ZExt, SExt, FPToUI, FPToSI, UIToFP, SIToFP, FPTrunc, FPExt, PtrToInt, IntToPtr, BitCast }
+
+#[deriving(Show, Eq)]
+pub struct LoadStoreInfo {
+    subclass: uint
+}
+
+impl LoadStoreInfo {
+    pub fn volatile(&self) -> bool { (self.subclass & 1) != 0 }
+    // huh?
+    pub fn alignment(&self) -> uint { (1 << ((self.subclass >> 1) & 31)) >> 1 }
+    pub fn ordering(&self) -> llvmshim::AtomicOrdering { FromPrimitive::from_uint((self.subclass >> 7) & 7).unwrap() }
+    pub fn synch_scope(&self) -> uint { (self.subclass >> 6) & 1 }
+    pub fn atomic(&self) -> bool { self.ordering() != llvmshim::AtomicOrderingNotAtomic }
+}
+
+
+#[deriving(Show, Eq)]
 enum ValueEn {
     VRet(Option<ValueRef>),
     VBr { if_true: ValueRef, if_false: Option<ValueRef>, cond: Option<ValueRef> },
-
+    VSwitch { value: ValueRef, default: ValueRef },
+    VIndirectBr(ValueRef),
+    VInvoke { fun: ValueRef, if_normal: ValueRef, if_exc: ValueRef },
+    VCall(ValueRef),
+    VUnreachable,
+    VBinOp(BinOpType, ValueRef, ValueRef),
+    VAlloca(ValueRef),
+    VLoad { addr: ValueRef, lsi: LoadStoreInfo },
+    VStore { val: ValueRef, addr: ValueRef, lsi: LoadStoreInfo },
+    VGEP(ValueRef),
+    // We include a handy type even though it's available separately.
+    VCast(CastType, TypeRef, ValueRef),
 
 }
 
 #[inline(always)]
-pub fn op_use(ops: &mut [Use_opaque], n: int) -> UseRef {
+pub fn op_use(ops: &mut [Use_opaque], n: uint) -> UseRef {
     unsafe { cast::transmute(&ops[n]) }
 }
 
 #[inline(always)]
-pub fn op(ops: &mut [Use_opaque], n: int) -> ValueRef {
-    op_use(ops, n).used()
+pub fn op(ops: &[Use_opaque], n: uint) -> ValueRef {
+    op_use(unsafe { cast::transmute(ops) }, n).used()
 }
 
 trait ValueTr {
@@ -81,6 +117,8 @@ trait ValueTr {
     fn uses(self) -> UseList;
     fn operands(self) -> &mut [Use_opaque];
     fn opcode(self) -> llvmshim::Opcode;
+    fn subclass_data(self) -> uint;
+    fn subclass_optional_data(self) -> uint;
     fn get(self) -> ValueEn;
 }
 
@@ -99,13 +137,45 @@ impl ValueTr for ValueRef {
     fn opcode(self) -> llvmshim::Opcode {
         FromPrimitive::from_u32(unsafe { llvmshim::LLVMShimGetValueID(self) }).unwrap()
     }
+    fn subclass_data(self) -> uint {
+        (unsafe { llvmshim::LLVMShimGetSubclassData(self) }) as uint
+    }
+    fn subclass_optional_data(self) -> uint {
+        (unsafe { llvmshim::LLVMShimGetSubclassOptionalData(self) }) as uint
+    }
     fn get(self) -> ValueEn {
         let ops = self.operands();
-        match self.opcode() {
+        let opcode = self.opcode();
+        match opcode {
             llvmshim::Ret if ops.len() == 1 => VRet(Some(op(ops, 0))),
             llvmshim::Ret => VRet(None),
             llvmshim::Br if ops.len() == 1 => VBr { if_true: op(ops, 1), if_false: None, cond: None },
             llvmshim::Br => VBr { if_true: op(ops, 0), if_false: Some(op(ops, 1)), cond: Some(op(ops, 2)) },
+            llvmshim::Switch => VSwitch { value: op(ops, 0), default: op(ops, 1) },
+            llvmshim::IndirectBr => VIndirectBr(op(ops, 0)),
+            llvmshim::Invoke => VInvoke { fun: op(ops, ops.len() - 3), if_normal: op(ops, ops.len() - 2), if_exc: op(ops, ops.len() - 1) },
+            llvmshim::Unreachable => VUnreachable,
+
+            llvmshim::Add | llvmshim::FAdd | llvmshim::Sub | llvmshim::FSub | llvmshim::Mul | llvmshim::FMul | llvmshim::UDiv | llvmshim::SDiv | llvmshim::FDiv | llvmshim::URem | llvmshim::SRem | llvmshim::FRem | llvmshim::Shl | llvmshim::LShr | llvmshim::AShr | llvmshim::And | llvmshim::Or | llvmshim::Xor => VBinOp(
+                FromPrimitive::from_int((self.opcode() as int) - (llvmshim::Add as int)).unwrap(),
+                op(ops, 0),
+                op(ops, 1)
+            ),
+
+            llvmshim::Alloca => VAlloca(op(ops, 0)),
+            llvmshim::Load => VLoad { addr: op(ops, 0), lsi: LoadStoreInfo { subclass: self.subclass_data() } },
+            llvmshim::Store => VStore { val: op(ops, 0), addr: op(ops, 1), lsi: LoadStoreInfo { subclass: self.subclass_data() } },
+            // For now, don't bother with inbounds...
+            llvmshim::GetElementPtr => VGEP(op(ops, 0)),
+
+            llvmshim::Call => VCall(op(ops, ops.len() - 1)),
+
+            llvmshim::Trunc | llvmshim::ZExt | llvmshim::SExt | llvmshim::FPToUI | llvmshim::FPToSI | llvmshim::UIToFP | llvmshim::SIToFP | llvmshim::FPTrunc | llvmshim::FPExt | llvmshim::PtrToInt | llvmshim::IntToPtr | llvmshim::BitCast => VCast(
+                FromPrimitive::from_int((self.opcode() as int) - (llvmshim::Trunc as int)).unwrap(),
+                self.ty(),
+                op(ops, 0)
+            ),
+
             _ => fail!("unknown")
         }
     }
@@ -425,35 +495,35 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn ret_void(&self) {
+    pub fn ret_void(&self) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildRetVoid(self.llbuilder);
+            llvm::LLVMBuildRetVoid(self.llbuilder)
         }
     }
 
-    pub fn ret(&self, v: ValueRef) {
+    pub fn ret(&self, v: ValueRef) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildRet(self.llbuilder, v);
+            llvm::LLVMBuildRet(self.llbuilder, v)
         }
     }
 
-    pub fn aggregate_ret(&self, ret_vals: &[ValueRef]) {
+    pub fn aggregate_ret(&self, ret_vals: &[ValueRef]) -> ValueRef {
         unsafe {
             llvm::LLVMBuildAggregateRet(self.llbuilder,
                                         ret_vals.as_ptr(),
-                                        ret_vals.len() as c_uint);
+                                        ret_vals.len() as c_uint)
         }
     }
 
-    pub fn br(&self, dest: BasicBlockRef) {
+    pub fn br(&self, dest: BasicBlockRef) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildBr(self.llbuilder, dest);
+            llvm::LLVMBuildBr(self.llbuilder, dest)
         }
     }
 
-    pub fn cond_br(&self, cond: ValueRef, then_llbb: BasicBlockRef, else_llbb: BasicBlockRef) {
+    pub fn cond_br(&self, cond: ValueRef, then_llbb: BasicBlockRef, else_llbb: BasicBlockRef) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildCondBr(self.llbuilder, cond, then_llbb, else_llbb);
+            llvm::LLVMBuildCondBr(self.llbuilder, cond, then_llbb, else_llbb)
         }
     }
 
@@ -463,9 +533,9 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn indirect_br(&self, addr: ValueRef, num_dests: uint) {
+    pub fn indirect_br(&self, addr: ValueRef, num_dests: uint) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildIndirectBr(self.llbuilder, addr, num_dests as c_uint);
+            llvm::LLVMBuildIndirectBr(self.llbuilder, addr, num_dests as c_uint)
         }
     }
 
@@ -491,9 +561,9 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn unreachable(&self) {
+    pub fn unreachable(&self) -> ValueRef {
         unsafe {
-            llvm::LLVMBuildUnreachable(self.llbuilder);
+            llvm::LLVMBuildUnreachable(self.llbuilder)
         }
     }
 
@@ -1133,4 +1203,32 @@ impl<'a> Builder<'a> {
             llvm::LLVMBuildAtomicFence(self.llbuilder, order);
         }
     }
+}
+
+#[cfg(test)]
+fn dummy_bb(f: |ContextRef, BasicBlockRef, ValueRef|) {
+    unsafe {
+        let ctx = llvm::LLVMContextCreate();
+        assert!(!ctx.is_null());
+        let mod_ = llvm::LLVMModuleCreateWithNameInContext(noname(), ctx);
+        assert!(!mod_.is_null());
+        let func = llvm::LLVMAddFunction(mod_, noname(), Type::func(&[], Type::void(ctx)));
+        assert!(!func.is_null());
+        let bb = llvm::LLVMAppendBasicBlockInContext(ctx, func, noname());
+        assert!(!bb.is_null());
+        f(ctx, bb, func);
+        llvm::LLVMContextDispose(ctx);
+    }
+}
+
+#[test]
+fn test_bb() {
+    dummy_bb(|ctx, bb, func| {
+        let b = Builder::new(&ctx);
+        b.position_at_end(bb);
+        let ret = b.ret_void();
+        assert_eq!(ret.get(), VRet(None));
+
+        unsafe { llvm::LLVMDumpValue(func) };
+    });
 }

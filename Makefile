@@ -1,15 +1,28 @@
+# This Makefile is public domain.
+
 RUSTSRC := /usr/src/rust
 RUSTC := rustc -O -C prefer-dynamic --crate-type dylib -L.
 ANOTHER_LLVM := /opt/local/libexec/llvm-3.4/include/
 cratefile = lib$(1).dylib
 define define_crate
-cf := $(call cratefile,$(1))
+name := $(1)
+cf := $(call cratefile,$$(name))
 sources := $(2)
 deps := $(3)
 $$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
 	$(RUSTC) $$(firstword $$(sources))
 	ln -nfs lib$(1)-* $$@
+
 all: $$(cf)
+
+test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
+	$(RUSTC) -g --test -o $$@ $$(firstword $$(sources))
+
+# separate rule to avoid deleting it on failure
+do-test-$$(name): test-$$(name)
+	./$$<
+
+test: do-test-$$(name)
 endef
 
 all: $(call cratefile,llvmshim)

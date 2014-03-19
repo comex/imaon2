@@ -1,3 +1,5 @@
+// This file is public domain.
+
 extern crate rustc;
 use rustc::lib::llvm::{UseRef, ValueRef, Use_opaque};
 use std::libc::c_uint;
@@ -5,12 +7,17 @@ use std::libc::c_uint;
 extern {
     pub fn LLVMShimReplaceUse(use_: UseRef, repl: ValueRef);
     pub fn LLVMShimGetOperandList(val: ValueRef) -> &mut [Use_opaque];
+    // Might be nice to use something like bindgen to generate structure
+    // offsets and let these be inlined... librustc should ship a LTO version
+    // but using rustc's LLVM is a hack anyway.  Plus, LTO is slow.
     pub fn LLVMShimGetValueID(val: ValueRef) -> c_uint;
+    pub fn LLVMShimGetSubclassData(val: ValueRef) -> c_uint;
+    pub fn LLVMShimGetSubclassOptionalData(val: ValueRef) -> c_uint;
 }
 
 static InstructionVal: int = 22;
 
-#[deriving(FromPrimitive)]
+#[deriving(Show, Eq, FromPrimitive)]
 pub enum Opcode {
     Argument,
     BasicBlock,
@@ -111,5 +118,15 @@ pub enum Opcode {
     /* Exception Handling Operators */
     Resume         = InstructionVal+58,
     LandingPad     = InstructionVal+59
+}
 
+#[deriving(Show, Eq, FromPrimitive)]
+pub enum AtomicOrdering {
+    AtomicOrderingNotAtomic = 0,
+    AtomicOrderingUnordered = 1,
+    AtomicOrderingMonotonic = 2,
+    AtomicOrderingAcquire = 4,
+    AtomicOrderingRelease = 5,
+    AtomicOrderingAcquireRelease = 6,
+    AtomicOrderingSequentiallyConsistent = 7
 }

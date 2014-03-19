@@ -1,3 +1,6 @@
+// This file is public domain.
+
+#define protected public // lol
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm-c/Core.h"
@@ -19,4 +22,12 @@ extern "C" Slice LLVMShimGetOperandList(LLVMValueRef val) {
 
 extern "C" unsigned LLVMShimGetValueID(LLVMValueRef val) {
     return unwrap(val)->getValueID();
+}
+
+extern "C" unsigned LLVMShimGetSubclassData(LLVMValueRef val) {
+    return unwrap(val)->getSubclassDataFromValue();
+}
+
+extern "C" unsigned LLVMShimGetSubclassOptionalData(LLVMValueRef val) {
+    return unwrap(val)->getRawSubclassOptionalData();
 }
