@@ -1,4 +1,5 @@
 // imaon2 note: Adapted from rustc's middle/trans/{builder,common,type_}.rs (presently from revision 871e5708106c5ee3ad8d2bd6ec68fca60428b77e).
+#[feature(struct_variant)];
 
 // Copyright 2013 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
@@ -17,11 +18,12 @@ extern crate llvmshim;
 use rustc::lib;
 use rustc::lib::llvm::llvm;
 use rustc::lib::llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect};
-use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef};
+use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef, Use_opaque};
 use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, TypeKind};
 
 use std::libc::{c_uint, c_longlong, c_ulonglong, c_char};
 use std::vec_ng::Vec;
+use std::cast;
 
 trait UseTr {
     fn user(self) -> ValueRef;
@@ -57,10 +59,29 @@ impl Iterator<UseRef> for UseList {
     }
 }
 
+enum ValueEn {
+    VRet(Option<ValueRef>),
+    VBr { if_true: ValueRef, if_false: Option<ValueRef>, cond: Option<ValueRef> },
+
+
+}
+
+#[inline(always)]
+pub fn op_use(ops: &mut [Use_opaque], n: int) -> UseRef {
+    unsafe { cast::transmute(&ops[n]) }
+}
+
+#[inline(always)]
+pub fn op(ops: &mut [Use_opaque], n: int) -> ValueRef {
+    op_use(ops, n).used()
+}
+
 trait ValueTr {
     fn ty(self) -> TypeRef;
     fn uses(self) -> UseList;
-    fn operands(self) -> OperandList;
+    fn operands(self) -> &mut [Use_opaque];
+    fn opcode(self) -> llvmshim::Opcode;
+    fn get(self) -> ValueEn;
 }
 
 impl ValueTr for ValueRef {
@@ -71,6 +92,22 @@ impl ValueTr for ValueRef {
     }
     fn uses(self) -> UseList {
         UseList { use_: unsafe { llvm::LLVMGetFirstUse(self) } }
+    }
+    fn operands(self) -> &mut [Use_opaque] {
+        unsafe { llvmshim::LLVMShimGetOperandList(self) }
+    }
+    fn opcode(self) -> llvmshim::Opcode {
+        FromPrimitive::from_u32(unsafe { llvmshim::LLVMShimGetValueID(self) }).unwrap()
+    }
+    fn get(self) -> ValueEn {
+        let ops = self.operands();
+        match self.opcode() {
+            llvmshim::Ret if ops.len() == 1 => VRet(Some(op(ops, 0))),
+            llvmshim::Ret => VRet(None),
+            llvmshim::Br if ops.len() == 1 => VBr { if_true: op(ops, 1), if_false: None, cond: None },
+            llvmshim::Br => VBr { if_true: op(ops, 0), if_false: Some(op(ops, 1)), cond: Some(op(ops, 2)) },
+            _ => fail!("unknown")
+        }
     }
 }
 

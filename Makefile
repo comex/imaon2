@@ -13,8 +13,8 @@ all: $$(cf)
 endef
 
 all: $(call cratefile,llvmshim)
-$(call cratefile,llvmshim): llvmshim.cpp
-	$(CC) -c -o llvmshim_cpp.o -I$(RUSTSRC)/src/llvm/include -I$(ANOTHER_LLVM) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
+$(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
+	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(RUSTSRC)/src/llvm/include -I$(ANOTHER_LLVM) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
 
