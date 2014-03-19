@@ -23,6 +23,9 @@ do-test-$$(name): test-$$(name)
 	./$$<
 
 test: do-test-$$(name)
+clean-$$(name):
+	rm -f test-$$(name)
+clean: clean-$$(name)
 endef
 
 all: $(call cratefile,llvmshim)
@@ -34,4 +37,4 @@ $(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
 $(eval $(call define_crate,llvmhelp,llvmhelp.rs,llvmshim))
 
 clean:
-	rm -f *.dylib *.so rcpath.rs
+	rm -rf *.dylib *.so *.o *.dSYM
