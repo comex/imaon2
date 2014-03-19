@@ -93,7 +93,7 @@ enum ValueEn {
     VCall(ValueRef),
     VUnreachable,
     VBinOp(BinOpType, ValueRef, ValueRef),
-    VAlloca(ValueRef),
+    VAlloca { ty: TypeRef, cnt: ValueRef },
     VLoad { addr: ValueRef, lsi: LoadStoreInfo },
     VStore { val: ValueRef, addr: ValueRef, lsi: LoadStoreInfo },
     VGEP(ValueRef),
@@ -162,7 +162,7 @@ impl ValueTr for ValueRef {
                 op(ops, 1)
             ),
 
-            llvmshim::Alloca => VAlloca(op(ops, 0)),
+            llvmshim::Alloca => VAlloca { ty: self.ty(), cnt: op(ops, 0) },
             llvmshim::Load => VLoad { addr: op(ops, 0), lsi: LoadStoreInfo { subclass: self.subclass_data() } },
             llvmshim::Store => VStore { val: op(ops, 0), addr: op(ops, 1), lsi: LoadStoreInfo { subclass: self.subclass_data() } },
             // For now, don't bother with inbounds...
@@ -1226,8 +1226,12 @@ fn test_bb() {
     dummy_bb(|ctx, bb, func| {
         let b = Builder::new(&ctx);
         b.position_at_end(bb);
-        let ret = b.ret_void();
-        assert_eq!(ret.get(), VRet(None));
+        let rv = b.ret_void();
+        assert_eq!(rv.get(), VRet(None));
+        let alloca = b.alloca(Type::i32(ctx).ptr_to(), "");
+        let load = b.load(alloca);
+        match alloca.get() { VAlloca{..} => (), _ => assert!(false) }
+        match load.get() { VLoad{..} => (), _ => assert!(false) }
 
         unsafe { llvm::LLVMDumpValue(func) };
     });
