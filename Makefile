@@ -1,23 +1,27 @@
 # This Makefile is public domain.
 
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -O -C prefer-dynamic --crate-type dylib -L.
+RUSTC := rustc -O -C prefer-dynamic -L.
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM_INC := /opt/local/libexec/llvm-3.4/include/ # ...
-cratefile = lib$(1).dylib
+cratefile_dylib = lib$(1).dylib
+cratefile_bin = $(1)
 define define_crate
-name := $(1)
-cf := $(call cratefile,$$(name))
-sources := $(2)
-deps := $(3)
+kind = $(1)
+name := $(2)
+cf := $$(call cratefile_$$(kind),$$(name))
+sources := $(3)
+deps := $(4)
 $$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
-	$(RUSTC) $$(firstword $$(sources))
+	$(RUSTC) --crate-type $$(kind) $$(firstword $$(sources))
+ifneq ($$(kind),bin)
 	ln -nfs lib$(1)-* $$@
+endif
 
 all: $$(cf)
 
 test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
-	$(RUSTC) -g --test -o $$@ $$(firstword $$(sources))
+	$(RUSTC) -g --crate-type dylib --test -o $$@ $$(firstword $$(sources))
 
 # separate rule to avoid deleting it on failure
 do-test-$$(name): test-$$(name)
@@ -32,10 +36,11 @@ endef
 all: $(call cratefile,llvmshim)
 $(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM_INC) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
-	$(RUSTC) llvmshim.rs -C link-args=llvmshim_cpp.o
+	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
 
-$(eval $(call define_crate,llvmhelp,llvmhelp.rs,llvmshim))
+$(eval $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim))
+$(eval $(call define_crate,bin,tabler,tabler.rs,))
 
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
