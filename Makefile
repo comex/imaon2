@@ -2,7 +2,8 @@
 
 RUSTSRC := /usr/src/rust
 RUSTC := rustc -O -C prefer-dynamic --crate-type dylib -L.
-ANOTHER_LLVM := /opt/local/libexec/llvm-3.4/include/
+LLVM := $(RUSTSRC)/src/llvm
+ANOTHER_LLVM_INC := /opt/local/libexec/llvm-3.4/include/ # ...
 cratefile = lib$(1).dylib
 define define_crate
 name := $(1)
@@ -30,11 +31,24 @@ endef
 
 all: $(call cratefile,llvmshim)
 $(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
-	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(RUSTSRC)/src/llvm/include -I$(ANOTHER_LLVM) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
+	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM_INC) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
 
 $(eval $(call define_crate,llvmhelp,llvmhelp.rs,llvmshim))
 
+# deps here are wonky
+tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
+	cd tables; ./build-tblgen.sh "$(LLVM)"
+
+LLVM_TARGETS := X86 ARM Sparc Mips AArch64
+tables/out-%.td: $(LLVM)/lib/Target/% $(LLVM) tables/llvm-tblgen
+	tables/llvm-tblgen -I$(LLVM)/include -I$< $</$*.td -o $@
+out-td: $(foreach target,$(LLVM_TARGETS),tables/out-$(target).td)
+all: out-td
+
 clean:
-	rm -rf *.dylib *.so *.o *.dSYM
+	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
+
+distclean: clean
+	rm -f tables/llvm-tblgen
