@@ -40,7 +40,6 @@ $(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	ln -nfs libllvmshim-* $@
 
 $(eval $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim))
-$(eval $(call define_crate,bin,tabler,tabler.rs,))
 
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
