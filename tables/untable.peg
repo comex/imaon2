@@ -1,0 +1,33 @@
+start = def +
+//start = list
+sym = first:[a-zA-Z_<>\$]rest:[a-zA-Z0-9_<>\$]* { return first + rest.join(''); }
+ws = [ \t]*
+list = "[" l:(", "? expr)* "]" { return l.map(function(x) { return x[1]; }); }
+dag = "(" l:(","? " "? expr)* ")" { return l.map(function(x) { return x[2]; }); }
+mlstrline = ([^"] [^\n]*)? '\n'
+mlstr = '"\n' mlstrline* '"' { return 'mlstr'; }
+str = '"' s:[^"]* '"' { return s.join(''); }
+int = h:'-'? t:[0-9]+ { return parseInt((h || '') + t.join('')); }
+sym_bit = s:sym '{' b:[0-9]+ '}' { return [s, parseInt(b)]; }
+bit = '0' / '1' / '?' / sym_bit / sym
+bits = "{ " l:(", "? bit)* " }" { return l.map(function(x) { return x[1]; }); }
+unk = "?"
+tagged = a:("?" / sym) ":" b:sym { return [a, b]; }
+expr = list / dag / mlstr / str / int / bits / tagged / unk / sym
+prop = ws "field "? type:sym ws (cls:sym ":" ":"?)? name:sym ws "=" ws val:expr ";\n" {
+    //console.log('type:' + type + ' name:' + name + ' val:', val);
+    return {
+        type: type,
+        name: name,
+        val: val
+    };
+}
+def = "def " defname:sym " {" supers:(ws "//" (ws (it:sym / ([!0-9] [^\n]*)))*)? "\n" props:prop* "}" "\n"? {
+    var ps = {};
+    props.forEach(function(prop) { ps[prop.name] = prop.val; });
+    return {
+        name: defname,
+        supers: supers ? supers[2].map(function(a) { return a[1]; }) : [],
+        props: ps,
+    };
+}

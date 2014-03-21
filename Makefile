@@ -12,7 +12,7 @@ name := $(2)
 cf := $$(call cratefile_$$(kind),$$(name))
 sources := $(3)
 deps := $(4)
-$$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
+$$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
 	$(RUSTC) --crate-type $$(kind) $$(firstword $$(sources))
 ifneq ($$(kind),bin)
 	ln -nfs lib$(1)-* $$@
@@ -33,8 +33,8 @@ clean-$$(name):
 clean: clean-$$(name)
 endef
 
-all: $(call cratefile,llvmshim)
-$(call cratefile,llvmshim): llvmshim.cpp llvmshim.rs Makefile
+all: $(call cratefile_dylib,llvmshim)
+$(call cratefile_dylib,llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM_INC) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
@@ -48,7 +48,9 @@ tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
 LLVM_TARGETS := X86 ARM Sparc Mips AArch64
 tables/out-%.td: $(LLVM)/lib/Target/% $(LLVM) tables/llvm-tblgen
 	tables/llvm-tblgen -I$(LLVM)/include -I$< $</$*.td -o $@
-out-td: $(foreach target,$(LLVM_TARGETS),tables/out-$(target).td)
+tables/out-%.json: tables/out-%.td tables/untable.js tables/untable.peg
+	node tables/untable.js $< $@
+out-td: $(foreach target,$(LLVM_TARGETS),tables/out-$(target).td tables/out-$(target).json)
 all: out-td
 
 clean:

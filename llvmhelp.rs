@@ -22,7 +22,7 @@ use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRe
 use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, TypeKind};
 
 use std::libc::{c_uint, c_longlong, c_ulonglong, c_char};
-use std::vec_ng::Vec;
+use std::vec::Vec;
 use std::cast;
 use std::kinds::marker;
 //use std::mem;
