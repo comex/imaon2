@@ -9,15 +9,6 @@ function hex(n, len) {
     return s;
 }
 
-// derp
-function rev(n, len) {
-    var r = 0;
-    for(var i = 0; i < len; i++) {
-        r |= ((n >> i) & 1) << (len - i - 1);
-    }
-    return r;
-}
-
 function pad(s, len) {
     s = String(s);
     while(s.length < len)
@@ -39,8 +30,6 @@ function setdefault(obj, key, def) {
 // as multiple compares!).  Ideally I only want a single indirect branch...
 // Dolphin is actually a good model here.
 // - I want to detect jumps very quickly.
-
-// Note: knownBits and builtUp are actually backwards.  Whatever.
 
 function fillBuckets(buckets, insn, instKnown, start, end, n, builtUp) {
     if(n == end) {
@@ -75,13 +64,12 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
 
     var bestBuckets, bestStart, bestLength, bestMax = 10000;
     var maxLength = 5; //allowConflicts ? 8 : 4;
-    for(var length = 1; length <= maxLength; length++) {
-        for(var start = 0; start <= bitLength - length; start++) {
+    for(var length = 0; length <= maxLength; length++) {
+        for(var start = 0; start <= (length == 0 ? 0 : bitLength - length); start++) {
             var mask = ((1 << length) - 1) << start;
-            if((knownMask & mask) == mask) {
+            if(length != 0 && (knownMask & mask) == mask) {
                 // Useless, we know all these bits already.
                 continue;
-
             }
             var buckets = [];
             for(var i = 0; i < (1 << length); i++)
@@ -92,8 +80,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
 
             // There are sometimes instances of a general case and special
             // cases.  Deal with them as follows: if, assuming the bits known
-            // in a bucket, one instruction implies another and also takes
-            // precedence by being more specific, then remove the implied one.
+            // in a bucket, one instruction is implied by another and also
+            // takes precedence by being more specific, then remove the second.
 
             // More specific is not necessarily well defined, e.g. in Thumb,
             // 'add sp, sp' (0x44ed) could be match the general tADDhirr, but
@@ -104,7 +92,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
             // There's got to be a better way to do this, but I'm not sure what.
 
             var bucketKnownMask = knownMask | (((1 << length) - 1) << start);
-            for(var i = 0; i < buckets.length && 1; i++) {
+            for(var i = 0; i < buckets.length; i++) {
                 var bucket = buckets[i];
                 if(bucket.length == 0)
                     continue;
@@ -120,13 +108,13 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
                     conflictingInsns.forEach(function(insn) {
                         conflictingInsns.forEach(function(insn2) {
                             // Suppose insn's mask matches.
-                            var hypotheticalKnownMask = bucketKnownMask | insn.instKnownMask;
-                            var hypotheticalKnownValue = bucketKnownValue | (insn.instKnownValue & hypotheticalKnownMask);
+                            var hypotheticalKnownMask = bucketKnownMask | insn2.instKnownMask;
+                            var hypotheticalKnownValue = bucketKnownValue | (insn2.instKnownValue & hypotheticalKnownMask);
                             if( insn != insn2 &&
                                 // If no possibility of narrowing it down with other bits...
-                                !(insn2.instKnownMask & ~hypotheticalKnownMask) &&
+                                !(insn.instKnownMask & ~hypotheticalKnownMask) &&
                                 // And it implies insn2 matches...
-                                (hypotheticalKnownValue & insn2.instKnownMask) == insn2.instKnownValue &&
+                                (hypotheticalKnownValue & insn.instKnownMask) == insn.instKnownValue &&
                                 // And insn takes precedence
                                 insn.instSpecificity >= insn2.instSpecificity) {
                                 conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
@@ -159,9 +147,9 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
         });
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, bitLength).join(','));
+        return null;
         throw '?';
     }
-
 
     var resultBuckets = [];
     for(var i = 0; i < bestBuckets.length; i++) {
@@ -172,6 +160,10 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
             knownMask | (((1 << bestLength) - 1) << bestStart),
             knownValue | (i << bestStart),
             null));
+    }
+
+    if(bestLength == 0) {
+        return resultBuckets[0];
     }
 
     return {
@@ -189,9 +181,10 @@ function ppTable(node, indent) {
     if(!node)
         return 'null';
     if(node.insn)
-        return '<' + hex(rev(node.knownValue, node.insn.inst.length), node.insn.inst.length) + '> insn:' + node.insn.name;
-    var s = 'test ' + node.start + '..' + (node.start + node.length - 1) + ' (' + node.possibilities.length + ' total insns):\n';
-    s += node.possibilities.map(function(i) { return i.name; }).join(',') + '\n';
+        return '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name;
+    var s = 'test ' + node.start + '..' + (node.start + node.length - 1) + ' (' + node.possibilities.length + ' total insns - ';
+    s += node.possibilities.map(function(i) { return i.name; }).join(',');
+    s += '):\n';
     indent = (indent || '') + '  ';
     for(var i = 0; i < node.buckets.length; i++) {
         s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent) + '\n';
@@ -207,9 +200,7 @@ function tableToRust(node) {
     console.log(ppTable(node));
 }
 
-function genDisassembler(insns, name) {
-    var bitLength = insns[0].inst.length;
-    // find potential conflicts (by brute force)
+function addConflictGroups(insns) {
     insns.forEach(function(insn) {
         insn.conflictGroup = -1;
     });
@@ -242,13 +233,37 @@ function genDisassembler(insns, name) {
         });
         seen.push(insn);
     });
+}
+
+function printConflictGroups(insns) {
+    var cgs = {};
+    insns.forEach(function(insn) {
+        if(insn.conflictGroup != -1) {
+            setdefault(cgs, insn.conflictGroup, []).push(insn);
+        }
+    });
+    for(var cg in cgs) {
+        console.log(cg + ':');
+        cgs[cg].forEach(function(insn) {
+            console.log('  ', pad(insn.name, 20), 'spec:' + pad(insn.instSpecificity, 2), insn.instKnown.join(','));
+        });
+    }
+}
+
+function genDisassembler(insns, name) {
+    var bitLength = insns[0].inst.length;
+    // find potential conflicts (by brute force)
+    addConflictGroups(insns);
     //console.log(insns.length);
     var node = genDisassemblerRec(insns, bitLength, 0, null);
     return tableToRust(node);
     //console.log(stuff);
 }
 
-function addInstructionData(insn) {
+function fixInstruction(insn) {
+    // Incoming goes from MSB to LSB, but we assume that inst[n] corresponds to
+    // 1 << n, so reverse it.
+    insn.inst.reverse();
     insn.instKnownMask = 0;
     insn.instKnownValue = 0;
     insn.instSpecificity = 0;
@@ -267,6 +282,7 @@ function addInstructionData(insn) {
 }
 
 var getopt = require('node-getopt').create([
+    ['', 'print-conflict-groups', 'Print potentially conflicting instructions.'],
     ['', 'gen-disassembler', 'Generate a full disassembler.'],
     ['', 'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
     // ...
@@ -280,9 +296,14 @@ if(opt.argv.length != 1) {
 }
 
 var inputInsns = JSON.parse(fs.readFileSync(opt.argv[0], 'utf-8'));
-inputInsns.forEach(addInstructionData);
+inputInsns.forEach(fixInstruction);
 allInsns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; });
+
+var insns = allInsns.filter(function(insn) { return insn.namespace == 'Thumb2'; });
+addConflictGroups(insns);
+if(opt.options['print-conflict-groups']) {
+    printConflictGroups(insns);
+}
 if(opt.options['gen-disassembler']) {
-    var insns = allInsns.filter(function(insn) { return insn.namespace == 'Thumb2'; });
     genDisassembler(insns, 'Thumb');
 }
