@@ -45,12 +45,16 @@ $(eval $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim))
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
 	cd tables; ./build-tblgen.sh "$(LLVM)"
 
-LLVM_TARGETS := X86 ARM Sparc Mips AArch64
-tables/out-%.td: $(LLVM)/lib/Target/% $(LLVM) tables/llvm-tblgen
-	tables/llvm-tblgen -I$(LLVM)/include -I$< $</$*.td -o $@
-tables/out-%.json: tables/out-%.td tables/untable.js tables/untable.peg
-	node tables/untable.js $< $@
-out-td: $(foreach target,$(LLVM_TARGETS),tables/out-$(target).td tables/out-$(target).json)
+LLVM_TARGETS := X86/X86 ARM/ARM Sparc/Sparc Mips/Mips AArch64/AArch64 PowerPC/PPC
+define td_target_
+tables/out-$(1).td: $(LLVM)/lib/Target/$(1) $(LLVM) tables/llvm-tblgen
+	tables/llvm-tblgen -I$(LLVM)/include -I$$< $$</$(2).td -o $$@
+tables/out-$(1).json: tables/out-$(1).td tables/untable.js tables/untable.peg
+	node tables/untable.js $$< $$@
+out-td: tables/out-$(1).td tables/out-$(1).json
+endef
+td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
+$(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
 clean:
