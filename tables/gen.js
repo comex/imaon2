@@ -58,28 +58,32 @@ var nullInstruction = {
 };
 
 
-function findDeferentialInstructions(conflictingInsns, bucketKnownMask, bucketKnownValue) {
-    var toRemove = [];
-    conflictingInsns.forEach(function(insn) {
-        conflictingInsns.forEach(function(insn2) {
-            // Suppose insn's mask matches.
-            var hypotheticalKnownMask = bucketKnownMask | insn2.instKnownMask;
-            var hypotheticalKnownValue = bucketKnownValue | (insn2.instKnownValue & hypotheticalKnownMask);
-            if( insn != insn2 &&
-                // If no possibility of narrowing it down with other bits...
-                !(insn.instKnownMask & ~hypotheticalKnownMask) &&
-                // And it implies insn2 matches...
-                (hypotheticalKnownValue & insn.instKnownMask) == insn.instKnownValue &&
-                // And insn takes precedence
-                insn.instSpecificity >= insn2.instSpecificity) {
-                conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
-                toRemove.push(insn2);
-            }
-        });
-    });
-    return toRemove;
+function takesPrecedence(insn, insn2) {
+    return insn.instSpecificity >= insn2.instSpecificity;
 }
-function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
+
+function knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue) {
+    // Suppose insn2's mask matches.
+    var hypotheticalKnownMask = bucketKnownMask | insn2.instKnownMask;
+    var hypotheticalKnownValue = bucketKnownValue | (insn2.instKnownValue & hypotheticalKnownMask);
+    return (
+        insn != insn2 &&
+        // If no possibility of narrowing it down with other bits...
+        !(insn.instKnownMask & ~hypotheticalKnownMask) &&
+        // And it implies insn matches...
+        (hypotheticalKnownValue & insn.instKnownMask) == insn.instKnownValue &&
+        // And insn takes precedence
+        takesPrecedence(insn, insn2)
+    );
+}
+
+var gdCache = {};
+var choiceOverrides = {
+    'PPC/*:00000000': [26, 6],
+};
+
+function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, name, depth) {
+    //console.log(indent + insns.length);
     if(insns.length == 0)
         return {insn: nullInstruction};
     if(insns.length == 1) {
@@ -90,22 +94,41 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
         };
     }
 
+    if(useCache) {
+        var names = [];
+        insns.forEach(function(insn) {
+            names.push(insn.name);
+            knownMask &= insn.instKnownMask;
+            knownValue &= insn.instKnownMask;
+        });
+        names.push(knownMask);
+        names.push(knownValue);
+        var cacheKey = names.join(',');
+        //console.log(cacheKey);
+        var result = gdCache[cacheKey];
+        if(typeof result !== 'undefined') {
+            //console.log('cache hit');
+            return result;
+        }
+    }
     var bestBuckets, bestStart, bestLength, bestMax = 10000;
-    var maxLength = 5; //allowConflicts ? 8 : 4;
-    for(var length = 0; length <= maxLength; length++) {
-        for(var start = 0; start <= (length == 0 ? 0 : bitLength - length); start++) {
-            var mask = ((1 << length) - 1) << start;
-            if(length != 0 && (knownMask & mask) == mask) {
-                // Useless, we know all these bits already.
-                continue;
-            }
-            var buckets = [];
-            for(var i = 0; i < (1 << length); i++)
-                buckets.push([]);
-            insns.forEach(function(insn) {
-                fillBuckets(buckets, insn, insn.instKnown, start, start + length, start, 0);
-            });
+    var maxLength = 11; //allowConflicts ? 8 : 4;
+    var cacheCutoff = 4;
 
+    function tryFilter(start, length) {
+        var mask = ((1 << length) - 1) << start;
+        if(length != 0 && (knownMask & mask) == mask) {
+            // Useless, we know all these bits already.
+            return;
+        }
+        var buckets = [];
+        for(var i = 0; i < (1 << length); i++)
+            buckets.push([]);
+        insns.forEach(function(insn) {
+            fillBuckets(buckets, insn, insn.instKnown, start, start + length, start, 0);
+        });
+
+        if(length <= cacheCutoff || insns.length < 10) {
             // There are sometimes instances of a general case and special
             // cases.  Deal with them as follows: if, assuming the bits known
             // in a bucket, one instruction is implied by another and also
@@ -133,58 +156,83 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
                 });
                 for(var cg in cgs) {
                     var conflictingInsns = cgs[cg];
-                    var toRemove = findDeferentialInstructions(conflictingInsns, bucketKnownMask, bucketKnownValue);
-                    toRemove.forEach(function(insn2) {
-                        bucket.splice(bucket.indexOf(insn2), 1);
+                    conflictingInsns.forEach(function(insn) {
+                        conflictingInsns.forEach(function(insn2) {
+                            if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
+                                conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
+                                bucket.splice(bucket.indexOf(insn2), 1);
+                                //console.log('Removing', insn.name, 'because of', insn2.name);
+                            }
+                        });
                     });
                 }
             }
+        }
 
-            var max = 0; // maximum size of any of the buckets
-            buckets.forEach(function(bucket) {
-                if(bucket.length > max) max = bucket.length;
-            });
-            if(max < bestMax || (max == bestMax && length < bestLength)) {
-                bestMax = max;
-                bestBuckets = buckets;
-                bestStart = start;
-                bestLength = length;
+        var max = 0; // maximum size of any of the buckets
+        buckets.forEach(function(bucket) {
+            if(bucket.length > max) max = bucket.length;
+        });
+        if(max < bestMax || (max == bestMax && length < bestLength)) {
+            bestMax = max;
+            bestBuckets = buckets;
+            bestStart = start;
+            bestLength = length;
+        }
+    }
+
+    var override;
+    // not currently used, but...
+    if(depth <= 3 && (override = choiceOverrides[name + ':' + hex(knownMask, bitLength)])) {
+        tryFilter(override[0], override[1]);
+    } else {
+        for(var length = 0; length <= maxLength; length++) {
+            for(var start = 0; start <= (length == 0 ? 0 : bitLength - length); start++) {
+                tryFilter(start, length);
             }
         }
     }
 
     if(bestMax == insns.length) {
-        if(insns.length <= 3) {
+        if(insns.length <= 3 && 1) {
             // Probably a case of one more specific, but too many
-            // distinguishing bits for a regular mask to find.  Try to find one
-            // that's strictly more specific than all others, and do a binary
-            // test.  (Sigh...)
+            // distinguishing bits for a regular mask to find.  At least
+            // try to find one that takes precedence over all the others.
+            // (Sigh...)
             outer:
             for(var i = 0, insn; insn = insns[i]; i++) {
                 for(var j = 0, insn2; insn2 = insns[j]; j++) {
-                    if(insn2.instKnownMask & ~insn.instKnownMask) {
-                        // They know something we don't, we can't be the most specific
+                    if(insn != insn2 && !takesPrecedence(insn, insn2)) {
                         continue outer;
                     }
                 }
                 var newInsns = insns.slice(0);
                 newInsns.splice(i, 1);
-                return {
+                return gdCache[cacheKey] = {
                     isBinary: 1,
                     buckets: [
                         genDisassemblerRec(
                             newInsns,
                             bitLength,
                             knownMask,
-                            knownValue
+                            knownValue,
+                            false,
+                            name,
+                            depth + 1
                         ),
                         genDisassemblerRec(
                             [insn],
                             bitLength,
                             knownMask,
-                            knownValue
+                            knownValue,
+                            false,
+                            name,
+                            depth + 1
                         )
-                    ]
+                    ],
+                    possibilities: insns,
+                    knownMask: knownMask,
+                    knownValue: knownValue
                 };
 
             }
@@ -195,25 +243,32 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue) {
         });
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, bitLength).join(','));
-        return {insn: nullInstruction};
+        return gdCache[cacheKey] = {insn: nullInstruction};
         throw '?';
     }
 
     var resultBuckets = [];
     for(var i = 0; i < bestBuckets.length; i++) {
         var bucket = bestBuckets[i];
+        var bucketKnownMask = knownMask | (((1 << bestLength) - 1) << bestStart);
+        var bucketKnownValue = knownValue | (i << bestStart);
+        var useCache = bestLength > cacheCutoff && depth > 0;
         resultBuckets.push(genDisassemblerRec(
             bucket,
             bitLength,
-            knownMask | (((1 << bestLength) - 1) << bestStart),
-            knownValue | (i << bestStart)));
+            bucketKnownMask,
+            bucketKnownValue,
+            useCache,
+            name,
+            depth + 1
+        ));
     }
 
     if(bestLength == 0) {
-        return resultBuckets[0];
+        return gdCache[cacheKey] = resultBuckets[0];
     }
 
-    return {
+    return gdCache[cacheKey] = {
         start: bestStart,
         length: bestLength,
         max: bestMax,
@@ -260,6 +315,7 @@ function addConflictGroups(insns) {
 }
 
 function printConflictGroups(insns) {
+    console.log('Total insns: ' + insns.length);
     var cgs = {};
     insns.forEach(function(insn) {
         if(insn.conflictGroup != -1) {
@@ -267,32 +323,39 @@ function printConflictGroups(insns) {
         }
     });
     for(var cg in cgs) {
-        console.log(cg + ':');
+        console.log(cg + ': (' + cgs[cg].length + ')');
         cgs[cg].forEach(function(insn) {
             console.log('  ', pad(insn.name, 20), 'spec:' + pad(insn.instSpecificity, 2), insn.instKnown.join(','));
         });
     }
 }
 
-function ppTable(node, indent) {
+function ppTable(node, indent, depth) {
+    indent = (indent || '') + '  ';
+    depth = (depth || 0) + 1;
     if(node.insn)
         return '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name;
-    var s = 'test ' + node.start + '..' + (node.start + node.length - 1) + ' (' + node.possibilities.length + ' total insns - ';
+    var s = '{' + depth + '} ';
+    if(typeof node.start !== 'undefined') {
+        s += 'test ' + node.start + '..' + (node.start + node.length - 1);
+    } else {
+        s += 'test for second insn';
+    }
+    s += ' (' + node.possibilities.length + ' total insns - ';
     s += node.possibilities.map(function(i) { return i.name; }).join(',');
     s += '):\n';
-    indent = (indent || '') + '  ';
     for(var i = 0; i < node.buckets.length; i++) {
-        s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent) + '\n';
+        s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
     }
     return s;
 }
 
 function tableToRust(node) {
     function depth(n) {
-        return 1 + ((!n || n.insn) ? 0 : Math.max.apply(Math, n.buckets.map(depth)));
+        return n.insn ? 0 : (1 + Math.max.apply(Math, n.buckets.map(depth)));
     }
-    console.log(depth(node));
-    //console.log(ppTable(node));
+    console.log('max depth: ' + depth(node));
+    console.log(ppTable(node));
 }
 
 function checkTableMissingInsns(node, insns) {
@@ -311,12 +374,14 @@ function checkTableMissingInsns(node, insns) {
     });
 }
 
-function genDisassembler(insns, name) {
+function genDisassembler(insns, ns) {
     var bitLength = insns[0].inst.length;
+    var name = insns[0].namespace + '/' + ns;
+    console.log(name, bitLength);
     // find potential conflicts (by brute force)
     addConflictGroups(insns);
     //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, null);
+    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, name, 0);
     checkTableMissingInsns(node, insns);
     return tableToRust(node);
     //console.log(stuff);
@@ -325,7 +390,9 @@ function genDisassembler(insns, name) {
 function fixInstruction(insn) {
     // Incoming goes from MSB to LSB, but we assume that inst[n] corresponds to
     // 1 << n, so reverse it.
-    insn.inst.reverse();
+    // But not on PPC...
+    if(insn.namespace != 'PPC')
+        insn.inst.reverse();
     insn.instKnownMask = 0;
     insn.instKnownValue = 0;
     insn.instSpecificity = 0;
@@ -366,13 +433,15 @@ inputInsns.forEach(fixInstruction);
 var allInsns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; });
 
 var insns = allInsns;
+var ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
-    insns = insns.filter(function(insn) { return insn.namespace == opt.options['namespace']; });
+    insns = insns.filter(function(insn) { return insn.decoderNamespace == opt.options['namespace']; });
+    ns = opt.optons['namespace'];
 }
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
     printConflictGroups(insns);
 }
 if(opt.options['gen-disassembler']) {
-    genDisassembler(insns, 'Thumb');
+    genDisassembler(insns, ns);
 }

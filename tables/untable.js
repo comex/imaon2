@@ -16,7 +16,14 @@ try {
     console.log(e.message);
 }
 result = result.filter(function(defn) {
-    return defn.supers.indexOf('Instruction') != -1 && defn.props.Inst;
+    return (
+        defn.supers.indexOf('Instruction') != -1 &&
+        defn.props.Inst &&
+        defn.props.Namespace != 'TargetOpcode' &&
+        !defn.props.isPseudo &&
+        !defn.props.isAsmParserOnly &&
+        !defn.props.isCodeGenOnly
+    );
 }).map(function(defn) {
     var predicates = {};
     (defn.props.Predicates || []).forEach(function(p) {
@@ -28,7 +35,8 @@ result = result.filter(function(defn) {
         pattern: defn.props.Pattern,
         asm_string: defn.props.AsmString,
         predicates: predicates,
-        namespace: defn.props.DecoderNamespace,
+        namespace: defn.props.Namespace,
+        decoderNamespace: defn.props.DecoderNamespace,
     };
 });
 fs.writeFileSync(process.argv[3], JSON.stringify(result));
