@@ -3,7 +3,7 @@
 RUSTSRC := /usr/src/rust
 RUSTC := rustc -O -C prefer-dynamic -L.
 LLVM := $(RUSTSRC)/src/llvm
-ANOTHER_LLVM_INC := /opt/local/libexec/llvm-3.4/include/ # ...
+ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
 cratefile_dylib = lib$(1).dylib
 cratefile_bin = $(1)
 define define_crate
@@ -15,7 +15,7 @@ deps := $(4)
 $$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
 	$(RUSTC) --crate-type $$(kind) $$(firstword $$(sources))
 ifneq ($$(kind),bin)
-	ln -nfs lib$(1)-* $$@
+	ln -nfs lib$(2)-* $$@
 endif
 
 all: $$(cf)
@@ -35,7 +35,7 @@ endef
 
 all: $(call cratefile_dylib,llvmshim)
 $(call cratefile_dylib,llvmshim): llvmshim.cpp llvmshim.rs Makefile
-	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM_INC) -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
+	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
 
@@ -56,6 +56,17 @@ endef
 td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
+
+externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust-bindgen/*.rs
+	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
+
+bindgen = (cat fmt/bind_defs.rs; externals/rust-bindgen/bindgen -allow-bitfields $(1) $< | tail -n +4 | sed 's/Struct_//g') > $@
+fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/*
+	$(call bindgen,-match mach-o/ -Iexternals/mach-o)
+$(eval $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,))
+fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile
+	$(call bindgen,-match elf.h)
+$(eval $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,))
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
