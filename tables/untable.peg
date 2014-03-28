@@ -12,7 +12,7 @@ sym_bit = s:sym '{' b:[0-9]+ '}' { return [s, parseInt(b)]; }
 bit = '0' / '1' / '?' / sym_bit / sym
 bits = "{ " l:(", "? bit)* " }" { return l.map(function(x) { return x[1]; }); }
 unk = "?"
-tagged = a:("?" / sym) ":" b:sym { return [a, b]; }
+tagged = a:("?" / sym) ":" b:sym { return [':', a, b]; }
 expr = list / dag / mlstr / str / int / bits / tagged / unk / sym
 prop = ws "field "? type:sym ws (cls:sym ":" ":"?)? name:sym ws "=" ws val:expr ";\n" {
     //console.log('type:' + type + ' name:' + name + ' val:', val);

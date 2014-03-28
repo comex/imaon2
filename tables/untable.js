@@ -15,7 +15,9 @@ try {
     console.log('At line ' + e.line + ':');
     console.log(e.message);
 }
-result = result.filter(function(defn) {
+
+// Some pre-filtering
+var instructions = result.filter(function(defn) {
     return (
         defn.supers.indexOf('Instruction') != -1 &&
         defn.props.Inst &&
@@ -39,4 +41,22 @@ result = result.filter(function(defn) {
         decoderNamespace: defn.props.DecoderNamespace,
     };
 });
-fs.writeFileSync(process.argv[3], JSON.stringify(result));
+var patternOperators = {};
+result.filter(function(defn) {
+    return (
+        defn.supers.indexOf('SDPatternOperator') != -1 &&
+        defn.supers.indexOf('PatFrag') != -1 &&
+        !defn.props.PredicateCode &&
+        !defn.props.ImmediateCode
+    );
+}).forEach(function(defn) {
+    patternOperators[defn.name] = {
+        operands: defn.props.Operands,
+        fragment: defn.props.Fragment,
+    };
+});
+var output = {
+    instructions: instructions,
+    patternOperators: patternOperators
+};
+fs.writeFileSync(process.argv[3], JSON.stringify(output));

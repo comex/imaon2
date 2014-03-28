@@ -330,6 +330,32 @@ function printConflictGroups(insns) {
     }
 }
 
+function printHeads(insns) {
+    seen = {};
+    function add(pat) {
+        if(!Array.isArray(pat) || pat[0] == ':')
+            return;
+        if(pat[0].replace)
+            seen[pat[0]] = (seen[pat[0]] || 0) + 1;
+        for(var i = 1; i < pat.length; i++)
+            add(pat[i]);
+    }
+    insns.forEach(function(insn) {
+        if(insn.pattern != '?' && insn.pattern.length) {
+            insn.pattern.forEach(add);
+        } else {
+            console.log('nopat ' + insn.name);
+        }
+    });
+    var seen_l = [];
+    for(var head in seen)
+        seen_l.push([head, seen[head]]);
+    seen_l.sort();
+    seen_l.forEach(function(l) {
+        console.log('head ' + l[0] + ' (' + l[1] + ')');
+    });
+}
+
 function ppTable(node, indent, depth) {
     indent = (indent || '') + '  ';
     depth = (depth || 0) + 1;
@@ -387,12 +413,18 @@ function genDisassembler(insns, ns) {
     //console.log(stuff);
 }
 
-function fixInstruction(insn) {
+function genSema(insns, ns) {
+    var s = 'trait Sema' + ns + ' {\n';
+
+}
+
+function fixInstruction(insn, patternOperators) {
     // Incoming goes from MSB to LSB, but we assume that inst[n] corresponds to
     // 1 << n, so reverse it.
     // But not on PPC...
     if(insn.namespace != 'PPC')
         insn.inst.reverse();
+
     insn.instKnownMask = 0;
     insn.instKnownValue = 0;
     insn.instSpecificity = 0;
@@ -408,14 +440,17 @@ function fixInstruction(insn) {
         }
         insn.instKnown.push(res);
     };
+
+    patternOperators
 }
 
 var getopt = require('node-getopt').create([
+    ['n', 'namespace=ARG', 'Decoder namespace of instructions to use.'],
     ['',  'print-conflict-groups', 'Print potentially conflicting instructions.'],
+    ['',  'print-heads', 'Print what needs to be done.'],
     ['d', 'gen-disassembler', 'Generate a full disassembler.'],
     ['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
-    ['n', 'namespace=ARG', 'Decoder namespace of instructions to use.'],
-    // ...
+    ['',  'gen-sema', 'Generate the step after the disassembler.'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -428,20 +463,29 @@ if(opt.argv.length != 1) {
     help();
 }
 
-var inputInsns = JSON.parse(fs.readFileSync(opt.argv[0], 'utf-8'));
-inputInsns.forEach(fixInstruction);
-var allInsns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; });
+var input = JSON.parse(fs.readFileSync(opt.argv[0], 'utf-8'));
+var inputInsns = input.instructions;
 
-var insns = allInsns;
+var insns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; });
+
 var ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
     insns = insns.filter(function(insn) { return insn.decoderNamespace == opt.options['namespace']; });
     ns = opt.optons['namespace'];
 }
+
+inputInsns.forEach(function(insn) { fixInstruction(insn, input.patternOperators); });
+
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
     printConflictGroups(insns);
 }
+if(opt.options['print-heads']) {
+    printHeads(insns);
+}
 if(opt.options['gen-disassembler']) {
     genDisassembler(insns, ns);
+}
+if(opt.options['gen-sema']) {
+    genSema(insns, ns);
 }
