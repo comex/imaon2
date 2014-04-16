@@ -6,14 +6,16 @@ LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
 cratefile_dylib = lib$(1).dylib
 cratefile_bin = $(1)
-define define_crate
-kind = $(1)
+
+define define_crate_
+kind := $(1)
 name := $(2)
 cf := $$(call cratefile_$$(kind),$$(name))
 sources := $(3)
 deps := $(4)
+
 $$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
-	$(RUSTC) --crate-type $$(kind) $$(firstword $$(sources))
+	$(RUSTC) --crate-type $$(kind) $$<
 ifneq ($$(kind),bin)
 	ln -nfs lib$(2)-* $$@
 endif
@@ -21,17 +23,20 @@ endif
 all: $$(cf)
 
 test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
-	$(RUSTC) -g --crate-type dylib --test -o $$@ $$(firstword $$(sources))
+	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
 do-test-$$(name): test-$$(name)
 	./$$<
 
 test: do-test-$$(name)
-clean-$$(name):
+clean-$(name):
 	rm -f test-$$(name)
 clean: clean-$$(name)
 endef
+define_crate = $(eval $(define_crate_))
+
+$(call define_crate,dylib,util,util.rs,)
 
 all: $(call cratefile_dylib,llvmshim)
 $(call cratefile_dylib,llvmshim): llvmshim.cpp llvmshim.rs Makefile
@@ -39,7 +44,7 @@ $(call cratefile_dylib,llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
 
-$(eval $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim))
+$(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
 
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
@@ -63,10 +68,11 @@ externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust
 bindgen = (cat fmt/bind_defs.rs; externals/rust-bindgen/bindgen -allow-bitfields $(1) $< | tail -n +4 | sed 's/Struct_//g') > $@
 fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/*
 	$(call bindgen,-match mach-o/ -Iexternals/mach-o)
-$(eval $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,))
+$(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,)
+$(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
 fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile
 	$(call bindgen,-match elf.h)
-$(eval $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,))
+$(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
