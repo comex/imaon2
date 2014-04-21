@@ -30,9 +30,6 @@ do-test-$$(name): test-$$(name)
 	./$$<
 
 test: do-test-$$(name)
-clean-$(name):
-	rm -f test-$$(name)
-clean: clean-$$(name)
 endef
 define_crate = $(eval $(define_crate_))
 
@@ -76,6 +73,7 @@ $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
+	rm -f test-*
 
 distclean: clean
 	rm -f tables/llvm-tblgen
