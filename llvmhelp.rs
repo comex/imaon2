@@ -1,5 +1,5 @@
 // imaon2 note: Adapted from rustc's middle/trans/{builder,common,type_}.rs (presently from revision 871e5708106c5ee3ad8d2bd6ec68fca60428b77e).
-#[feature(struct_variant, macro_rules)];
+#![feature(struct_variant, macro_rules)]
 
 // Copyright 2013 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
@@ -12,16 +12,17 @@
 // except according to those terms.
 
 extern crate rustc;
+extern crate libc;
 extern crate collections;
 extern crate llvmshim;
 
 use rustc::lib;
 use rustc::lib::llvm::llvm;
 use rustc::lib::llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect};
-use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef, Use_opaque};
+use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef};
 use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, TypeKind};
 
-use std::libc::{c_uint, c_longlong, c_ulonglong, c_char};
+use libc::{c_uint, c_longlong, c_ulonglong, c_char};
 use std::vec::Vec;
 use std::cast;
 use std::kinds::marker;
@@ -1046,7 +1047,7 @@ impl<'f> Builder<'f> {
         let alignstack = if alignstack { lib::llvm::True }
                          else          { lib::llvm::False };
 
-        let argtys = inputs.map(|v| v.ty());
+        let argtys: ~[_] = inputs.iter().map(|v| v.ty()).collect();
 
         let fty = Type::func(argtys, output);
         unsafe {

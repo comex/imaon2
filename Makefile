@@ -65,17 +65,17 @@ externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust
 	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
 
 bindgen = (cat fmt/bind_defs.rs; externals/rust-bindgen/bindgen -allow-bitfields $(1) $< | tail -n +4 | sed 's/Struct_//g') > $@
-fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/*
+fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen
 	$(call bindgen,-match mach-o/ -Iexternals/mach-o)
 $(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,)
 $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
-fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile
+fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen
 	$(call bindgen,-match elf.h)
 $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
-	rm -f test-*
+	rm -f test-* fmt/*_bind.rs
 
 distclean: clean
 	rm -f tables/llvm-tblgen

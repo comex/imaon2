@@ -1,8 +1,9 @@
 // This file is public domain.
 
 extern crate rustc;
+extern crate libc;
 use rustc::lib::llvm::{UseRef, ValueRef, Use_opaque};
-use std::libc::c_uint;
+use libc::c_uint;
 
 extern {
     pub fn LLVMShimReplaceUse(use_: UseRef, repl: ValueRef);

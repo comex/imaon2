@@ -1,5 +1,6 @@
-#[feature(macro_rules)];
-#[allow(non_camel_case_types)];
+#![feature(macro_rules)]
+#![allow(non_camel_case_types)]
+
 use arch::Arch;
 pub mod arch;
 
