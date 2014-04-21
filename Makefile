@@ -7,6 +7,8 @@ ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
 cratefile_dylib = lib$(1).dylib
 cratefile_bin = $(1)
 
+all:
+
 define define_crate_
 kind := $(1)
 name := $(2)
