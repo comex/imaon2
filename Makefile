@@ -61,17 +61,18 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
+$(call define_crate,dylib,util_syntax,util_syntax.rs,)
+
 externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust-bindgen/*.rs
 	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
 
-bindgen = (cat fmt/bind_defs.rs; externals/rust-bindgen/bindgen -allow-bitfields $(1) $< | tail -n +4 | sed 's/Struct_//g') > $@
 fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen
-	$(call bindgen,-match mach-o/ -Iexternals/mach-o)
+	fmt/bindgen.sh "$<" "$@" -match mach-o/ -Iexternals/mach-o
 $(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,)
-$(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
+$(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util util_syntax)
 fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen
-	$(call bindgen,-match elf.h)
-$(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec)
+	fmt/bindgen.sh "$<" "$@" -match mach-o/ -Iexternals/mach-o
+$(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec util util_syntax)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
