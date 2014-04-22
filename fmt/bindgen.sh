@@ -8,5 +8,5 @@ shift 2
     externals/rust-bindgen/bindgen -allow-bitfields "$@" "$in" |
         tail -n +4 |
         sed 's/Struct_//g' |
-        awk '/pub struct/ { print "#[deriving_swappable]" } print '
+        awk '/pub struct/ { s=1; print "deriving_swap!(" } {print} s && /^}/ { print ")"; s=0 }'
 ) > "$out"

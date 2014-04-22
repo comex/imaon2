@@ -88,3 +88,42 @@ impl Swap for i8 {
     fn bswap(&mut self) {}
 }
 
+// This could be prettier as an attribute / syntax extension, but this is drastically less verbose.
+#[macro_escape]
+#[macro_export]
+macro_rules! swap_if_necessary(
+    ($field:ident, [$basetyp:ident, .. 16]) => ();
+    ($field:ident, $typ:ty) => ( self.$field.bswap(); );
+)
+#[macro_escape]
+#[macro_export]
+macro_rules! _just(
+    ($a:tt) => ($a)
+)
+#[macro_escape]
+#[macro_export]
+macro_rules! deriving_swap(
+    (
+        pub struct $name:ident {
+            $(
+                pub $field:ident: $typ:tt
+            ),+
+            $(,)*
+        }
+        $($etc:item)*
+    ) => (
+        pub struct $name {
+            $(
+                pub $field: _just!( $typ)
+            ),+
+        }
+        impl util::Swap for $name {
+            fn bswap(&mut self) {
+                $(
+                    swap_if_necessary!($field, $typ)
+                )+
+            }
+        }
+        $($etc)*
+    )
+)
