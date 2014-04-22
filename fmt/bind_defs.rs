@@ -1,9 +1,8 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
-#[phase(syntax)]
-#[path="../util_syntax.rs"]
-extern mod util_syntax;
-mod util;
+#[phase(link, syntax)]
+#[path="../util.rs"]
+extern crate util;
 pub type int64_t  = i64;
 pub type int32_t  = i32;
 pub type int16_t  = i16;
