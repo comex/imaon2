@@ -61,7 +61,7 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-#$(call define_crate,dylib,util_syntax,util_syntax.rs,)
+$(call define_crate,dylib,util_syntax,util_syntax.rs,)
 
 externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust-bindgen/*.rs
 	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
