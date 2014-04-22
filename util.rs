@@ -2,11 +2,12 @@
 
 use std::kinds::Copy;
 use std::mem::{size_of, uninit};
-use std::ptr::copy_memory;
+use std::ptr::{copy_memory, zero_memory};
 use std::cast::transmute;
 use std::rc::Rc;
 use std::cell::Cell;
 use std::intrinsics;
+use std::default::Default;
 
 // Don't use this.  Use a real macro
 
@@ -67,6 +68,10 @@ pub enum Endian {
     LittleEndian,
 }
 
+impl Default for Endian {
+    fn default() -> Endian { BigEndian }
+}
+
 pub trait Swap {
     fn bswap(&mut self);
     fn bswap_from(&mut self, end: Endian) {
@@ -99,20 +104,47 @@ impl Swap for i8 {
 }
 
 // dumb
-macro_rules! impl_for_array(($x:ty) => (
-    impl<T> Swap for $x {
+macro_rules! impl_for_array(($cnt:expr) => (
+    impl<T> Swap for [T, ..$cnt] {
         fn bswap(&mut self) {}
     }
 ))
-impl_for_array!([T, ..1])
-impl_for_array!([T, ..16])
-impl_for_array!(Option<T>)
+impl_for_array!(1)
+impl_for_array!(2)
+impl_for_array!(4)
+impl_for_array!(16)
+impl<T> Swap for Option<T> {
+    fn bswap(&mut self) {}
+}
 
-// This could be prettier as an attribute / syntax extension, but this is drastically less ugly.
+pub unsafe fn zeroed_t<T>() -> T {
+    let mut me : T = uninit();
+    zero_memory(&mut me, size_of::<T>());
+    me
+}
+
+// stupid stupid stupid stupid stupid
+
+#[macro_escape]
+#[macro_export]
+macro_rules! do_from_twin(
+    ({}, $name:ident, $me:ident, $b:expr) => ();
+    ({$fst:ident}, $name:ident, $me:ident, $b:expr) => (
+        impl $name {
+            pub fn from_twin(tw: $fst) -> $name {
+                let mut $me: $name = Default::default();
+                { $b }
+            }
+        }
+    )
+)
+
+// The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
 #[macro_escape]
 #[macro_export]
 macro_rules! deriving_swap(
     (
+        $(twin $twin:ident)*
         pub struct $name:ident {
             $(
                 pub $field:ident: $typ:ty
@@ -133,6 +165,15 @@ macro_rules! deriving_swap(
                 )+
             }
         }
+        impl Default for $name {
+            fn default() -> $name {
+                unsafe { zeroed_t() }
+            }
+        }
+        do_from_twin!({$($twin),*}, $name, me, {
+            $(me.$field = tw.$field as $typ;)*
+        })
         $($etc)*
     )
 )
+

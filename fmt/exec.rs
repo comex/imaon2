@@ -1,7 +1,11 @@
 #![feature(macro_rules)]
 #![allow(non_camel_case_types)]
 
+extern crate util;
+extern crate collections;
 use arch::Arch;
+use collections::hashmap::HashMap;
+use std::vec::Vec;
 pub mod arch;
 
 pub type vma = u64;
@@ -11,14 +15,14 @@ pub type vma = u64;
 // and alignment, Mach-O segments have names)
 
 pub struct Segment {
-    addr: vma,
-    offset: u64,
-    size: u64,
-    name: Option<~str>,
-    r: bool,
-    w: bool,
-    x: bool,
-    section_segment_idx: Option<uint>,
+    pub addr: vma,
+    pub offset: u64,
+    pub size: u64,
+    pub name: Option<~str>,
+    pub r: bool,
+    pub w: bool,
+    pub x: bool,
+    pub section_segment_idx: Option<uint>,
 }
 
 pub static default_segment : Segment = Segment {
@@ -32,32 +36,22 @@ pub static default_segment : Segment = Segment {
     section_segment_idx: None,
 };
 
+#[deriving(Default)]
 pub struct ExecBase {
-    arch: Arch,
-    subarch: Option<~str>,
-    segments: ~[Segment],
-    sections: ~[Segment],
+    pub arch: Arch,
+    pub endian: util::Endian,
+    pub subarch: Option<~str>,
+    pub segments: Vec<Segment>,
+    pub sections: Vec<Segment>,
 }
 
-#[macro_export]
-macro_rules! ty_branch {
-    ($cond:expr, $tyname:ident, $true_ty:ty, $false_ty:ty, $expr:expr) => {
-        if $cond {
-            type $tyname = $true_ty;
-            $expr
-        } else {
-            type $tyname = $false_ty;
-            $expr
-        }
-    }
+pub trait Exec {
+    fn get_exec_base<'a>(&'a self) -> &'a ExecBase;
 }
 
-#[test]
-fn test_ty_branch() {
-    for i in range(0, 2) {
-        ty_branch!(i == 1, iXX, i32, i64, {
-            assert_eq!(i, (i as iXX) as int);
-        })
-    }
+pub trait ExecProber {
+    fn probe(&self, buf: &[u8]) -> bool;
+    // May fail.
+    fn create(&self, buf: &[u8], settings: &HashMap<&str, &str>) -> ~Exec;
 }
 

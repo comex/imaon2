@@ -1,7 +1,8 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
-use util::Swap;
+use util::{Swap, zeroed_t};
+use std::default::Default;
 pub type int64_t  = i64;
 pub type int32_t  = i32;
 pub type int16_t  = i16;
@@ -17,9 +18,5 @@ pub type c_uchar  = u8;
 pub type c_uint   = u32;
 pub type c_int    = i32;
 pub type c_ulong  = u32;
-
-pub type cpu_type_t    = i32;
-pub type cpu_subtype_t = i32;
-pub type vm_prot_t     = i32;
 
 pub type c_void = u8;

@@ -24,7 +24,7 @@ endif
 
 all: $$(cf)
 
-test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile))
+test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
 	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
@@ -64,12 +64,12 @@ all: out-td
 externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust-bindgen/*.rs
 	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
 
-fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.sh
-	fmt/bindgen.sh "$<" "$@" -match mach-o/ -Iexternals/mach-o
-$(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,)
+fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
+	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
+$(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
-fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.sh
-	fmt/bindgen.sh "$<" "$@" -match mach-o/ -Iexternals/mach-o
+fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.py
+	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec util)
 
 clean:
