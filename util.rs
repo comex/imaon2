@@ -10,11 +10,12 @@ use std::intrinsics;
 
 // Don't use this.  Use a real macro
 
-pub fn copy_from_slice<T: Copy>(slice: &[u8]) -> T {
+pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninit();
         copy_memory(&mut t, transmute(slice.as_ptr()), size_of::<T>());
+        t.bswap_from(end);
         t
     }
 }
@@ -60,8 +61,17 @@ pub fn bswap16(x: u16) -> u16 {
     unsafe { intrinsics::bswap16(x) }
 }
 
+#[deriving(Show, Eq)]
+pub enum Endian {
+    BigEndian,
+    LittleEndian,
+}
+
 pub trait Swap {
     fn bswap(&mut self);
+    fn bswap_from(&mut self, end: Endian) {
+        if end == BigEndian { self.bswap() }
+    }
 }
 
 macro_rules! impl_swap(
@@ -88,6 +98,7 @@ impl Swap for i8 {
     fn bswap(&mut self) {}
 }
 
+// dumb
 macro_rules! impl_for_array(($x:ty) => (
     impl<T> Swap for $x {
         fn bswap(&mut self) {}
