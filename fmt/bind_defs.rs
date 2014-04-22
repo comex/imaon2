@@ -1,8 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
-#[phase(link, syntax)]
-#[path="../util.rs"]
-extern crate util;
+
+use util::Swap;
 pub type int64_t  = i64;
 pub type int32_t  = i32;
 pub type int16_t  = i16;
@@ -24,5 +23,3 @@ pub type cpu_subtype_t = i32;
 pub type vm_prot_t     = i32;
 
 pub type c_void = u8;
-
-
