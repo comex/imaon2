@@ -70,9 +70,11 @@ impl MachO {
 
     fn parse_load_commands(&mut self, buf: &[u8], mut lc_off: uint) {
         let end = self.eb.endian;
+        let mut segi = 0;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
             let data = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
+            let this_lc_off = lc_off;
             let do_segment = |is64: bool| {
                 branch!(if is64 {
                     type segment_command_x = segment_command_64;|
@@ -81,9 +83,40 @@ impl MachO {
                     type segment_command_x = segment_command;|
                     type section_x = section;
                 } then {
-                    let sc: segment_command_x = util::copy_from_slice(data.slice_to(size_of::<segment_command_x>()), end);
-
+                    let mut off = size_of::<segment_command_x>();
+                    let sc: segment_command_x = util::copy_from_slice(data.slice_to(off), end);
+                    let ip = sc.initprot.to_ui();
+                    let segprot = exec::Prot {
+                        r: (ip & VM_PROT_READ) != 0,
+                        w: (ip & VM_PROT_WRITE) != 0,
+                        x: (ip & VM_PROT_EXECUTE) != 0,
+                    };
+                    self.eb.segments.push(exec::Segment {
+                        vmaddr: exec::VMA(sc.vmaddr as u64),
+                        vmsize: sc.vmsize as u64,
+                        fileoff: sc.fileoff as u64,
+                        filesize: sc.filesize as u64,
+                        name: Some(util::from_cstr(sc.segname)),
+                        prot: segprot,
+                        section_segment_idx: None,
+                        private: this_lc_off,
+                    });
+                    for _ in range(0, sc.nsects) {
+                        let s: section_x = util::copy_from_slice(data.slice(off, off + size_of::<section_x>()), end);
+                        self.eb.sections.push(exec::Segment {
+                            vmaddr: exec::VMA(s.addr as u64),
+                            vmsize: s.size as u64,
+                            fileoff: s.offset as u64,
+                            filesize: s.size as u64,
+                            name: Some(util::from_cstr(s.sectname)),
+                            prot: segprot,
+                            section_segment_idx: None,
+                            private: this_lc_off + off,
+                        });
+                        off += size_of::<section_x>();
+                    }
                 })
+                segi += 1;
             };
             match lc.cmd.to_ui() {
                 LC_SEGMENT => do_segment(false),

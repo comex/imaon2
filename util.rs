@@ -1,5 +1,9 @@
 #![feature(macro_rules)]
 
+extern crate native;
+extern crate libc;
+extern crate getopts;
+
 use std::kinds::Copy;
 use std::mem::{size_of, uninit};
 use std::ptr::{copy_memory, zero_memory};
@@ -8,8 +12,9 @@ use std::rc::Rc;
 use std::cell::Cell;
 use std::intrinsics;
 use std::default::Default;
-
-// Don't use this.  Use a real macro
+use native::io::file;
+use std::os::MemoryMap;
+use std::rt::rtio::RtioFileStream;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
@@ -194,4 +199,61 @@ impl<T : ToPrimitive> ToUi for T {
     fn to_ui(&self) -> uint {
         self.to_uint().unwrap()
     }
+}
+
+pub fn from_cstr(chs: &[i8]) -> ~str {
+    let chs_: &[char] = unsafe { transmute(chs) };
+    let s = std::str::from_chars(chs_);
+    match s.find('\0') {
+        None => s,
+        Some(i) => s.slice_to(i).to_owned()
+    }
+}
+
+pub struct SafeMMap<'a> {
+    mm: MemoryMap,
+}
+
+impl<'a> SafeMMap<'a> {
+    pub fn new(fd: &'a mut file::FileDesc) -> SafeMMap<'a> {
+        let oldpos = fd.tell().unwrap();
+        fd.seek(0, std::io::SeekEnd).unwrap();
+        let size = fd.tell().unwrap();
+        fd.seek(oldpos as i64, std::io::SeekSet).unwrap();
+        let cfd = fd.fd();
+        let size = std::cmp::max(size, 0x1000);
+        let mm = MemoryMap::new(size.to_ui(), &[
+            std::os::MapReadable,
+            std::os::MapWritable,
+            std::os::MapFd(cfd),
+        ]).unwrap();
+        SafeMMap { mm: mm }
+    }
+    pub fn get<'b>(&'b self) -> &'b [u8] {
+        unsafe {
+            std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice))
+        }
+    }
+    pub fn get_mut<'b>(&'b mut self) -> &'b mut [u8] {
+        unsafe {
+            std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice))
+        }
+    }
+}
+
+pub fn do_getopts(top: &str, expected_free: uint, optgrps: &[getopts::OptGroup]) -> getopts::Matches {
+    match getopts::getopts(std::os::args().tail().as_slice(), optgrps) {
+        Ok(m) => if !m.opt_present("help") && m.free.len() == expected_free
+                 { m } else { usage(top, optgrps) },
+        _ => usage(top, optgrps),
+    }
+}
+
+pub fn usage(top: &str, optgrps: &[getopts::OptGroup]) -> ! {
+    println!("{}", getopts::usage(top, optgrps));
+    exit();
+}
+
+pub fn exit() -> ! {
+    unsafe { libc::exit(1) }
 }

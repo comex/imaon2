@@ -8,33 +8,31 @@ use collections::hashmap::HashMap;
 use std::vec::Vec;
 pub mod arch;
 
-pub type vma = u64;
+#[deriving(Default)]
+pub struct VMA(pub u64);
+
+#[deriving(Default)]
+pub struct Prot {
+    pub r: bool,
+    pub w: bool,
+    pub x: bool,
+}
 
 // This struct is used for both segments and sections, because the file
 // formats often have redundant fields.  (e.g. ELF sections have protection
 // and alignment, Mach-O segments have names)
 
+#[deriving(Default)]
 pub struct Segment {
-    pub addr: vma,
-    pub offset: u64,
-    pub size: u64,
+    pub vmaddr: VMA,
+    pub vmsize: u64,
+    pub fileoff: u64,
+    pub filesize: u64,
     pub name: Option<~str>,
-    pub r: bool,
-    pub w: bool,
-    pub x: bool,
+    pub prot: Prot,
     pub section_segment_idx: Option<uint>,
+    pub private: uint,
 }
-
-pub static default_segment : Segment = Segment {
-    addr: 0,
-    offset: 0,
-    size: 0,
-    name: None,
-    r: false,
-    w: false,
-    x: false,
-    section_segment_idx: None,
-};
 
 #[deriving(Default)]
 pub struct ExecBase {

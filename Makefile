@@ -15,16 +15,17 @@ name := $(2)
 cf := $$(call cratefile_$$(kind),$$(name))
 sources := $(3)
 deps := $(4)
+cratefile-$$(name) := $$(cf)
 
-$$(cf): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
-	$(RUSTC) --crate-type $$(kind) $$<
+$$(cf): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
+	$(RUSTC) --crate-type $(1) $$<
 ifneq ($$(kind),bin)
 	ln -nfs lib$(2)-* $$@
 endif
 
 all: $$(cf)
 
-test-$$(name): $$(sources) Makefile $$(foreach 1,$$(deps),$$(cratefile_$$(kind)))
+test-$$(name): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
 	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
@@ -37,8 +38,9 @@ define_crate = $(eval $(define_crate_))
 
 $(call define_crate,dylib,util,util.rs,)
 
-all: $(call cratefile_dylib,llvmshim)
-$(call cratefile_dylib,llvmshim): llvmshim.cpp llvmshim.rs Makefile
+cratefile-llvmshim := $(call cratefile_dylib,llvmshim)
+all: $(cratefile-llvmshim)
+$(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
 	ln -nfs libllvmshim-* $@
@@ -71,6 +73,8 @@ $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
 fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec util)
+
+$(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-* externals/rust-bindgen/bindgen
