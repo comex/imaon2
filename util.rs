@@ -123,22 +123,6 @@ pub unsafe fn zeroed_t<T>() -> T {
     me
 }
 
-// stupid stupid stupid stupid stupid
-
-#[macro_escape]
-#[macro_export]
-macro_rules! do_from_twin(
-    ({}, $name:ident, $me:ident, $b:expr) => ();
-    ({$fst:ident}, $name:ident, $me:ident, $b:expr) => (
-        impl $name {
-            pub fn from_twin(tw: $fst) -> $name {
-                let mut $me: $name = Default::default();
-                { $b }
-            }
-        }
-    )
-)
-
 // The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
 #[macro_escape]
 #[macro_export]
@@ -170,10 +154,44 @@ macro_rules! deriving_swap(
                 unsafe { zeroed_t() }
             }
         }
-        do_from_twin!({$($twin),*}, $name, me, {
-            $(me.$field = tw.$field as $typ;)*
-        })
         $($etc)*
     )
 )
 
+#[macro_escape]
+#[macro_export]
+macro_rules! branch(
+    (if $cond:expr { $($a:stmt)|* } else { $($b:stmt)|* } then $c:expr) => (
+        if $cond {
+            $($a);*; $c
+        } else {
+            $($b);*; $c
+        }
+    )
+)
+
+#[test]
+fn test_branch() {
+    for i in range(0, 2) {
+        branch!(if i == 1 {
+            // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
+            type A = int;|
+            let (b, c) = (7, 8)
+        } else {
+            type A = uint;|
+            let (b, c) = (8, 9)
+        } then {
+            println!("{}", (b + c) as A);
+        })
+    }
+}
+
+
+pub trait ToUi {
+    fn to_ui(&self) -> uint;
+}
+impl<T : ToPrimitive> ToUi for T {
+    fn to_ui(&self) -> uint {
+        self.to_uint().unwrap()
+    }
+}

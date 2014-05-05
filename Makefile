@@ -73,8 +73,8 @@ fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bi
 $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec util)
 
 clean:
-	rm -rf *.dylib *.so *.o *.dSYM tables/out-*
+	rm -rf *.dylib *.so *.o *.dSYM tables/out-* externals/rust-bindgen/bindgen
 	rm -f test-* fmt/*_bind.rs
 
-distclean: clean
+extraclean: clean
 	rm -f tables/llvm-tblgen

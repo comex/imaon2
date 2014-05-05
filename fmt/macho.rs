@@ -1,9 +1,11 @@
 #![feature(phase)]
 #![feature(globs)]
+#![allow(non_camel_case_types)]
 #[phase(link, syntax)]
 extern crate util;
 extern crate exec;
 extern crate collections;
+use util::ToUi;
 use std::default::Default;
 use collections::HashMap;
 use std::vec::Vec;
@@ -53,7 +55,7 @@ impl MachO {
     }
 
     fn parse_header(&mut self) {
-        self.eb.arch = match self.mh.cputype.to_uint().unwrap() {
+        self.eb.arch = match self.mh.cputype.to_ui() {
             CPU_TYPE_X86 => arch::X86,
             CPU_TYPE_X86_64 => arch::X86_64,
             CPU_TYPE_ARM => arch::ARM,
@@ -67,40 +69,30 @@ impl MachO {
     }
 
     fn parse_load_commands(&mut self, buf: &[u8], mut lc_off: uint) {
-        let end = self.me.endian;
-        for i in range(0, self.mh.ncmds - 1) {
+        let end = self.eb.endian;
+        for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
-            let data = buf.slice(lc_off, lc_off + lc.cmdsize);
+            let data = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
             let do_segment = |is64: bool| {
-                let segsize; let sectsize;
-                let sc: segment_command_64;
-                if is64 {
-                    segsize = size_of::<segment_command_64>;
-                    sectsize = size_of::<section_64>;
+                branch!(if is64 {
+                    type segment_command_x = segment_command_64;|
+                    type section_x = section_64;
                 } else {
-                    segsize = size_of::<segment_command>;
-                    sectsize = size_of::<section>;
-                }
-                /*
-                let sc = sbranch!(data.slice_to(segsize), segment_command_64, segment_command, (cmd, cmdsize, segname, vmaddr, vmsize, 
-                    sc = util::copy_from_slice(data.slice_to(segsize));
-                } else {
-                    let sc32 = util::copy_from_slice(data.slice_to(segsize));
-                    sc = struct_conv!(segment_command_64, segment_command, 
+                    type segment_command_x = segment_command;|
+                    type section_x = section;
+                } then {
+                    let sc: segment_command_x = util::copy_from_slice(data.slice_to(size_of::<segment_command_x>()), end);
 
-                }
-                    size_of::<segment_command>()), end);
-                    
-                */
+                })
             };
-            match lc.cmd.to_uint().unwrap() {
+            match lc.cmd.to_ui() {
                 LC_SEGMENT => do_segment(false),
                 LC_SEGMENT_64 => do_segment(true),
 
 
                 _ => ()
             }
-            lc_off += lc.cmdsize;
+            lc_off += lc.cmdsize.to_ui();
         }
     }
 }

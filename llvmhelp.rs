@@ -18,7 +18,7 @@ extern crate llvmshim;
 
 use rustc::lib;
 use rustc::lib::llvm::llvm;
-use rustc::lib::llvm::{CallConv, AtomicBinOp, AtomicOrdering, AsmDialect};
+use rustc::lib::llvm::{CallConv, AtomicOrdering, AsmDialect};
 use rustc::lib::llvm::{ContextRef, ValueRef, BasicBlockRef, BuilderRef, ModuleRef, TypeRef, UseRef};
 use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, TypeKind};
 
@@ -1183,27 +1183,6 @@ impl<'f> Builder<'f> {
         }
     }
 
-    // Atomic Operations
-    pub fn atomic_cmpxchg(&self, dst: Value<'f>,
-                         cmp: Value<'f>, src: Value<'f>,
-                         order: AtomicOrdering) -> Value<'f> {
-        unsafe {
-            Value::new(llvm::LLVMBuildAtomicCmpXchg(self.llbuilder, *dst, *cmp, *src, order))
-        }
-    }
-    pub fn atomic_rmw(&self, op: AtomicBinOp,
-                      dst: Value<'f>, src: Value<'f>,
-                      order: AtomicOrdering) -> Value<'f> {
-        unsafe {
-            Value::new(llvm::LLVMBuildAtomicRMW(self.llbuilder, op, *dst, *src, order, False))
-        }
-    }
-
-    pub fn atomic_fence(&self, order: AtomicOrdering) {
-        unsafe {
-            llvm::LLVMBuildAtomicFence(self.llbuilder, order)
-        }
-    }
 }
 
 #[cfg(test)]
