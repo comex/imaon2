@@ -1,10 +1,11 @@
 # This Makefile is public domain.
 
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -O -C prefer-dynamic -L.
+RUSTC := rustc -g -O -C prefer-dynamic -L.
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
 cratefile_dylib = lib$(1).dylib
+cratematch_dylib = lib$(1)-*.dylib
 cratefile_bin = $(1)
 
 all:
@@ -20,7 +21,7 @@ cratefile-$$(name) := $$(cf)
 $$(cf): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
 	$(RUSTC) --crate-type $(1) $$<
 ifneq ($$(kind),bin)
-	ln -nfs lib$(2)-* $$@
+	ln -nfs $$(call cratematch_$(1),$(2)) $$@
 endif
 
 all: $$(cf)
@@ -43,7 +44,7 @@ all: $(cratefile-llvmshim)
 $(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=llvmshim_cpp.o
-	ln -nfs libllvmshim-* $@
+	ln -nfs libllvmshim-*.dylib $@
 
 $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
 

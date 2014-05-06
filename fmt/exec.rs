@@ -4,8 +4,9 @@
 extern crate util;
 extern crate collections;
 use arch::Arch;
-use collections::hashmap::HashMap;
+//use collections::hashmap::HashMap;
 use std::vec::Vec;
+use std::any::Any;
 pub mod arch;
 
 #[deriving(Default)]
@@ -48,8 +49,25 @@ pub trait Exec {
 }
 
 pub trait ExecProber {
-    fn probe(&self, buf: &[u8]) -> bool;
+    fn name() -> &str;
+    fn probe(&self, buf: &[u8]) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, buf: &[u8], settings: &HashMap<&str, &str>) -> ~Exec;
+    fn create(&self, buf: &[u8], pr: &ProbeResult, args: &str) -> ~Exec;
+}
+
+pub struct ProbeResult {
+    pub desc: ~str,
+    pub arch: Arch,
+    pub fmtdata: ~Any,
+}
+
+pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: &[u8]) -> Vec<(&'static ExecProber, ProbeResult)> {
+    let mut result = vec!();
+    for epp in eps.iter() {
+        for pr in epp.probe(buf).move_iter() {
+            result.push((*epp, pr))
+        }
+    }
+    result
 }
 

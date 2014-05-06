@@ -20,7 +20,7 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninit();
-        copy_memory(&mut t, transmute(slice.as_ptr()), size_of::<T>());
+        copy_memory(&mut t, transmute(slice.as_ptr()), 1);
         t.bswap_from(end);
         t
     }
