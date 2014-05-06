@@ -1,6 +1,8 @@
 #![feature(macro_rules)]
 #![allow(non_camel_case_types)]
+#![feature(phase)]
 
+#[phase(syntax, link)]
 extern crate util;
 extern crate collections;
 use arch::Arch;
@@ -9,8 +11,11 @@ use std::vec::Vec;
 use std::any::Any;
 pub mod arch;
 
-#[deriving(Default)]
+#[deriving(Default, Copy, Show, Eq, Ord)]
 pub struct VMA(pub u64);
+
+delegate_arith!(VMA, Sub, sub, u64)
+delegate_arith!(VMA, Add, add, u64)
 
 #[deriving(Default)]
 pub struct Prot {

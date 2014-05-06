@@ -257,3 +257,14 @@ pub fn usage(top: &str, optgrps: &[getopts::OptGroup]) -> ! {
 pub fn exit() -> ! {
     unsafe { libc::exit(1) }
 }
+
+#[macro_escape]
+#[macro_export]
+macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
+    impl $traitname<$oty, $stru> for $stru {
+        fn $methname(&self, rhs: &$oty) -> $stru {
+            let $stru(a) = *self;
+            $stru(a.$methname(rhs))
+        }
+    }
+))
