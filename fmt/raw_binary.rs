@@ -14,7 +14,8 @@ impl exec::Exec for RawBinary {
 }
 
 impl RawBinary {
-    pub fn new(len: uint) -> RawBinary {
+    pub fn new(len: uint, _args: &str) -> RawBinary {
+        // todo: parse args
         let seg = exec::Segment {
             vmaddr: exec::VMA(0),
             vmsize: len as u64,
@@ -45,13 +46,13 @@ impl exec::ExecProber for RawProber {
         vec!(exec::ProbeResult {
             desc: "raw".to_owned(),
             arch: arch::UnknownArch,
-            fmtdata: ~0 as ~std::any::Any,
             likely: false,
+            cmd: "".to_owned(),
         })
     }
     fn create(&self, buf: &[u8], pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
         let _ = pr; let _ = args;
-        ~RawBinary::new(buf.len()) as ~exec::Exec
+        ~RawBinary::new(buf.len(), args) as ~exec::Exec
     }
 }
 

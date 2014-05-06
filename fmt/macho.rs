@@ -214,8 +214,8 @@ impl exec::ExecProber for MachOProber {
             Some(m) => vec!(exec::ProbeResult {
                 desc: m.desc(),
                 arch: m.eb.arch,
-                fmtdata: ~0 as ~std::any::Any,
                 likely: true,
+                cmd: "".to_owned(),
             }),
             None => vec!(),
         }

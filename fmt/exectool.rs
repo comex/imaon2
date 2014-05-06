@@ -27,10 +27,14 @@ fn main() {
         util::errln(format!("open {}: no formats were likely", filename));
         util::exit();
     }
-    // TODO: fuck this shit, PR should be stringly typed so that alternatives can be accessed from command line
     for &(ref ep, ref pr) in results.iter() {
+        let name = if pr.cmd.len() != 0 {
+            format!("{} {}", ep.name(), pr.cmd)
+        } else {
+            ep.name().to_owned()
+        };
         println!("? [{}] {}{}",
-            ep.name(),
+            name,
             pr.desc,
             if pr.likely { "" } else { " (unlikely)" },
         ); 

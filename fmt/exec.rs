@@ -64,7 +64,7 @@ pub struct ProbeResult {
     pub desc: ~str,
     pub arch: Arch,
     pub likely: bool,
-    pub fmtdata: ~Any,
+    pub cmd: ~str,
 }
 
 pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: &[u8]) -> Vec<(&'static ExecProber, ProbeResult)> {
