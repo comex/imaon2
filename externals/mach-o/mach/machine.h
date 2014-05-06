@@ -314,6 +314,10 @@ typedef int	cpu_threadtype_t;
 #define CPU_SUBTYPE_ARM_V7M		((cpu_subtype_t) 15) /* Not meant to be run under xnu */
 #define CPU_SUBTYPE_ARM_V7EM		((cpu_subtype_t) 16) /* Not meant to be run under xnu */
 
+#define CPU_SUBTYPE_ARM_V8 ((cpu_subtype_t) 13)
+#define CPU_SUBTYPE_ARM64_ALL ((cpu_subtype_t) 0)
+#define CPU_SUBTYPE_ARM64_V8 ((cpu_subtype_t) 1)
+
 #endif /* !__ASSEMBLER__ */
 
 /*

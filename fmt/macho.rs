@@ -31,23 +31,13 @@ impl exec::Exec for MachO {
     }
 }
 
-fn copy_from_slice<T: Copy + util::Swap>(slice: &[u8], end: util::Endian) -> T {
-    assert_eq!(slice.len(), size_of::<T>());
-    unsafe {
-        let mut t : T = std::mem::uninit();
-        std::ptr::copy_memory(&mut t, std::cast::transmute(slice.as_ptr()), 1);
-        t.bswap_from(end);
-        t
-    }
-}
-
 impl MachO {
     pub fn new(buf: &[u8], do_lcs: bool) -> Option<MachO> {
         let mut me: MachO = Default::default();
 
         let mut lc_off = size_of::<mach_header>();
         if buf.len() < lc_off { return None }
-        let magic: u32 = copy_from_slice(buf.slice_to(4), util::BigEndian);
+        let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
         let is64; let end;
         match magic {
             0xfeedface => { end = util::BigEndian; is64 = false; }
@@ -58,7 +48,7 @@ impl MachO {
         }
         me.eb.endian = end;
         me.is64 = is64;
-        me.mh = copy_from_slice(buf.slice_to(lc_off), end);
+        me.mh = util::copy_from_slice(buf.slice_to(lc_off), end);
         // useless 'reserved' field
         if is64 { lc_off += 4; }
 
@@ -111,6 +101,8 @@ impl MachO {
             (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7F) => "armv7f",
             (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7S) => "armv7s",
             (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K) => "armv7k",
+            (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL) => "arm64",
+            (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8) => "arm64v8",
             (CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
             (CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
             _ => return None,
