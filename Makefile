@@ -71,11 +71,12 @@ fmt/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/*
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
 $(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,dylib,macho,fmt/macho.rs fmt/macho_bind.rs,exec util)
+$(call define_crate,dylib,raw_binary,fmt/raw_binary.rs,exec util)
 fmt/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,dylib,elf,fmt/elf.rs fmt/elf_bind.rs,exec util)
 
-$(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf)
+$(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 
 clean:
 	rm -rf *.dylib *.so *.o *.dSYM tables/out-* externals/rust-bindgen/bindgen

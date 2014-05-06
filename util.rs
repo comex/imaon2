@@ -258,6 +258,15 @@ pub fn exit() -> ! {
     unsafe { libc::exit(1) }
 }
 
+pub fn errlnb(s: &str) {
+    // who needs speed
+    std::io::stdio::stderr().write_line(s).unwrap();
+}
+
+pub fn errln(s: ~str) {
+    errlnb(s.as_slice())
+}
+
 #[macro_escape]
 #[macro_export]
 macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
@@ -268,3 +277,4 @@ macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $ot
         }
     }
 ))
+

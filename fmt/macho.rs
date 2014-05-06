@@ -172,7 +172,6 @@ impl MachO {
                         filesize: sc.filesize as u64,
                         name: Some(util::from_cstr(sc.segname)),
                         prot: segprot,
-                        section_segment_idx: None,
                         private: this_lc_off,
                     });
                     for _ in range(0, sc.nsects) {
@@ -184,7 +183,6 @@ impl MachO {
                             filesize: s.size as u64,
                             name: Some(util::from_cstr(s.sectname)),
                             prot: segprot,
-                            section_segment_idx: None,
                             private: this_lc_off + off,
                         });
                         off += size_of::<section_x>();
@@ -208,7 +206,7 @@ impl MachO {
 pub struct MachOProber;
 
 impl exec::ExecProber for MachOProber {
-    fn name() -> &str {
+    fn name(&self) -> &str {
         "macho"
     }
     fn probe(&self, buf: &[u8]) -> Vec<exec::ProbeResult> {
@@ -217,6 +215,7 @@ impl exec::ExecProber for MachOProber {
                 desc: m.desc(),
                 arch: m.eb.arch,
                 fmtdata: ~0 as ~std::any::Any,
+                likely: true,
             }),
             None => vec!(),
         }
