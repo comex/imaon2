@@ -18,9 +18,9 @@ fn main() {
         util::errln(format!("open {} failed: {}", filename, e.desc));
         util::exit();
     });
-    let mm = util::SafeMMap::new(&mut fp);
+    let mm = util::safe_mmap(&mut fp);
     let ap = execall::all_probers();
-    let results = exec::probe_all(&ap, mm.get());
+    let results = exec::probe_all(&ap, mm.buf);
     // if we specified one... else...
     let likely: Vec<&(&'static exec::ExecProber, exec::ProbeResult)> = results.iter().filter(|&&(_, ref pr)| pr.likely).collect();
     if likely.len() == 0 {

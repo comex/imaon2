@@ -210,36 +210,32 @@ pub fn from_cstr(chs: &[i8]) -> ~str {
     }
 }
 
-pub struct SafeMMap<'a> {
-    mm: MemoryMap,
+pub trait EmptyTrait {}
+impl EmptyTrait for MemoryMap {}
+
+pub struct MemoryContainer<'a> {
+    pub buf: &'a mut [u8],
+    owner: ~EmptyTrait,
 }
 
-impl<'a> SafeMMap<'a> {
-    pub fn new(fd: &'a mut file::FileDesc) -> SafeMMap<'a> {
-        let oldpos = fd.tell().unwrap();
-        fd.seek(0, std::io::SeekEnd).unwrap();
-        let size = fd.tell().unwrap();
-        fd.seek(oldpos as i64, std::io::SeekSet).unwrap();
-        let cfd = fd.fd();
-        let size = std::cmp::max(size, 0x1000);
-        let mm = MemoryMap::new(size.to_ui(), &[
-            std::os::MapReadable,
-            std::os::MapWritable,
-            std::os::MapFd(cfd),
-        ]).unwrap();
-        SafeMMap { mm: mm }
-    }
-    pub fn get<'b>(&'b self) -> &'b [u8] {
-        unsafe {
-            std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice))
-        }
-    }
-    pub fn get_mut<'b>(&'b mut self) -> &'b mut [u8] {
-        unsafe {
-            std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice))
-        }
+pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
+    let oldpos = fd.tell().unwrap();
+    fd.seek(0, std::io::SeekEnd).unwrap();
+    let size = fd.tell().unwrap();
+    fd.seek(oldpos as i64, std::io::SeekSet).unwrap();
+    let cfd = fd.fd();
+    let size = std::cmp::max(size, 0x1000);
+    let mm = MemoryMap::new(size.to_ui(), &[
+        std::os::MapReadable,
+        std::os::MapWritable,
+        std::os::MapFd(cfd),
+    ]).unwrap();
+    MemoryContainer {
+        buf: unsafe { std::slice::raw::mut_buf_as_slice(mm.data, mm.len, |slice| transmute(slice)) },
+        owner: ~mm as ~EmptyTrait,
     }
 }
+
 
 pub fn do_getopts(top: &str, expected_free: uint, optgrps: &[getopts::OptGroup]) -> getopts::Matches {
     match getopts::getopts(std::os::args().tail().as_slice(), optgrps) {

@@ -8,7 +8,6 @@ extern crate collections;
 use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
-use std::any::Any;
 pub mod arch;
 
 #[deriving(Default, Copy, Clone, Show, Eq, Ord)]
