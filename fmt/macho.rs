@@ -20,6 +20,7 @@ mod macho_bind;
 #[deriving(Default)]
 pub struct MachO {
     eb: exec::ExecBase,
+    buf: util::ArcMC,
     is64: bool,
     mh: mach_header,
     seg_cmds: Vec<uint>,
@@ -33,11 +34,11 @@ impl exec::Exec for MachO {
 }
 
 impl MachO {
-    pub fn new(buf: &[u8], do_lcs: bool) -> Option<MachO> {
-        let mut me: MachO = Default::default();
-
-        let mut lc_off = size_of::<mach_header>();
+    pub fn new(buf: util::ArcMC, do_lcs: bool) -> Option<MachO> {
         if buf.len() < lc_off { return None }
+        let mut me: MachO = Default::default();
+        me.buf = buf;
+        let mut lc_off = size_of::<mach_header>();
         let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
         let is64; let end;
         match magic {
@@ -55,7 +56,7 @@ impl MachO {
 
         me.parse_header();
         if do_lcs {
-            me.parse_load_commands(buf, lc_off);
+            me.parse_load_commands(lc_off);
         }
         Some(me)
     }
@@ -143,8 +144,9 @@ impl MachO {
         // we don't really care about cpusubtype but could fill it in
     }
 
-    fn parse_load_commands(&mut self, buf: &[u8], mut lc_off: uint) {
+    fn parse_load_commands(&mut self, mut lc_off: uint) {
         let end = self.eb.endian;
+        let buf = &self.buf;
         let mut segi = 0;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
@@ -210,7 +212,7 @@ impl exec::ExecProber for MachOProber {
     fn name(&self) -> &str {
         "macho"
     }
-    fn probe(&self, buf: &[u8]) -> Vec<exec::ProbeResult> {
+    fn probe(&self, buf: util::ArcMC) -> Vec<exec::ProbeResult> {
         match MachO::new(buf, false) {
             Some(m) => vec!(exec::ProbeResult {
                 desc: m.desc(),
@@ -221,7 +223,7 @@ impl exec::ExecProber for MachOProber {
             None => vec!(),
         }
     }
-    fn create(&self, buf: &[u8], pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
         let _ = pr; let _ = args;
         ~MachO::new(buf, true).unwrap() as ~exec::Exec
     }

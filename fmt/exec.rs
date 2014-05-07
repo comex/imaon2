@@ -8,6 +8,7 @@ extern crate collections;
 use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
+
 pub mod arch;
 
 #[deriving(Default, Copy, Clone, Show, Eq, Ord)]
@@ -54,9 +55,9 @@ pub trait Exec {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, buf: &[u8]) -> Vec<ProbeResult>;
+    fn probe(&self, buf: util::ArcMC) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, buf: &[u8], pr: &ProbeResult, args: &str) -> ~Exec;
+    fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> ~Exec;
 }
 
 pub struct ProbeResult {
@@ -66,10 +67,10 @@ pub struct ProbeResult {
     pub cmd: ~str,
 }
 
-pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: &[u8]) -> Vec<(&'static ExecProber, ProbeResult)> {
+pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: util::ArcMC) -> Vec<(&'static ExecProber, ProbeResult)> {
     let mut result = vec!();
     for epp in eps.iter() {
-        for pr in epp.probe(buf).move_iter() {
+        for pr in epp.probe(buf.clone()).move_iter() {
             result.push((*epp, pr))
         }
     }

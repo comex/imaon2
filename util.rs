@@ -3,18 +3,21 @@
 extern crate native;
 extern crate libc;
 extern crate getopts;
+extern crate sync;
 
 use std::kinds::Copy;
 use std::mem::{size_of, uninit};
 use std::ptr::{copy_memory, zero_memory};
 use std::cast::transmute;
 use std::rc::Rc;
+use sync::Arc;
 use std::cell::Cell;
 use std::intrinsics;
 use std::default::Default;
 use native::io::file;
 use std::os::MemoryMap;
 use std::rt::rtio::RtioFileStream;
+use std::ty::Unsafe;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
@@ -210,13 +213,25 @@ pub fn from_cstr(chs: &[i8]) -> ~str {
     }
 }
 
-pub trait EmptyTrait {}
-impl EmptyTrait for MemoryMap {}
+pub trait MemoryContainer : Send + Share + Deref<[u8]> + DerefMut<[u8]> {}
 
-pub struct MemoryContainer<'a> {
-    pub buf: &'a mut [u8],
-    owner: ~EmptyTrait,
+pub struct MMapMC {
+    mm: Unsafe<MemoryMap>,
 }
+
+impl Deref<[u8]> for MemoryContainer {
+    fn deref<'a>(&'a self) -> &'a &[u8] {
+        unsafe { std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice)) }
+    }
+}
+
+impl DerefMut<[u8]> for MemoryContainer {
+    fn deref<'a>(&'a mut self) -> &'a &[u8] {
+        unsafe { std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice)) }
+    }
+}
+
+pub type ArcMC = Arc<MemoryContainer>;
 
 pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
     let oldpos = fd.tell().unwrap();
@@ -230,10 +245,7 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
         std::os::MapWritable,
         std::os::MapFd(cfd),
     ]).unwrap();
-    MemoryContainer {
-        buf: unsafe { std::slice::raw::mut_buf_as_slice(mm.data, mm.len, |slice| transmute(slice)) },
-        owner: ~mm as ~EmptyTrait,
-    }
+    MMapMC { mm: mm }
 }
 
 
