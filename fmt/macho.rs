@@ -14,6 +14,7 @@ use std::mem::size_of;
 use macho_bind::*;
 use exec::arch;
 
+#[path="../out/macho_bind.rs"]
 mod macho_bind;
 
 #[deriving(Default)]
