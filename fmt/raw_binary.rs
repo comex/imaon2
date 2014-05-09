@@ -50,9 +50,9 @@ impl exec::ExecProber for RawProber {
             cmd: vec!(),
         })
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
         let _ = pr; let _ = args;
-        ~RawBinary::new(buf, args) as ~exec::Exec
+        box RawBinary::new(buf, args) as Box<exec::Exec>
     }
 }
 

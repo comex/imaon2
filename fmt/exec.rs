@@ -58,7 +58,7 @@ pub trait ExecProber {
     fn name(&self) -> &str;
     fn probe(&self, buf: util::ArcMC, eps: &Vec<&'static ExecProber>) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> ~Exec;
+    fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> Box<Exec>;
 }
 
 pub struct ProbeResult {

@@ -235,9 +235,9 @@ impl exec::ExecProber for MachOProber {
             None => vec!(),
         }
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
         let _ = pr; let _ = args;
-        ~MachO::new(buf, true).unwrap_or_else(|| fail!("not mach-o")) as ~exec::Exec
+        box MachO::new(buf, true).unwrap_or_else(|| fail!("not mach-o")) as Box<exec::Exec>
     }
 }
 
@@ -283,7 +283,7 @@ impl exec::ExecProber for FatMachOProber {
         }
         result
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
         unimplemented!();
     }
 }

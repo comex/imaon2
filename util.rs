@@ -226,7 +226,7 @@ pub trait MCOwner: Send+Share {
 pub struct MemoryContainer {
     buf: Unsafe<*u8>,
     len: uint,
-    owner: ~MCOwner:Send+Share,
+    owner: Box<MCOwner:Send+Share>,
 }
 
 pub type ArcMC = Arc<MemoryContainer>;
@@ -260,7 +260,7 @@ pub fn slice_mc(mc: ArcMC, start: uint, len: uint) -> MemoryContainer {
         fail!("slice_mc: bad slice");
     }
     let buf = mc.buf.value;
-    MemoryContainer { buf: unsafe { Unsafe::new(buf.offset(start as int)) }, len: len, owner: ~SliceMCOwner { base: mc } }
+    MemoryContainer { buf: unsafe { Unsafe::new(buf.offset(start as int)) }, len: len, owner: box SliceMCOwner { base: mc } }
 }
 
 pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
@@ -275,7 +275,7 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
         std::os::MapWritable,
         std::os::MapFd(cfd),
     ]).unwrap();
-    MemoryContainer { buf: Unsafe::new(mm.data as *u8), len: mm.len, owner: ~MMapMCOwner { mm: Unsafe::new(mm) } }
+    MemoryContainer { buf: Unsafe::new(mm.data as *u8), len: mm.len, owner: box MMapMCOwner { mm: Unsafe::new(mm) } }
 }
 
 
