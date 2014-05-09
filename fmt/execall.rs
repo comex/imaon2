@@ -9,9 +9,9 @@ pub fn all_probers() -> Vec<&'static ExecProber> {
     // unsafe due to https://github.com/mozilla/rust/issues/13887
     unsafe {
         return vec!(
-            cast::transmute(box self::macho::MachOProber as Box<ExecProber>),
-            cast::transmute(box self::macho::FatMachOProber as Box<ExecProber>),
-            cast::transmute(box self::raw_binary::RawProber as Box<ExecProber>),
+            cast::transmute(&self::macho::MachOProber    as &ExecProber),
+            cast::transmute(&self::macho::FatMachOProber as &ExecProber),
+            cast::transmute(&self::raw_binary::RawProber as &ExecProber),
         );
     }
 }
