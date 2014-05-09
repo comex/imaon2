@@ -10,6 +10,7 @@ pub fn all_probers() -> Vec<&'static ExecProber> {
     unsafe {
         return vec!(
             cast::transmute(~self::macho::MachOProber as ~ExecProber),
+            cast::transmute(~self::macho::FatMachOProber as ~ExecProber),
             cast::transmute(~self::raw_binary::RawProber as ~ExecProber),
         );
     }

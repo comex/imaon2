@@ -4,7 +4,6 @@ use exec::arch;
 
 pub struct RawBinary {
     eb: exec::ExecBase,
-    len: uint,
 }
 
 impl exec::Exec for RawBinary {
@@ -14,7 +13,8 @@ impl exec::Exec for RawBinary {
 }
 
 impl RawBinary {
-    pub fn new(len: uint, _args: &str) -> RawBinary {
+    pub fn new(buf: util::ArcMC, _args: &str) -> RawBinary {
+        let len = buf.get().len();
         // todo: parse args
         let seg = exec::Segment {
             vmaddr: exec::VMA(0),
@@ -26,12 +26,12 @@ impl RawBinary {
             private: 0,
         };
         RawBinary {
-            len: len,
             eb: exec::ExecBase {
                 arch: arch::UnknownArch,
                 endian: util::BigEndian,
                 segments: vec!(seg.clone()),
                 sections: vec!(seg.clone()),
+                buf: Some(buf),
             }
         }
     }
@@ -42,17 +42,17 @@ impl exec::ExecProber for RawProber {
     fn name(&self) -> &str {
         "raw"
     }
-    fn probe(&self, _: &[u8]) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _: util::ArcMC, _eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
         vec!(exec::ProbeResult {
             desc: "raw".to_owned(),
             arch: arch::UnknownArch,
             likely: false,
-            cmd: "".to_owned(),
+            cmd: vec!(),
         })
     }
-    fn create(&self, buf: &[u8], pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
         let _ = pr; let _ = args;
-        ~RawBinary::new(buf.len(), args) as ~exec::Exec
+        ~RawBinary::new(buf, args) as ~exec::Exec
     }
 }
 

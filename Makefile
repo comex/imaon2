@@ -3,11 +3,11 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -g -O -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -g -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
 cratefile_dylib = $(OUT)/lib$(1).dylib
-cratematch_dylib = $(OUT)/lib$(1)-*.dylib
+cratematch_dylib = lib$(1)-*.dylib
 cratefile_bin = $(OUT)/$(1)
 
 all:
@@ -23,7 +23,7 @@ cratefile-$$(name) := $$(cf)
 $$(cf): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
 	$(RUSTC) --crate-type $(1) $$<
 ifneq ($$(kind),bin)
-	ln -nfs $$(call cratematch_$(1),$(2)) $$@
+	cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 endif
 
 all: $$(cf)
@@ -46,7 +46,7 @@ all: $(cratefile-llvmshim)
 $(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o $(OUT)/llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=$(OUT)/llvmshim_cpp.o
-	ln -nfs libllvmshim-*.dylib $@
+	cd $(OUT); ln -nfs libllvmshim-*.dylib ../$@
 
 $(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
 

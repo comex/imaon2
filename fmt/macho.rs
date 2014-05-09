@@ -6,11 +6,13 @@
 extern crate util;
 extern crate exec;
 extern crate collections;
-use util::ToUi;
+extern crate sync;
 use std::default::Default;
 //use collections::HashMap;
 use std::vec::Vec;
 use std::mem::size_of;
+use sync::Arc;
+use util::ToUi;
 use macho_bind::*;
 use exec::arch;
 
@@ -20,7 +22,6 @@ mod macho_bind;
 #[deriving(Default)]
 pub struct MachO {
     eb: exec::ExecBase,
-    buf: util::ArcMC,
     is64: bool,
     mh: mach_header,
     seg_cmds: Vec<uint>,
@@ -33,82 +34,91 @@ impl exec::Exec for MachO {
     }
 }
 
-impl MachO {
-    pub fn new(buf: util::ArcMC, do_lcs: bool) -> Option<MachO> {
-        if buf.len() < lc_off { return None }
-        let mut me: MachO = Default::default();
-        me.buf = buf;
-        let mut lc_off = size_of::<mach_header>();
-        let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
-        let is64; let end;
-        match magic {
-            0xfeedface => { end = util::BigEndian; is64 = false; }
-            0xfeedfacf => { end = util::BigEndian; is64 = true; }
-            0xcefaedfe => { end = util::LittleEndian; is64 = false; }
-            0xcffaedfe => { end = util::LittleEndian; is64 = true; }
-            _ => fail!("shouldn't happen due to probe")
-        }
-        me.eb.endian = end;
-        me.is64 = is64;
-        me.mh = util::copy_from_slice(buf.slice_to(lc_off), end);
-        // useless 'reserved' field
-        if is64 { lc_off += 4; }
+fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
+    let cputype = cputype as u32;
+    let cpusubtype = cpusubtype as u32;
+    Some(match (cputype.to_ui(), cpusubtype.to_ui()) {
+        (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_ALL) => "hppa",
+        (CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL) => "i386",
+        (CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL) => "x86_64",
+        (CPU_TYPE_I860, CPU_SUBTYPE_I860_ALL) => "i860",
+        (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC680x0_ALL) => "m68k",
+        (CPU_TYPE_MC88000, CPU_SUBTYPE_MC88000_ALL) => "m88k",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_ALL) => "ppc",
+        (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_ALL) => "ppc64",
+        (CPU_TYPE_SPARC, CPU_SUBTYPE_SPARC_ALL) => "sparc",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_ALL) => "arm",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_MULTIPLE) => "any",
+        (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_7100LC) => "hppa7100LC",
+        (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68030_ONLY) => "m68030",
+        (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68040) => "m68040",
+        (CPU_TYPE_I386, CPU_SUBTYPE_486) => "i486",
+        (CPU_TYPE_I386, CPU_SUBTYPE_486SX) => "i486SX",
+        (CPU_TYPE_I386, CPU_SUBTYPE_PENT) => "pentium",
+        (CPU_TYPE_I386, CPU_SUBTYPE_PENTPRO) => "pentpro",
+        (CPU_TYPE_I386, CPU_SUBTYPE_PENTII_M3) => "pentIIm3",
+        (CPU_TYPE_I386, CPU_SUBTYPE_PENTII_M5) => "pentIIm5",
+        (CPU_TYPE_I386, CPU_SUBTYPE_PENTIUM_4) => "pentium4",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_601) => "ppc601",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603) => "ppc603",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603e) => "ppc603e",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603ev) => "ppc603ev",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_604) => "ppc604",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_604e) => "ppc604e",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_750) => "ppc750",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_7400) => "ppc7400",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_7450) => "ppc7450",
+        (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_970) => "ppc970",
+        (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_970) => "ppc970-64",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V4T) => "armv4t",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V5TEJ) => "armv5",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_XSCALE) => "xscale",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6) => "armv6",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7) => "armv7",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7F) => "armv7f",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7S) => "armv7s",
+        (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K) => "armv7k",
+        (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL) => "arm64",
+        (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8) => "arm64v8",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
+        _ => return None,
+    })
+}
 
-        me.parse_header();
-        if do_lcs {
-            me.parse_load_commands(lc_off);
+impl MachO {
+    pub fn new(mc: util::ArcMC, do_lcs: bool) -> Option<MachO> {
+        let mut me: MachO = Default::default();
+        {
+            let buf = mc.get();
+            let mut lc_off = size_of::<mach_header>();
+            if buf.len() < lc_off { return None }
+            let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
+            let is64; let end;
+            match magic {
+                0xfeedface => { end = util::BigEndian; is64 = false; }
+                0xfeedfacf => { end = util::BigEndian; is64 = true; }
+                0xcefaedfe => { end = util::LittleEndian; is64 = false; }
+                0xcffaedfe => { end = util::LittleEndian; is64 = true; }
+                _ => return None
+            }
+            me.eb.endian = end;
+            me.is64 = is64;
+            me.mh = util::copy_from_slice(buf.slice_to(lc_off), end);
+            // useless 'reserved' field
+            if is64 { lc_off += 4; }
+
+            me.parse_header();
+            if do_lcs {
+                me.parse_load_commands(lc_off);
+            }
         }
+        me.eb.buf = Some(mc);
         Some(me)
     }
 
     pub fn subtype_desc(&self) -> Option<&'static str> {
-        Some(match (self.mh.cputype.to_ui(), self.mh.cpusubtype.to_ui()) {
-            (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_ALL) => "hppa",
-            (CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL) => "i386",
-            (CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL) => "x86_64",
-            (CPU_TYPE_I860, CPU_SUBTYPE_I860_ALL) => "i860",
-            (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC680x0_ALL) => "m68k",
-            (CPU_TYPE_MC88000, CPU_SUBTYPE_MC88000_ALL) => "m88k",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_ALL) => "ppc",
-            (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_ALL) => "ppc64",
-            (CPU_TYPE_SPARC, CPU_SUBTYPE_SPARC_ALL) => "sparc",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_ALL) => "arm",
-            (CPU_TYPE_ANY, CPU_SUBTYPE_MULTIPLE) => "any",
-            (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_7100LC) => "hppa7100LC",
-            (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68030_ONLY) => "m68030",
-            (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68040) => "m68040",
-            (CPU_TYPE_I386, CPU_SUBTYPE_486) => "i486",
-            (CPU_TYPE_I386, CPU_SUBTYPE_486SX) => "i486SX",
-            (CPU_TYPE_I386, CPU_SUBTYPE_PENT) => "pentium",
-            (CPU_TYPE_I386, CPU_SUBTYPE_PENTPRO) => "pentpro",
-            (CPU_TYPE_I386, CPU_SUBTYPE_PENTII_M3) => "pentIIm3",
-            (CPU_TYPE_I386, CPU_SUBTYPE_PENTII_M5) => "pentIIm5",
-            (CPU_TYPE_I386, CPU_SUBTYPE_PENTIUM_4) => "pentium4",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_601) => "ppc601",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603) => "ppc603",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603e) => "ppc603e",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_603ev) => "ppc603ev",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_604) => "ppc604",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_604e) => "ppc604e",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_750) => "ppc750",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_7400) => "ppc7400",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_7450) => "ppc7450",
-            (CPU_TYPE_POWERPC, CPU_SUBTYPE_POWERPC_970) => "ppc970",
-            (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_970) => "ppc970-64",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V4T) => "armv4t",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V5TEJ) => "armv5",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_XSCALE) => "xscale",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V6) => "armv6",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7) => "armv7",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7F) => "armv7f",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7S) => "armv7s",
-            (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K) => "armv7k",
-            (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL) => "arm64",
-            (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8) => "arm64v8",
-            (CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
-            (CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
-            _ => return None,
-        })
+        mach_arch_desc(self.mh.cputype, self.mh.cpusubtype)
     }
 
     pub fn desc(&self) -> ~str {
@@ -146,7 +156,9 @@ impl MachO {
 
     fn parse_load_commands(&mut self, mut lc_off: uint) {
         let end = self.eb.endian;
-        let buf = &self.buf;
+        let buf = self.eb.buf.get_ref().get();
+        let segs = &mut self.eb.segments;
+        let sects = &mut self.eb.sections;
         let mut segi = 0;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
@@ -168,7 +180,7 @@ impl MachO {
                         w: (ip & VM_PROT_WRITE) != 0,
                         x: (ip & VM_PROT_EXECUTE) != 0,
                     };
-                    self.eb.segments.push(exec::Segment {
+                    segs.push(exec::Segment {
                         vmaddr: exec::VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
                         fileoff: sc.fileoff as u64,
@@ -179,7 +191,7 @@ impl MachO {
                     });
                     for _ in range(0, sc.nsects) {
                         let s: section_x = util::copy_from_slice(data.slice(off, off + size_of::<section_x>()), end);
-                        self.eb.sections.push(exec::Segment {
+                        sects.push(exec::Segment {
                             vmaddr: exec::VMA(s.addr as u64),
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
@@ -212,22 +224,70 @@ impl exec::ExecProber for MachOProber {
     fn name(&self) -> &str {
         "macho"
     }
-    fn probe(&self, buf: util::ArcMC) -> Vec<exec::ProbeResult> {
+    fn probe(&self, buf: util::ArcMC, _eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
         match MachO::new(buf, false) {
             Some(m) => vec!(exec::ProbeResult {
                 desc: m.desc(),
                 arch: m.eb.arch,
                 likely: true,
-                cmd: "".to_owned(),
+                cmd: vec!(),
             }),
             None => vec!(),
         }
     }
     fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
         let _ = pr; let _ = args;
-        ~MachO::new(buf, true).unwrap() as ~exec::Exec
+        ~MachO::new(buf, true).unwrap_or_else(|| fail!("not mach-o")) as ~exec::Exec
     }
 }
+
+pub struct FatMachOProber;
+
+impl exec::ExecProber for FatMachOProber {
+    fn name(&self) -> &str {
+        "fatmacho"
+    }
+    fn probe(&self, mc: util::ArcMC, eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
+        let buf = mc.get();
+        if buf.len() < 8 { return vec!() }
+        let fh: fat_header = util::copy_from_slice(buf.slice_to(8), util::BigEndian);
+        if fh.magic != FAT_MAGIC as u32 { return vec!() }
+        let nfat = fh.nfat_arch as u64;
+        let mut off: uint = 8;
+        if (buf.len() as u64) < (off as u64) + (nfat * size_of::<fat_arch>() as u64) {
+            util::errln(format!("fatmacho: no room for {} fat archs", nfat));
+            return vec!()
+        }
+        let mut result = Vec::new();
+        for i in range(0, nfat) {
+            let fa: fat_arch = util::copy_from_slice(buf.slice(off, off + size_of::<fat_arch>()), util::BigEndian);
+            if (fa.offset as u64) + (fa.size as u64) >= (buf.len() as u64) {
+                util::errln(format!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
+                              fa.cputype, fa.cpusubtype, fa.offset, fa.size));
+            } else {
+                let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
+                    Some(desc) => desc.to_owned(),
+                    None => format!("{}", i),
+                };
+                for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).move_iter() {
+                    let npr = exec::ProbeResult {
+                        desc: format!("fat\\#{}: {}", i, pr.desc),
+                        arch: pr.arch,
+                        likely: pr.likely,
+                        cmd: vec!("-arch".to_owned(), arch.clone()).append(pr.cmd.as_slice()),
+                    };
+                    result.push(npr);
+                }
+            }
+            off += size_of::<fat_arch>();
+        }
+        result
+    }
+    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> ~exec::Exec {
+        unimplemented!();
+    }
+}
+
 
 //#[test]
 

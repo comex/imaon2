@@ -4,6 +4,7 @@
 extern crate util;
 extern crate getopts;
 extern crate exec;
+extern crate sync;
 
 use native::io;
 mod execall;
@@ -18,9 +19,9 @@ fn main() {
         util::errln(format!("open {} failed: {}", filename, e.desc));
         util::exit();
     });
-    let mm = util::safe_mmap(&mut fp);
+    let mm = sync::Arc::new(util::safe_mmap(&mut fp));
     let ap = execall::all_probers();
-    let results = exec::probe_all(&ap, mm.buf);
+    let results = exec::probe_all(&ap, mm.clone());
     // if we specified one... else...
     let likely: Vec<&(&'static exec::ExecProber, exec::ProbeResult)> = results.iter().filter(|&&(_, ref pr)| pr.likely).collect();
     if likely.len() == 0 {
@@ -29,7 +30,7 @@ fn main() {
     }
     for &(ref ep, ref pr) in results.iter() {
         let name = if pr.cmd.len() != 0 {
-            format!("{} {}", ep.name(), pr.cmd)
+            format!("{} {}", ep.name(), util::shell_quote(pr.cmd.as_slice()))
         } else {
             ep.name().to_owned()
         };

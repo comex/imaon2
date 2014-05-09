@@ -47,6 +47,7 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
+    pub buf: Option<util::ArcMC>,
 }
 
 pub trait Exec {
@@ -55,7 +56,7 @@ pub trait Exec {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, buf: util::ArcMC) -> Vec<ProbeResult>;
+    fn probe(&self, buf: util::ArcMC, eps: &Vec<&'static ExecProber>) -> Vec<ProbeResult>;
     // May fail.
     fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> ~Exec;
 }
@@ -64,13 +65,13 @@ pub struct ProbeResult {
     pub desc: ~str,
     pub arch: Arch,
     pub likely: bool,
-    pub cmd: ~str,
+    pub cmd: Vec<~str>,
 }
 
 pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: util::ArcMC) -> Vec<(&'static ExecProber, ProbeResult)> {
     let mut result = vec!();
     for epp in eps.iter() {
-        for pr in epp.probe(buf.clone()).move_iter() {
+        for pr in epp.probe(buf.clone(), eps).move_iter() {
             result.push((*epp, pr))
         }
     }

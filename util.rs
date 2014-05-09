@@ -1,9 +1,14 @@
 #![feature(macro_rules)]
+#![feature(phase)]
 
 extern crate native;
 extern crate libc;
 extern crate getopts;
 extern crate sync;
+
+extern crate regex;
+#[phase(syntax)]
+extern crate regex_macros;
 
 use std::kinds::Copy;
 use std::mem::{size_of, uninit};
@@ -127,7 +132,7 @@ impl<T> Swap for Option<T> {
 
 pub unsafe fn zeroed_t<T>() -> T {
     let mut me : T = uninit();
-    zero_memory(&mut me, size_of::<T>());
+    zero_memory(&mut me, 1);
     me
 }
 
@@ -213,25 +218,50 @@ pub fn from_cstr(chs: &[i8]) -> ~str {
     }
 }
 
-pub trait MemoryContainer : Send + Share + Deref<[u8]> + DerefMut<[u8]> {}
-
-pub struct MMapMC {
-    mm: Unsafe<MemoryMap>,
+pub trait MCOwner: Send+Share {
+    fn dispose(&self, _buf: *u8, _len: uint) {}
 }
 
-impl Deref<[u8]> for MemoryContainer {
-    fn deref<'a>(&'a self) -> &'a &[u8] {
-        unsafe { std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice)) }
-    }
-}
-
-impl DerefMut<[u8]> for MemoryContainer {
-    fn deref<'a>(&'a mut self) -> &'a &[u8] {
-        unsafe { std::slice::raw::mut_buf_as_slice(self.mm.data, self.mm.len, |slice| transmute(slice)) }
-    }
+//#[deriving(Send, Share)]
+pub struct MemoryContainer {
+    buf: Unsafe<*u8>,
+    len: uint,
+    owner: ~MCOwner:Send+Share,
 }
 
 pub type ArcMC = Arc<MemoryContainer>;
+
+impl MemoryContainer {
+    pub fn get<'a>(&'a self) -> &'a [u8] {
+        unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(self.buf.value, self.len, |slice| transmute(slice)) }
+    }
+}
+
+impl Drop for MemoryContainer {
+    fn drop(&mut self) {
+        self.owner.dispose(self.buf.value, self.len);
+    }
+}
+
+pub struct MMapMCOwner {
+    mm: Unsafe<MemoryMap>,
+}
+
+impl MCOwner for MMapMCOwner {}
+
+pub struct SliceMCOwner {
+    base: ArcMC,
+}
+
+impl MCOwner for SliceMCOwner {}
+
+pub fn slice_mc(mc: ArcMC, start: uint, len: uint) -> MemoryContainer {
+    if start > mc.len || len > mc.len - start {
+        fail!("slice_mc: bad slice");
+    }
+    let buf = mc.buf.value;
+    MemoryContainer { buf: unsafe { Unsafe::new(buf.offset(start as int)) }, len: len, owner: ~SliceMCOwner { base: mc } }
+}
 
 pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
     let oldpos = fd.tell().unwrap();
@@ -245,7 +275,7 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
         std::os::MapWritable,
         std::os::MapFd(cfd),
     ]).unwrap();
-    MMapMC { mm: mm }
+    MemoryContainer { buf: Unsafe::new(mm.data as *u8), len: mm.len, owner: ~MMapMCOwner { mm: Unsafe::new(mm) } }
 }
 
 
@@ -273,6 +303,37 @@ pub fn errlnb(s: &str) {
 
 pub fn errln(s: ~str) {
     errlnb(s.as_slice())
+}
+
+pub fn shell_quote(args: &[~str]) -> ~str {
+    let mut sb = std::strbuf::StrBuf::new();
+    for arg_ in args.iter() {
+        let arg = arg_.as_slice();
+        if sb.len() != 0 { sb.push_char(' ') }
+        if regex!(r"^[a-zA-Z0-9_]+$").is_match(arg) {
+            sb.push_str(arg);
+        } else {
+            sb.push_char('"');
+            for ch_ in arg.as_bytes().iter() {
+                let chu = *ch_;
+                let ch = *ch_ as char;
+                if ch == '$' || ch == '`' || ch == '\\' || ch == '"' || ch == '\n' {
+                    if ch == '\n' {
+                        sb.push_str("\\n");
+                    } else {
+                        sb.push_char('\\');
+                        sb.push_char(ch);
+                    }
+                } else if !chu.is_ascii() || !chu.to_ascii().is_print() {
+                    sb.push_str(format!("\\\\x{:02x}", chu));
+                } else {
+                    sb.push_char(ch);
+                }
+            }
+            sb.push_char('"');
+        }
+    }
+    sb.into_owned()
 }
 
 #[macro_escape]
