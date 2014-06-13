@@ -2,11 +2,12 @@
 #![feature(globs)]
 #![allow(non_camel_case_types)]
 #![allow(non_uppercase_pattern_statics)]
-#[phase(link, syntax)]
+#[phase(link, plugin)]
 extern crate util;
 extern crate exec;
 extern crate collections;
 extern crate sync;
+extern crate libc;
 use std::default::Default;
 //use collections::HashMap;
 use std::vec::Vec;
@@ -121,7 +122,7 @@ impl MachO {
         mach_arch_desc(self.mh.cputype, self.mh.cpusubtype)
     }
 
-    pub fn desc(&self) -> ~str {
+    pub fn desc(&self) -> String {
         let ft_desc = match self.mh.filetype.to_ui() {
             MH_OBJECT => "object",
             MH_EXECUTE => "executable",
@@ -266,7 +267,7 @@ impl exec::ExecProber for FatMachOProber {
                               fa.cputype, fa.cpusubtype, fa.offset, fa.size));
             } else {
                 let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
-                    Some(desc) => desc.to_owned(),
+                    Some(desc) => desc.to_string(),
                     None => format!("{}", i),
                 };
                 for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).move_iter() {
@@ -274,7 +275,7 @@ impl exec::ExecProber for FatMachOProber {
                         desc: format!("fat\\#{}: {}", i, pr.desc),
                         arch: pr.arch,
                         likely: pr.likely,
-                        cmd: vec!("-arch".to_owned(), arch.clone()).append(pr.cmd.as_slice()),
+                        cmd: vec!("-arch".to_string(), arch.clone()).append(pr.cmd.as_slice()),
                     };
                     result.push(npr);
                 }

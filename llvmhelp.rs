@@ -24,7 +24,7 @@ use rustc::lib::llvm::{Opcode, IntPredicate, RealPredicate, True, False, Bool, T
 
 use libc::{c_uint, c_longlong, c_ulonglong, c_char};
 use std::vec::Vec;
-use std::cast;
+use std::mem;
 use std::kinds::marker;
 //use std::mem;
 
@@ -54,7 +54,7 @@ impl<'f> Use<'f> {
     }
     pub fn used(self) -> Value<'f> {
         //unsafe { llvm::LLVMGetUsedValue(self) }
-        unsafe { Value::new(*cast::transmute::<UseRef, *ValueRef>(*self)) }
+        unsafe { Value::new(*mem::transmute::<UseRef, *ValueRef>(*self)) }
     }
     pub fn set_used(self, repl: Value<'f>) {
         unsafe { llvmshim::LLVMShimReplaceUse(*self, *repl) }
@@ -122,12 +122,12 @@ enum ValueEn {
 /*
 #[inline(always)]
 pub fn op_use(ops: &mut [Use_opaque], n: uint) -> UseRef {
-    unsafe { cast::transmute(&ops[n]) }
+    unsafe { mem::transmute(&ops[n]) }
 }
 
 #[inline(always)]
 pub fn op(ops: &[Use_opaque], n: uint) -> ValueRef {
-    op_use(unsafe { cast::transmute(ops) }, n).used()
+    op_use(unsafe { mem::transmute(ops) }, n).used()
 }
 */
 
@@ -236,17 +236,17 @@ impl<'a> Type<'a> {
     }
 
     pub fn func(args: &[Type<'a>], ret: Type<'a>) -> Type<'a> {
-        unsafe { Type::new(llvm::LLVMFunctionType(*ret, cast::transmute(args.as_ptr()),
+        unsafe { Type::new(llvm::LLVMFunctionType(*ret, mem::transmute(args.as_ptr()),
                            args.len() as c_uint, False)) }
     }
 
     pub fn variadic_func(args: &[Type<'a>], ret: Type<'a>) -> Type<'a> {
-        unsafe { Type::new(llvm::LLVMFunctionType(*ret, cast::transmute(args.as_ptr()),
+        unsafe { Type::new(llvm::LLVMFunctionType(*ret, mem::transmute(args.as_ptr()),
                                                   args.len() as c_uint, True)) }
     }
 
     pub fn struct_(ctx: &'a ContextRef, els: &[Type<'a>], packed: bool) -> Type<'a> {
-        unsafe { Type::new(llvm::LLVMStructTypeInContext(*ctx, cast::transmute(els.as_ptr()),
+        unsafe { Type::new(llvm::LLVMStructTypeInContext(*ctx, mem::transmute(els.as_ptr()),
                                                          els.len() as c_uint,
                                                          packed as Bool)) }
     }
@@ -275,7 +275,7 @@ impl<'a> Type<'a> {
 
     pub fn set_struct_body(self, els: &[Type<'a>], packed: bool) {
         unsafe {
-            llvm::LLVMStructSetBody(*self, cast::transmute(els.as_ptr()),
+            llvm::LLVMStructSetBody(*self, mem::transmute(els.as_ptr()),
                                     els.len() as c_uint, packed as Bool)
         }
     }
@@ -321,7 +321,7 @@ impl<'a> Type<'a> {
             }
             let mut elts = Vec::from_elem(n_elts, 0 as TypeRef);
             llvm::LLVMGetStructElementTypes(*self, elts.get_mut(0));
-            cast::transmute(elts)
+            mem::transmute(elts)
         }
     }
 
@@ -334,7 +334,7 @@ impl<'a> Type<'a> {
             let n_args = llvm::LLVMCountParamTypes(*self) as uint;
             let args = Vec::from_elem(n_args, 0 as TypeRef);
             llvm::LLVMGetParamTypes(*self, args.as_ptr());
-            cast::transmute(args)
+            mem::transmute(args)
         }
     }
 }
@@ -391,20 +391,20 @@ pub fn C_u8<'a>(ctx: &'a ContextRef, i: uint) -> Value<'a> {
 pub fn C_struct<'a>(ctx: &'a ContextRef, elts: &[Value<'a>], packed: bool) -> Value<'a> {
     unsafe {
         Value::new(llvm::LLVMConstStructInContext(*ctx,
-                    cast::transmute(elts.as_ptr()), elts.len() as c_uint,
+                    mem::transmute(elts.as_ptr()), elts.len() as c_uint,
                     packed as Bool))
     }
 }
 
 pub fn C_named_struct<'a>(t: Type<'a>, elts: &[Value<'a>]) -> Value<'a> {
     unsafe {
-        Value::new(llvm::LLVMConstNamedStruct(*t, cast::transmute(elts.as_ptr()), elts.len() as c_uint))
+        Value::new(llvm::LLVMConstNamedStruct(*t, mem::transmute(elts.as_ptr()), elts.len() as c_uint))
     }
 }
 
 pub fn C_array<'a>(ty: Type<'a>, elts: &[Value<'a>]) -> Value<'a> {
     unsafe {
-        Value::new(llvm::LLVMConstArray(*ty, cast::transmute(elts.as_ptr()), elts.len() as c_uint))
+        Value::new(llvm::LLVMConstArray(*ty, mem::transmute(elts.as_ptr()), elts.len() as c_uint))
     }
 }
 
@@ -510,7 +510,7 @@ impl<'f> Builder<'f> {
     pub fn aggregate_ret(&self, ret_vals: &[Value<'f>]) -> Value<'f> {
         unsafe {
             Value::new(llvm::LLVMBuildAggregateRet(self.llbuilder,
-                                        cast::transmute(ret_vals.as_ptr()),
+                                        mem::transmute(ret_vals.as_ptr()),
                                         ret_vals.len() as c_uint))
         }
     }
@@ -549,7 +549,7 @@ impl<'f> Builder<'f> {
         unsafe {
             let v = llvm::LLVMBuildInvoke(self.llbuilder,
                                           *llfn,
-                                          cast::transmute(args.as_ptr()),
+                                          mem::transmute(args.as_ptr()),
                                           args.len() as c_uint,
                                           then,
                                           catch,
@@ -842,7 +842,7 @@ impl<'f> Builder<'f> {
 
     pub fn gep(&self, ptr: Value<'f>, indices: &[Value<'f>]) -> Value<'f> {
         unsafe {
-            Value::new(llvm::LLVMBuildGEP(self.llbuilder, *ptr, cast::transmute(indices.as_ptr()),
+            Value::new(llvm::LLVMBuildGEP(self.llbuilder, *ptr, mem::transmute(indices.as_ptr()),
                                indices.len() as c_uint, noname()))
         }
     }
@@ -868,7 +868,7 @@ impl<'f> Builder<'f> {
     pub fn inbounds_gep(&self, ptr: Value<'f>, indices: &[Value<'f>]) -> Value<'f> {
         unsafe {
             Value::new(llvm::LLVMBuildInBoundsGEP(
-                self.llbuilder, *ptr, cast::transmute(indices.as_ptr()), indices.len() as c_uint, noname()))
+                self.llbuilder, *ptr, mem::transmute(indices.as_ptr()), indices.len() as c_uint, noname()))
         }
     }
 
@@ -1030,7 +1030,7 @@ impl<'f> Builder<'f> {
         assert_eq!(vals.len(), bbs.len());
         let phi = self.empty_phi(ty);
         unsafe {
-            llvm::LLVMAddIncoming(*phi, cast::transmute(vals.as_ptr()),
+            llvm::LLVMAddIncoming(*phi, mem::transmute(vals.as_ptr()),
                                   bbs.as_ptr(),
                                   vals.len() as c_uint);
             phi
@@ -1047,9 +1047,9 @@ impl<'f> Builder<'f> {
         let alignstack = if alignstack { lib::llvm::True }
                          else          { lib::llvm::False };
 
-        let argtys: ~[_] = inputs.iter().map(|v| v.ty()).collect();
+        let argtys = inputs.iter().map(|v| v.ty()).collect();
 
-        let fty = Type::func(argtys, output);
+        let fty = Type::func(argtys.as_slice(), output);
         unsafe {
             let v = Value::new(llvm::LLVMInlineAsm(
                 *fty, asm, cons, volatile, alignstack, dia as c_uint));
@@ -1061,7 +1061,7 @@ impl<'f> Builder<'f> {
                 attributes: &[(uint, lib::llvm::Attribute)]) -> Value<'f> {
 
         unsafe {
-            let v = llvm::LLVMBuildCall(self.llbuilder, *llfn, cast::transmute(args.as_ptr()),
+            let v = llvm::LLVMBuildCall(self.llbuilder, *llfn, mem::transmute(args.as_ptr()),
                                         args.len() as c_uint, noname());
             for &(idx, attr) in attributes.iter() {
                 llvm::LLVMAddInstrAttribute(v, idx as c_uint, attr as c_uint);

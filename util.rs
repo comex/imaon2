@@ -1,5 +1,6 @@
 #![feature(macro_rules)]
 #![feature(phase)]
+#![macro_escape]
 
 extern crate native;
 extern crate libc;
@@ -7,13 +8,12 @@ extern crate getopts;
 extern crate sync;
 
 extern crate regex;
-#[phase(syntax)]
+#[phase(plugin)]
 extern crate regex_macros;
 
 use std::kinds::Copy;
-use std::mem::{size_of, uninit};
+use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy_memory, zero_memory};
-use std::cast::transmute;
 use std::rc::Rc;
 use sync::Arc;
 use std::cell::Cell;
@@ -21,13 +21,14 @@ use std::intrinsics;
 use std::default::Default;
 use native::io::file;
 use std::os::MemoryMap;
+use std::rt::rtio;
 use std::rt::rtio::RtioFileStream;
 use std::ty::Unsafe;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
-        let mut t : T = uninit();
+        let mut t : T = uninitialized();
         copy_memory(&mut t, transmute(slice.as_ptr()), 1);
         t.bswap_from(end);
         t
@@ -75,7 +76,7 @@ pub fn bswap16(x: u16) -> u16 {
     unsafe { intrinsics::bswap16(x) }
 }
 
-#[deriving(Show, Eq)]
+#[deriving(Show, PartialEq, Eq)]
 pub enum Endian {
     BigEndian,
     LittleEndian,
@@ -92,6 +93,7 @@ pub trait Swap {
     }
 }
 
+#[macro_export]
 macro_rules! impl_swap(
     ($ty:ty, $bsty:ty, $bsfun:ident) => (
         impl Swap for $ty {
@@ -117,6 +119,7 @@ impl Swap for i8 {
 }
 
 // dumb
+#[macro_export]
 macro_rules! impl_for_array(($cnt:expr) => (
     impl<T> Swap for [T, ..$cnt] {
         fn bswap(&mut self) {}
@@ -131,13 +134,12 @@ impl<T> Swap for Option<T> {
 }
 
 pub unsafe fn zeroed_t<T>() -> T {
-    let mut me : T = uninit();
+    let mut me : T = uninitialized();
     zero_memory(&mut me, 1);
     me
 }
 
 // The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
-#[macro_escape]
 #[macro_export]
 macro_rules! deriving_swap(
     (
@@ -171,7 +173,6 @@ macro_rules! deriving_swap(
     )
 )
 
-#[macro_escape]
 #[macro_export]
 macro_rules! branch(
     (if $cond:expr { $($a:stmt)|* } else { $($b:stmt)|* } then $c:expr) => (
@@ -209,12 +210,12 @@ impl<T : ToPrimitive> ToUi for T {
     }
 }
 
-pub fn from_cstr(chs: &[i8]) -> ~str {
+pub fn from_cstr(chs: &[i8]) -> String {
     let chs_: &[char] = unsafe { transmute(chs) };
     let s = std::str::from_chars(chs_);
-    match s.find('\0') {
+    match s.as_slice().find('\0') {
         None => s,
-        Some(i) => s.slice_to(i).to_owned()
+        Some(i) => s.as_slice().slice_to(i).to_string()
     }
 }
 
@@ -250,7 +251,7 @@ pub struct MMapMCOwner {
 impl MCOwner for MMapMCOwner {}
 
 pub struct SliceMCOwner {
-    base: ArcMC,
+    pub base: ArcMC,
 }
 
 impl MCOwner for SliceMCOwner {}
@@ -263,11 +264,24 @@ pub fn slice_mc(mc: ArcMC, start: uint, len: uint) -> MemoryContainer {
     MemoryContainer { buf: unsafe { Unsafe::new(buf.offset(start as int)) }, len: len, owner: box SliceMCOwner { base: mc } }
 }
 
+pub fn rtio_err_msg(e: rtio::IoError) -> String {
+    format!("error {}: {}", e.code, e.detail)
+}
+
+pub trait RtioUnwrap<T> {
+    fn rtio_unwrap(self) -> T;
+}
+impl<T> RtioUnwrap<T> for rtio::IoResult<T> {
+    fn rtio_unwrap(self) -> T {
+        self.map_err(rtio_err_msg).unwrap()
+    }
+}
+
 pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
-    let oldpos = fd.tell().unwrap();
-    fd.seek(0, std::io::SeekEnd).unwrap();
-    let size = fd.tell().unwrap();
-    fd.seek(oldpos as i64, std::io::SeekSet).unwrap();
+    let oldpos = fd.tell().rtio_unwrap();
+    fd.seek(0, rtio::SeekEnd).rtio_unwrap();
+    let size = fd.tell().rtio_unwrap();
+    fd.seek(oldpos as i64, rtio::SeekSet).rtio_unwrap();
     let cfd = fd.fd();
     let size = std::cmp::max(size, 0x1000);
     let mm = MemoryMap::new(size.to_ui(), &[
@@ -301,12 +315,12 @@ pub fn errlnb(s: &str) {
     std::io::stdio::stderr().write_line(s).unwrap();
 }
 
-pub fn errln(s: ~str) {
+pub fn errln(s: String) {
     errlnb(s.as_slice())
 }
 
-pub fn shell_quote(args: &[~str]) -> ~str {
-    let mut sb = std::strbuf::StrBuf::new();
+pub fn shell_quote(args: &[String]) -> String {
+    let mut sb = std::string::String::new();
     for arg_ in args.iter() {
         let arg = arg_.as_slice();
         if sb.len() != 0 { sb.push_char(' ') }
@@ -325,7 +339,7 @@ pub fn shell_quote(args: &[~str]) -> ~str {
                         sb.push_char(ch);
                     }
                 } else if !chu.is_ascii() || !chu.to_ascii().is_print() {
-                    sb.push_str(format!("\\\\x{:02x}", chu));
+                    sb.push_str(format!("\\\\x{:02x}", chu).as_slice());
                 } else {
                     sb.push_char(ch);
                 }
@@ -333,10 +347,9 @@ pub fn shell_quote(args: &[~str]) -> ~str {
             sb.push_char('"');
         }
     }
-    sb.into_owned()
+    sb.into_string()
 }
 
-#[macro_escape]
 #[macro_export]
 macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
     impl $traitname<$oty, $stru> for $stru {

@@ -1,6 +1,6 @@
 use std::default::Default;
 
-#[deriving(Eq, Show)]
+#[deriving(PartialEq, Eq, Show)]
 pub enum Arch {
     X86,
     X86_64,

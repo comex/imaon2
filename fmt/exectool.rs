@@ -7,6 +7,7 @@ extern crate exec;
 extern crate sync;
 
 use native::io;
+use std::rt::rtio;
 mod execall;
 
 fn main() {
@@ -15,8 +16,8 @@ fn main() {
         getopts::optflag("h", "help", "This help"),
     ]);
     let filename = m.free.get(0);
-    let mut fp = io::file::open(&filename.to_c_str(), std::io::Open, std::io::Read).unwrap_or_handle(|e| {
-        util::errln(format!("open {} failed: {}", filename, e.desc));
+    let mut fp = io::file::open(&filename.to_c_str(), rtio::Open, rtio::Read).unwrap_or_else(|e| {
+        util::errln(format!("open {} failed: {}", filename, util::rtio_err_msg(e)));
         util::exit();
     });
     let mm = sync::Arc::new(util::safe_mmap(&mut fp));
@@ -32,7 +33,7 @@ fn main() {
         let name = if pr.cmd.len() != 0 {
             format!("{} {}", ep.name(), util::shell_quote(pr.cmd.as_slice()))
         } else {
-            ep.name().to_owned()
+            ep.name().to_string()
         };
         println!("? [{}] {}{}",
             name,

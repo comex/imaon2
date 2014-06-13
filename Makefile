@@ -5,37 +5,35 @@ $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
 RUSTC := rustc -g -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
-ANOTHER_LLVM := /opt/local/libexec/llvm-3.4
+ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratematch_dylib = lib$(1)-*.dylib
+cratefile_rlib = $(OUT)/lib$(1).rlib
+cratematch_rlib = lib$(1)-*.rlib
 cratefile_bin = $(OUT)/$(1)
 
 all:
 
 define define_crate_
-kind := $(1)
-name := $(2)
-cf := $$(call cratefile_$$(kind),$$(name))
-sources := $(3)
-deps := $(4)
-cratefile-$$(name) := $$(cf)
+# 1=kind 2=name 3=sources 4=deps
+cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
-$$(cf): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
+$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 	$(RUSTC) --crate-type $(1) $$<
-ifneq ($$(kind),bin)
+ifneq ($(1),bin)
 	cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 endif
 
-all: $$(cf)
+all: $$(cratefile-$(2))
 
-test-$$(name): $$(sources) Makefile $$(foreach dep,$$(deps),$$(cratefile-$$(dep)))
+test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
-do-test-$$(name): test-$$(name)
+do-test-$(2): test-$(2)
 	./$$<
 
-test: do-test-$$(name)
+test: do-test-$(2)
 endef
 define_crate = $(eval $(define_crate_))
 
@@ -48,7 +46,7 @@ $(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=$(OUT)/llvmshim_cpp.o
 	cd $(OUT); ln -nfs libllvmshim-*.dylib ../$@
 
-$(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
+#$(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
 
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
@@ -66,8 +64,10 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs externals/rust-bindgen/*.rs
-	rustc -o $@ $< -C link-args=-L$(ANOTHER_LLVM)/lib
+$(call define_crate,rlib,bindgen,externals/rust-bindgen/lib.rs $(glob externals/rust-bindgen/*.rs),)
+externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs $(OUT)/libbindgen.rlib
+	# I think the -rpath bit is a Homebrew bug.
+	rustc -o $@ $< -O -L $(OUT) -C link-args="-L$(ANOTHER_LLVM)/lib -rpath $(ANOTHER_LLVM)/lib"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"

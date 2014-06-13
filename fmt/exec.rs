@@ -2,7 +2,7 @@
 #![allow(non_camel_case_types)]
 #![feature(phase)]
 
-#[phase(syntax, link)]
+#[phase(plugin, link)]
 extern crate util;
 extern crate collections;
 use arch::Arch;
@@ -11,13 +11,13 @@ use std::vec::Vec;
 
 pub mod arch;
 
-#[deriving(Default, Copy, Clone, Show, Eq, Ord)]
+#[deriving(Default, Copy, Clone, Show, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VMA(pub u64);
 
 delegate_arith!(VMA, Sub, sub, u64)
 delegate_arith!(VMA, Add, add, u64)
 
-#[deriving(Default, Copy, Clone, Show, Eq)]
+#[deriving(Default, Copy, Clone, Show, PartialEq, Eq)]
 pub struct Prot {
     pub r: bool,
     pub w: bool,
@@ -36,7 +36,7 @@ pub struct Segment {
     pub vmsize: u64,
     pub fileoff: u64,
     pub filesize: u64,
-    pub name: Option<~str>,
+    pub name: Option<String>,
     pub prot: Prot,
     pub private: uint,
 }
@@ -62,10 +62,10 @@ pub trait ExecProber {
 }
 
 pub struct ProbeResult {
-    pub desc: ~str,
+    pub desc: String,
     pub arch: Arch,
     pub likely: bool,
-    pub cmd: Vec<~str>,
+    pub cmd: Vec<String>,
 }
 
 pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: util::ArcMC) -> Vec<(&'static ExecProber, ProbeResult)> {

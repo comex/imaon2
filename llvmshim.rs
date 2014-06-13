@@ -18,7 +18,7 @@ extern {
 
 static InstructionVal: int = 22;
 
-#[deriving(Show, Eq, FromPrimitive)]
+#[deriving(Show, PartialEq, Eq, FromPrimitive)]
 pub enum Opcode {
     Argument,
     BasicBlock,
@@ -121,7 +121,7 @@ pub enum Opcode {
     LandingPad     = InstructionVal+59
 }
 
-#[deriving(Show, Eq, FromPrimitive)]
+#[deriving(Show, PartialEq, Eq, FromPrimitive)]
 pub enum AtomicOrdering {
     AtomicOrderingNotAtomic = 0,
     AtomicOrderingUnordered = 1,
