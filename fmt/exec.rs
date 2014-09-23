@@ -56,7 +56,7 @@ pub trait Exec {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, buf: util::ArcMC, eps: &Vec<&'static ExecProber>) -> Vec<ProbeResult>;
+    fn probe(&self, buf: util::ArcMC, eps: &Vec<&'static ExecProber+'static>) -> Vec<ProbeResult>;
     // May fail.
     fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> Box<Exec>;
 }
@@ -68,7 +68,7 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<&'static ExecProber>, buf: util::ArcMC) -> Vec<(&'static ExecProber, ProbeResult)> {
+pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::ArcMC) -> Vec<(&'static ExecProber+'static, ProbeResult)> {
     let mut result = vec!();
     for epp in eps.iter() {
         for pr in epp.probe(buf.clone(), eps).move_iter() {

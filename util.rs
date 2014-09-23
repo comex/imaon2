@@ -1,6 +1,6 @@
 #![feature(macro_rules)]
 #![feature(phase)]
-#![macro_escape]
+//#![macro_escape]
 
 extern crate native;
 extern crate libc;
@@ -45,9 +45,9 @@ struct RcBox<T> {
 #[inline]
 pub fn get_mut_if_nonshared<'a, T>(rc: &'a mut Rc<T>) -> Option<&'a mut T> {
     unsafe {
-        let bp : **mut RcBox<T> = transmute(rc);
+        let bp : *const *mut RcBox<T> = transmute(rc);
         if (**bp).strong.get() == 1 && (**bp).weak.get() == 1 {
-            Some(&'a mut (**bp).value)
+            Some(&mut (**bp).value)
         } else {
             None
         }
@@ -212,29 +212,30 @@ impl<T : ToPrimitive> ToUi for T {
 
 pub fn from_cstr(chs: &[i8]) -> String {
     let chs_: &[char] = unsafe { transmute(chs) };
-    let s = std::str::from_chars(chs_);
+    let s = String::from_chars(chs_);
     match s.as_slice().find('\0') {
         None => s,
         Some(i) => s.as_slice().slice_to(i).to_string()
     }
 }
 
-pub trait MCOwner: Send+Share {
-    fn dispose(&self, _buf: *u8, _len: uint) {}
+pub trait MCOwner: Send+Sync {
+    fn dispose(&self, _buf: *mut u8, _len: uint) {}
 }
 
 //#[deriving(Send, Share)]
 pub struct MemoryContainer {
-    buf: Unsafe<*u8>,
+    buf: Unsafe<*mut u8>,
     len: uint,
-    owner: Box<MCOwner:Send+Share>,
+    owner: Box<MCOwner+Send+Sync>,
 }
 
 pub type ArcMC = Arc<MemoryContainer>;
 
 impl MemoryContainer {
     pub fn get<'a>(&'a self) -> &'a [u8] {
-        unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(self.buf.value, self.len, |slice| transmute(slice)) }
+        unimplemented!()
+        //unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(self.buf.value, self.len, |slice| transmute(slice)) }
     }
 }
 
@@ -289,7 +290,7 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
         std::os::MapWritable,
         std::os::MapFd(cfd),
     ]).unwrap();
-    MemoryContainer { buf: Unsafe::new(mm.data as *u8), len: mm.len, owner: box MMapMCOwner { mm: Unsafe::new(mm) } }
+    MemoryContainer { buf: Unsafe::new(mm.data() as *mut u8), len: mm.len(), owner: box MMapMCOwner { mm: Unsafe::new(mm) } }
 }
 
 

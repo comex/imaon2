@@ -3,13 +3,12 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -g -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -C codegen-units=2 -C rpath -g -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratematch_dylib = lib$(1)-*.dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
-cratematch_rlib = lib$(1)-*.rlib
 cratefile_bin = $(OUT)/$(1)
 
 all:
@@ -20,9 +19,7 @@ cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 	$(RUSTC) --crate-type $(1) $$<
-ifneq ($(1),bin)
-	cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
-endif
+	#cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 
 all: $$(cratefile-$(2))
 
@@ -64,10 +61,10 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-$(call define_crate,rlib,bindgen,externals/rust-bindgen/lib.rs $(glob externals/rust-bindgen/*.rs),)
-externals/rust-bindgen/bindgen: externals/rust-bindgen/bindgen.rs $(OUT)/libbindgen.rlib
+$(call define_crate,rlib,bindgen,externals/rust-bindgen/src/lib.rs $(glob externals/rust-bindgen/src/*.rs),)
+externals/rust-bindgen/bindgen: externals/rust-bindgen/src/bin/bindgen.rs $(OUT)/libbindgen.rlib
 	# I think the -rpath bit is a Homebrew bug.
-	rustc -o $@ $< -O -L $(OUT) -C link-args="-L$(ANOTHER_LLVM)/lib -rpath $(ANOTHER_LLVM)/lib"
+	rustc -C rpath -o $@ $< -O -L $(OUT) -C link-args="-L$(ANOTHER_LLVM)/lib -rpath $(ANOTHER_LLVM)/lib"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
