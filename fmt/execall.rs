@@ -5,7 +5,7 @@ extern crate exec;
 use self::exec::ExecProber;
 use std::mem;
 
-pub fn all_probers() -> Vec<&'static ExecProber> {
+pub fn all_probers() -> Vec<&'static ExecProber+'static> {
     // unsafe due to https://github.com/mozilla/rust/issues/13887
     unsafe {
         return vec!(

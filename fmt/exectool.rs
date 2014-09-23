@@ -5,6 +5,7 @@ extern crate util;
 extern crate getopts;
 extern crate exec;
 extern crate sync;
+extern crate native;
 
 use native::io;
 use std::rt::rtio;

@@ -57,7 +57,7 @@ pub fn get_mut_if_nonshared<'a, T>(rc: &'a mut Rc<T>) -> Option<&'a mut T> {
 #[test]
 #[allow(unused_variable)]
 fn test_gmin() {
-    let mut a = Rc::new(42);
+    let mut a: Rc<int> = Rc::new(42);
     assert!(!get_mut_if_nonshared(&mut a).is_none());
     let b = a.clone();
     assert!(get_mut_if_nonshared(&mut a).is_none());
@@ -175,7 +175,7 @@ macro_rules! deriving_swap(
 
 #[macro_export]
 macro_rules! branch(
-    (if $cond:expr { $($a:stmt)|* } else { $($b:stmt)|* } then $c:expr) => (
+    (if $cond:expr { $($a:stmt)@* } else { $($b:stmt)@* } then $c:expr) => (
         if $cond {
             $($a);*; $c
         } else {
@@ -186,17 +186,22 @@ macro_rules! branch(
 
 #[test]
 fn test_branch() {
-    for i in range(0, 2) {
+    let do_i = |i: uint| {
         branch!(if i == 1 {
             // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
-            type A = int;|
-            let (b, c) = (7, 8)
+            type A = int;@
+            type B = int;@
+            let (b, c) = (7u, 8)
         } else {
-            type A = uint;|
-            let (b, c) = (8, 9)
+            type A = uint;@
+            type B = uint;@
+            let (b, c) = (8u, 9)
         } then {
             println!("{}", (b + c) as A);
         })
+    };
+    for i in range(0u, 2) {
+        do_i(i)
     }
 }
 

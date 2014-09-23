@@ -1,3 +1,4 @@
+#![feature(macro_rules)]
 #![feature(phase)]
 #![feature(globs)]
 #![allow(non_camel_case_types)]
@@ -160,17 +161,17 @@ impl MachO {
         let buf = self.eb.buf.get_ref().get();
         let segs = &mut self.eb.segments;
         let sects = &mut self.eb.sections;
-        let mut segi = 0;
+        let mut segi = 0u;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
             let data = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
             let this_lc_off = lc_off;
             let do_segment = |is64: bool| {
-                branch!(if is64 {
-                    type segment_command_x = segment_command_64;|
+                branch!(if (is64) {
+                    type segment_command_x = segment_command_64;@
                     type section_x = section_64;
                 } else {
-                    type segment_command_x = segment_command;|
+                    type segment_command_x = segment_command;@
                     type section_x = section;
                 } then {
                     let mut off = size_of::<segment_command_x>();
@@ -248,7 +249,7 @@ impl exec::ExecProber for FatMachOProber {
     fn name(&self) -> &str {
         "fatmacho"
     }
-    fn probe(&self, mc: util::ArcMC, eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
+    fn probe(&self, mc: util::ArcMC, eps: &Vec<&'static exec::ExecProber+'static>) -> Vec<exec::ProbeResult> {
         let buf = mc.get();
         if buf.len() < 8 { return vec!() }
         let fh: fat_header = util::copy_from_slice(buf.slice_to(8), util::BigEndian);

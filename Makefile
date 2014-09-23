@@ -3,7 +3,7 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -C codegen-units=2 -C rpath -g -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -C codegen-units=2 -C rpath -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
@@ -23,11 +23,11 @@ $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 
 all: $$(cratefile-$(2))
 
-test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
+out/test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
-do-test-$(2): test-$(2)
+do-test-$(2): out/test-$(2)
 	./$$<
 
 test: do-test-$(2)
