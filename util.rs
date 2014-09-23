@@ -140,10 +140,12 @@ pub unsafe fn zeroed_t<T>() -> T {
 }
 
 // The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
+// TODO: Servo has similar ugliness with GC visits.  Use their solution.
 #[macro_export]
 macro_rules! deriving_swap(
     (
         $(twin $twin:ident)*
+        #[repr(C)]
         pub struct $name:ident {
             $(
                 pub $field:ident: $typ:ty
@@ -152,6 +154,7 @@ macro_rules! deriving_swap(
         }
         $($etc:item)*
     ) => (
+        #[repr(C)]
         pub struct $name {
             $(
                 pub $field: $typ
@@ -239,8 +242,7 @@ pub type ArcMC = Arc<MemoryContainer>;
 
 impl MemoryContainer {
     pub fn get<'a>(&'a self) -> &'a [u8] {
-        unimplemented!()
-        //unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(self.buf.value, self.len, |slice| transmute(slice)) }
+        unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(transmute(self.buf.value), self.len, |slice| transmute(slice)) }
     }
 }
 

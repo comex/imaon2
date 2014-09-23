@@ -15,7 +15,7 @@ while i < len(all_args):
 print open('fmt/bind_defs.rs').read()
 bg = subprocess.check_output(['externals/rust-bindgen/bindgen', '-allow-bitfields', infile] + all_args)
 bg = bg.replace('Struct_', '').replace('use libc::*;', '')
-bg = re.sub(re.compile('(pub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n)', bg)
+bg = re.sub(re.compile('(#\[repr\(C\)\]\npub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n)', bg)
 
 print bg
 print '// start of macros'

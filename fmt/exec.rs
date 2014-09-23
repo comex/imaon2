@@ -71,7 +71,7 @@ pub struct ProbeResult {
 pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::ArcMC) -> Vec<(&'static ExecProber+'static, ProbeResult)> {
     let mut result = vec!();
     for epp in eps.iter() {
-        for pr in epp.probe(buf.clone(), eps).move_iter() {
+        for pr in epp.probe(buf.clone(), eps).into_iter() {
             result.push((*epp, pr))
         }
     }
