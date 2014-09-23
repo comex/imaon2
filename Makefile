@@ -3,7 +3,7 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -C codegen-units=2 -C rpath -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -C codegen-units=4 -C rpath -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
