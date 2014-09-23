@@ -2,7 +2,6 @@
 #![feature(phase)]
 #![feature(globs)]
 #![allow(non_camel_case_types)]
-#![allow(non_uppercase_pattern_statics)]
 #[phase(link, plugin)]
 extern crate util;
 extern crate exec;
@@ -14,7 +13,7 @@ use std::default::Default;
 use std::vec::Vec;
 use std::mem::size_of;
 use sync::Arc;
-use util::ToUi;
+use util::{ToUi, OptionExt};
 use macho_bind::*;
 use exec::arch;
 
@@ -158,7 +157,7 @@ impl MachO {
 
     fn parse_load_commands(&mut self, mut lc_off: uint) {
         let end = self.eb.endian;
-        let buf = self.eb.buf.get_ref().get();
+        let buf = self.eb.buf.unwrap_ref().get();
         let segs = &mut self.eb.segments;
         let sects = &mut self.eb.sections;
         let mut segi = 0u;
@@ -167,7 +166,7 @@ impl MachO {
             let data = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
             let this_lc_off = lc_off;
             let do_segment = |is64: bool| {
-                branch!(if (is64) {
+                branch!(if is64 == true {
                     type segment_command_x = segment_command_64;@
                     type section_x = section_64;
                 } else {
@@ -271,12 +270,12 @@ impl exec::ExecProber for FatMachOProber {
                     Some(desc) => desc.to_string(),
                     None => format!("{}", i),
                 };
-                for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).move_iter() {
+                for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).into_iter() {
                     let npr = exec::ProbeResult {
                         desc: format!("fat\\#{}: {}", i, pr.desc),
                         arch: pr.arch,
                         likely: pr.likely,
-                        cmd: vec!("-arch".to_string(), arch.clone()).append(pr.cmd.as_slice()),
+                        cmd: vec!("-arch".to_string(), arch.clone()) + pr.cmd.as_slice(),
                     };
                     result.push(npr);
                 }

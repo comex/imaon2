@@ -41,7 +41,6 @@ all: $(cratefile-llvmshim)
 $(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o $(OUT)/llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=$(OUT)/llvmshim_cpp.o
-	cd $(OUT); ln -nfs libllvmshim-*.dylib ../$@
 
 #$(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
 

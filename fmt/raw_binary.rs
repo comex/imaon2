@@ -44,7 +44,7 @@ impl exec::ExecProber for RawProber {
     }
     fn probe(&self, _: util::ArcMC, _eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
         vec!(exec::ProbeResult {
-            desc: "raw".to_owned(),
+            desc: "raw".to_string(),
             arch: arch::UnknownArch,
             likely: false,
             cmd: vec!(),
@@ -55,5 +55,4 @@ impl exec::ExecProber for RawProber {
         box RawBinary::new(buf, args) as Box<exec::Exec>
     }
 }
-
 

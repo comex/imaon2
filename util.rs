@@ -366,3 +366,10 @@ macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $ot
     }
 ))
 
+
+pub trait OptionExt<T> {
+    fn unwrap_ref(&self) -> &T;
+}
+impl<T> OptionExt<T> for Option<T> {
+    fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
+}

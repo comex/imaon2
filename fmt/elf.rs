@@ -1,6 +1,5 @@
 #![feature(phase)]
 #[phase(link, plugin)]
-#[path="../util.rs"]
 extern crate util;
 extern crate exec;
 extern crate libc;

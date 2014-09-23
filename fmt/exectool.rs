@@ -16,7 +16,7 @@ fn main() {
         getopts::optflag("v", "verbose", "Verbose mode"),
         getopts::optflag("h", "help", "This help"),
     ]);
-    let filename = m.free.get(0);
+    let filename = &m.free[0];
     let mut fp = io::file::open(&filename.to_c_str(), rtio::Open, rtio::Read).unwrap_or_else(|e| {
         util::errln(format!("open {} failed: {}", filename, util::rtio_err_msg(e)));
         util::exit();
