@@ -34,6 +34,7 @@ test: do-test-$(2)
 endef
 define_crate = $(eval $(define_crate_))
 
+$(call define_crate,rlib,macros,macros.rs,)
 $(call define_crate,dylib,util,util.rs,)
 
 cratefile-llvmshim := $(call cratefile_dylib,llvmshim)

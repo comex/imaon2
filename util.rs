@@ -1,6 +1,5 @@
 #![feature(macro_rules)]
 #![feature(phase)]
-//#![macro_escape]
 
 extern crate native;
 extern crate libc;
@@ -10,6 +9,8 @@ extern crate sync;
 extern crate regex;
 #[phase(plugin)]
 extern crate regex_macros;
+#[phase(plugin)]
+extern crate macros;
 
 use std::kinds::Copy;
 use std::mem::{size_of, uninitialized, transmute};
@@ -93,7 +94,6 @@ pub trait Swap {
     }
 }
 
-#[macro_export]
 macro_rules! impl_swap(
     ($ty:ty, $bsty:ty, $bsfun:ident) => (
         impl Swap for $ty {
@@ -119,7 +119,6 @@ impl Swap for i8 {
 }
 
 // dumb
-#[macro_export]
 macro_rules! impl_for_array(($cnt:expr) => (
     impl<T> Swap for [T, ..$cnt] {
         fn bswap(&mut self) {}
@@ -138,76 +137,6 @@ pub unsafe fn zeroed_t<T>() -> T {
     zero_memory(&mut me, 1);
     me
 }
-
-// The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
-// TODO: Servo has similar ugliness with GC visits.  Use their solution.
-#[macro_export]
-macro_rules! deriving_swap(
-    (
-        $(twin $twin:ident)*
-        #[repr(C)]
-        pub struct $name:ident {
-            $(
-                pub $field:ident: $typ:ty
-            ),+
-            $(,)*
-        }
-        $($etc:item)*
-    ) => (
-        #[repr(C)]
-        pub struct $name {
-            $(
-                pub $field: $typ
-            ),+
-        }
-        impl Swap for $name {
-            fn bswap(&mut self) {
-                $(
-                    self.$field.bswap();
-                )+
-            }
-        }
-        impl Default for $name {
-            fn default() -> $name {
-                unsafe { zeroed_t() }
-            }
-        }
-        $($etc)*
-    )
-)
-
-#[macro_export]
-macro_rules! branch(
-    (if $cond:expr { $($a:stmt)@* } else { $($b:stmt)@* } then $c:expr) => (
-        if $cond {
-            $($a);*; $c
-        } else {
-            $($b);*; $c
-        }
-    )
-)
-
-#[test]
-fn test_branch() {
-    let do_i = |i: uint| {
-        branch!(if i == 1 {
-            // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
-            type A = int;@
-            type B = int;@
-            let (b, c) = (7u, 8)
-        } else {
-            type A = uint;@
-            type B = uint;@
-            let (b, c) = (8u, 9)
-        } then {
-            println!("{}", (b + c) as A);
-        })
-    };
-    for i in range(0u, 2) {
-        do_i(i)
-    }
-}
-
 
 pub trait ToUi {
     fn to_ui(&self) -> uint;
@@ -358,16 +287,6 @@ pub fn shell_quote(args: &[String]) -> String {
     sb.into_string()
 }
 
-#[macro_export]
-macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
-    impl $traitname<$oty, $stru> for $stru {
-        fn $methname(&self, rhs: &$oty) -> $stru {
-            let $stru(a) = *self;
-            $stru(a.$methname(rhs))
-        }
-    }
-))
-
 
 pub trait OptionExt<T> {
     fn unwrap_ref(&self) -> &T;
@@ -375,3 +294,25 @@ pub trait OptionExt<T> {
 impl<T> OptionExt<T> for Option<T> {
     fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
 }
+
+#[test]
+fn test_branch() {
+    let do_i = |i: uint| {
+        branch!(if i == 1 {
+            // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
+            type A = int;@
+            type B = int;@
+            let (b, c) = (7u, 8)
+        } else {
+            type A = uint;@
+            type B = uint;@
+            let (b, c) = (8u, 9)
+        } then {
+            println!("{}", (b + c) as A);
+        })
+    };
+    for i in range(0u, 2) {
+        do_i(i)
+    }
+}
+

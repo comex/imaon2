@@ -2,7 +2,8 @@
 #![allow(non_camel_case_types)]
 #![feature(phase)]
 
-#[phase(plugin, link)]
+#[phase(plugin)]
+extern crate macros;
 extern crate util;
 extern crate collections;
 use arch::Arch;

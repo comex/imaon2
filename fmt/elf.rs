@@ -1,5 +1,6 @@
 #![feature(phase)]
-#[phase(link, plugin)]
+#[phase(plugin)]
+extern crate macros;
 extern crate util;
 extern crate exec;
 extern crate libc;
