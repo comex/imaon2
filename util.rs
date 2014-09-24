@@ -11,6 +11,7 @@ extern crate regex;
 extern crate regex_macros;
 #[phase(plugin)]
 extern crate macros;
+extern crate collections;
 
 use std::kinds::Copy;
 use std::mem::{size_of, uninitialized, transmute};
@@ -230,10 +231,15 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
 }
 
 
-pub fn do_getopts(top: &str, expected_free: uint, optgrps: &[getopts::OptGroup]) -> getopts::Matches {
+pub fn do_getopts(top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &[getopts::OptGroup]) -> getopts::Matches {
     match getopts::getopts(std::os::args().tail().as_slice(), optgrps) {
-        Ok(m) => if !m.opt_present("help") && m.free.len() == expected_free
-                 { m } else { usage(top, optgrps) },
+        Ok(m) => if !m.opt_present("help") &&
+                    m.free.len() >= min_expected_free &&
+                    m.free.len() <= max_expected_free {
+                        m
+                 } else {
+                   usage(top, optgrps) 
+                 },
         _ => usage(top, optgrps),
     }
 }
@@ -261,7 +267,7 @@ pub fn shell_quote(args: &[String]) -> String {
     for arg_ in args.iter() {
         let arg = arg_.as_slice();
         if sb.len() != 0 { sb.push_char(' ') }
-        if regex!(r"^[a-zA-Z0-9_]+$").is_match(arg) {
+        if regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
             sb.push_str(arg);
         } else {
             sb.push_char('"');
@@ -293,6 +299,21 @@ pub trait OptionExt<T> {
 }
 impl<T> OptionExt<T> for Option<T> {
     fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
+}
+
+pub trait VecExt<T> {
+    fn map<U>(&self, func: |&T| -> U) -> Vec<U>;
+}
+impl<T> VecExt<T> for Vec<T> {
+    fn map<U>(&self, func: |&T| -> U) -> Vec<U> {
+        self.iter().map(func).collect()
+    }
+}
+pub trait VecStrExt {
+    fn owneds(&self) -> Vec<String>;
+}
+impl<T: collections::str::StrAllocating> VecStrExt for Vec<T> {
+    fn owneds(&self) -> Vec<String> { self.map(|x| x.to_owned()) }
 }
 
 #[test]

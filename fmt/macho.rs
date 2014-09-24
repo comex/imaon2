@@ -14,7 +14,7 @@ use std::default::Default;
 use std::vec::Vec;
 use std::mem::size_of;
 use sync::Arc;
-use util::{ToUi, OptionExt};
+use util::{ToUi, OptionExt, VecStrExt};
 use macho_bind::*;
 use exec::arch;
 
@@ -39,7 +39,7 @@ impl exec::Exec for MachO {
 fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
     let cputype = cputype as u32;
     let cpusubtype = cpusubtype as u32;
-    Some(match (cputype.to_ui(), cpusubtype.to_ui()) {
+    Some(match (cputype.to_ui(), cpusubtype.to_ui() & !0x80000000) {
         (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_ALL) => "hppa",
         (CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL) => "i386",
         (CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL) => "x86_64",
@@ -232,7 +232,7 @@ impl exec::ExecProber for MachOProber {
                 desc: m.desc(),
                 arch: m.eb.arch,
                 likely: true,
-                cmd: vec!(),
+                cmd: vec!("macho".to_string()),
             }),
             None => vec!(),
         }
@@ -247,7 +247,7 @@ pub struct FatMachOProber;
 
 impl exec::ExecProber for FatMachOProber {
     fn name(&self) -> &str {
-        "fatmacho"
+        "fat"
     }
     fn probe(&self, mc: util::ArcMC, eps: &Vec<&'static exec::ExecProber+'static>) -> Vec<exec::ProbeResult> {
         let buf = mc.get();
@@ -273,10 +273,10 @@ impl exec::ExecProber for FatMachOProber {
                 };
                 for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).into_iter() {
                     let npr = exec::ProbeResult {
-                        desc: format!("fat\\#{}: {}", i, pr.desc),
+                        desc: format!("(slice #{}) {}", i, pr.desc),
                         arch: pr.arch,
                         likely: pr.likely,
-                        cmd: vec!("-arch".to_string(), arch.clone()) + pr.cmd.as_slice(),
+                        cmd: vec!("fat", "-arch", arch.as_slice()).owneds() + pr.cmd,
                     };
                     result.push(npr);
                 }

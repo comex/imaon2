@@ -47,7 +47,7 @@ impl exec::ExecProber for RawProber {
             desc: "raw".to_string(),
             arch: arch::UnknownArch,
             likely: false,
-            cmd: vec!(),
+            cmd: vec!("raw".to_string()),
         })
     }
     fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
