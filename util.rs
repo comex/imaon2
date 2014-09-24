@@ -25,7 +25,7 @@ use native::io::file;
 use std::os::MemoryMap;
 use std::rt::rtio;
 use std::rt::rtio::RtioFileStream;
-use std::ty::Unsafe;
+//use std::ty::Unsafe;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
@@ -148,58 +148,41 @@ impl<T : ToPrimitive> ToUi for T {
     }
 }
 
-pub fn from_cstr(chs: &[i8]) -> String {
-    let chs_: &[char] = unsafe { transmute(chs) };
-    let s = String::from_chars(chs_);
-    match s.as_slice().find('\0') {
-        None => s,
-        Some(i) => s.as_slice().slice_to(i).to_string()
-    }
+pub fn from_cstr(chs_: &[i8]) -> String {
+    let chs: &[u8] = unsafe { transmute(chs_) };
+    let truncated = match chs.iter().position(|c| *c == 0) {
+        None => chs,
+        Some(i) => chs.slice_to(i)
+    };
+    String::from_utf8_lossy(truncated).to_string()
 }
 
 pub trait MCOwner: Send+Sync {
     fn dispose(&self, _buf: *mut u8, _len: uint) {}
 }
 
-//#[deriving(Send, Share)]
-pub struct MemoryContainer {
-    buf: Unsafe<*mut u8>,
-    len: uint,
-    owner: Box<MCOwner+Send+Sync>,
+#[deriving(Send, Clone)]
+pub struct MCRef {
+    mm: Arc<MemoryMap>,
+    off: uint,
+    len: uint
 }
 
-pub type ArcMC = Arc<MemoryContainer>;
-
-impl MemoryContainer {
+impl MCRef {
+    pub fn slice(&self, from: uint, to: uint) -> MCRef {
+        let len = to - from;
+        if from > self.len || len > self.len - from {
+            fail!("MCRef::slice: bad slice");
+        }
+        MCRef { mm: self.mm.clone(), off: self.off + from, len: len }
+    }
     pub fn get<'a>(&'a self) -> &'a [u8] {
-        unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(transmute(self.buf.value), self.len, |slice| transmute(slice)) }
+        unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(
+            transmute(self.mm.data().offset(self.off as int)),
+            self.len,
+            |slice| transmute(slice)
+        ) }
     }
-}
-
-impl Drop for MemoryContainer {
-    fn drop(&mut self) {
-        self.owner.dispose(self.buf.value, self.len);
-    }
-}
-
-pub struct MMapMCOwner {
-    mm: Unsafe<MemoryMap>,
-}
-
-impl MCOwner for MMapMCOwner {}
-
-pub struct SliceMCOwner {
-    pub base: ArcMC,
-}
-
-impl MCOwner for SliceMCOwner {}
-
-pub fn slice_mc(mc: ArcMC, start: uint, len: uint) -> MemoryContainer {
-    if start > mc.len || len > mc.len - start {
-        fail!("slice_mc: bad slice");
-    }
-    let buf = mc.buf.value;
-    MemoryContainer { buf: unsafe { Unsafe::new(buf.offset(start as int)) }, len: len, owner: box SliceMCOwner { base: mc } }
 }
 
 pub fn rtio_err_msg(e: rtio::IoError) -> String {
@@ -215,7 +198,7 @@ impl<T> RtioUnwrap<T> for rtio::IoResult<T> {
     }
 }
 
-pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
+pub fn safe_mmap(fd: &mut file::FileDesc) -> MCRef {
     let oldpos = fd.tell().rtio_unwrap();
     fd.seek(0, rtio::SeekEnd).rtio_unwrap();
     let size = fd.tell().rtio_unwrap();
@@ -227,12 +210,14 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MemoryContainer {
         std::os::MapWritable,
         std::os::MapFd(cfd),
     ]).unwrap();
-    MemoryContainer { buf: Unsafe::new(mm.data() as *mut u8), len: mm.len(), owner: box MMapMCOwner { mm: Unsafe::new(mm) } }
+    let len = mm.len();
+    MCRef { mm: Arc::new(mm), off: 0, len: len }
 }
 
 
-pub fn do_getopts(top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &[getopts::OptGroup]) -> getopts::Matches {
-    match getopts::getopts(std::os::args().tail().as_slice(), optgrps) {
+pub fn do_getopts(args: &[String], top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
+    optgrps.push(getopts::optflag("h", "help", "This help"));
+    match getopts::getopts(args, optgrps.as_slice()) {
         Ok(m) => if !m.opt_present("help") &&
                     m.free.len() >= min_expected_free &&
                     m.free.len() <= max_expected_free {
@@ -244,9 +229,9 @@ pub fn do_getopts(top: &str, min_expected_free: uint, max_expected_free: uint, o
     }
 }
 
-pub fn usage(top: &str, optgrps: &[getopts::OptGroup]) -> ! {
-    println!("{}", getopts::usage(top, optgrps));
-    exit();
+pub fn usage(top: &str, optgrps: &Vec<getopts::OptGroup>) -> ! {
+    println!("{}", getopts::usage(top, optgrps.as_slice()));
+    fail!();
 }
 
 pub fn exit() -> ! {

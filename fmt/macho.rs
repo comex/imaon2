@@ -6,17 +6,18 @@
 extern crate macros;
 extern crate util;
 extern crate exec;
+extern crate getopts;
 extern crate collections;
 extern crate sync;
 extern crate libc;
 use std::default::Default;
 //use collections::HashMap;
 use std::vec::Vec;
+use std::mem::replace;
 use std::mem::size_of;
-use sync::Arc;
-use util::{ToUi, OptionExt, VecStrExt};
+use util::{ToUi, OptionExt, VecStrExt, MCRef};
 use macho_bind::*;
-use exec::arch;
+use exec::{arch, VMA};
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
@@ -26,8 +27,6 @@ pub struct MachO {
     eb: exec::ExecBase,
     is64: bool,
     mh: mach_header,
-    seg_cmds: Vec<uint>,
-    sect_cmds: Vec<uint>,
 }
 
 impl exec::Exec for MachO {
@@ -89,11 +88,11 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
 }
 
 impl MachO {
-    pub fn new(mc: util::ArcMC, do_lcs: bool) -> Option<MachO> {
+    pub fn new(mc: MCRef, do_lcs: bool) -> Option<MachO> {
         let mut me: MachO = Default::default();
+        let mut lc_off = size_of::<mach_header>();
         {
             let buf = mc.get();
-            let mut lc_off = size_of::<mach_header>();
             if buf.len() < lc_off { return None }
             let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
             let is64; let end;
@@ -109,13 +108,12 @@ impl MachO {
             me.mh = util::copy_from_slice(buf.slice_to(lc_off), end);
             // useless 'reserved' field
             if is64 { lc_off += 4; }
-
-            me.parse_header();
-            if do_lcs {
-                me.parse_load_commands(lc_off);
-            }
         }
         me.eb.buf = Some(mc);
+        me.parse_header();
+        if do_lcs {
+            me.parse_load_commands(lc_off);
+        }
         Some(me)
     }
 
@@ -183,7 +181,7 @@ impl MachO {
                         x: (ip & VM_PROT_EXECUTE) != 0,
                     };
                     segs.push(exec::Segment {
-                        vmaddr: exec::VMA(sc.vmaddr as u64),
+                        vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
                         fileoff: sc.fileoff as u64,
                         filesize: sc.filesize as u64,
@@ -194,7 +192,7 @@ impl MachO {
                     for _ in range(0, sc.nsects) {
                         let s: section_x = util::copy_from_slice(data.slice(off, off + size_of::<section_x>()), end);
                         sects.push(exec::Segment {
-                            vmaddr: exec::VMA(s.addr as u64),
+                            vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
                             filesize: s.size as u64,
@@ -226,7 +224,7 @@ impl exec::ExecProber for MachOProber {
     fn name(&self) -> &str {
         "macho"
     }
-    fn probe(&self, buf: util::ArcMC, _eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
         match MachO::new(buf, false) {
             Some(m) => vec!(exec::ProbeResult {
                 desc: m.desc(),
@@ -237,56 +235,105 @@ impl exec::ExecProber for MachOProber {
             None => vec!(),
         }
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
-        let _ = pr; let _ = args;
+   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> Box<exec::Exec> {
+        let _ = args;
         box MachO::new(buf, true).unwrap_or_else(|| fail!("not mach-o")) as Box<exec::Exec>
     }
 }
 
 pub struct FatMachOProber;
 
-impl exec::ExecProber for FatMachOProber {
-    fn name(&self) -> &str {
-        "fat"
-    }
-    fn probe(&self, mc: util::ArcMC, eps: &Vec<&'static exec::ExecProber+'static>) -> Vec<exec::ProbeResult> {
+impl FatMachOProber {
+    fn probe_cb(&self, mc: &MCRef, cb: |u64, fat_arch|) -> bool {
         let buf = mc.get();
-        if buf.len() < 8 { return vec!() }
+        if buf.len() < 8 { return false }
         let fh: fat_header = util::copy_from_slice(buf.slice_to(8), util::BigEndian);
-        if fh.magic != FAT_MAGIC as u32 { return vec!() }
+        if fh.magic != FAT_MAGIC as u32 { return false }
         let nfat = fh.nfat_arch as u64;
         let mut off: uint = 8;
         if (buf.len() as u64) < (off as u64) + (nfat * size_of::<fat_arch>() as u64) {
             util::errln(format!("fatmacho: no room for {} fat archs", nfat));
-            return vec!()
+            return false
         }
-        let mut result = Vec::new();
         for i in range(0, nfat) {
             let fa: fat_arch = util::copy_from_slice(buf.slice(off, off + size_of::<fat_arch>()), util::BigEndian);
             if (fa.offset as u64) + (fa.size as u64) >= (buf.len() as u64) {
                 util::errln(format!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
                               fa.cputype, fa.cpusubtype, fa.offset, fa.size));
             } else {
-                let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
-                    Some(desc) => desc.to_string(),
-                    None => format!("{}", i),
-                };
-                for (_ep, pr) in exec::probe_all(eps, Arc::new(util::slice_mc(mc.clone(), fa.offset.to_ui(), fa.size.to_ui()))).into_iter() {
-                    let npr = exec::ProbeResult {
-                        desc: format!("(slice #{}) {}", i, pr.desc),
-                        arch: pr.arch,
-                        likely: pr.likely,
-                        cmd: vec!("fat", "-arch", arch.as_slice()).owneds() + pr.cmd,
-                    };
-                    result.push(npr);
-                }
+                cb(i, fa);
             }
             off += size_of::<fat_arch>();
         }
+        true
+    }
+}
+
+impl exec::ExecProber for FatMachOProber {
+    fn name(&self) -> &str {
+        "fat"
+    }
+    fn probe(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef) -> Vec<exec::ProbeResult> {
+        let mut result = Vec::new();
+        let ok = self.probe_cb(&mc, |i, fa| { 
+            let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
+                Some(desc) => desc.to_string(),
+                None => format!("{}", i),
+            };
+            let off = fa.offset.to_ui();
+            let size = fa.size.to_ui();
+            for (_ep, pr) in exec::probe_all(eps, mc.slice(off, off + size)).into_iter() {
+                let npr = exec::ProbeResult {
+                    desc: format!("(slice #{}) {}", i, pr.desc),
+                    arch: pr.arch,
+                    likely: pr.likely,
+                    cmd: vec!("fat", "-arch", arch.as_slice()).owneds() + pr.cmd,
+                };
+                result.push(npr);
+            }
+        });
+        if !ok { return vec!()}
         result
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
-        unimplemented!();
+
+    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, mut args: Vec<String>) -> Box<exec::Exec> {
+        // -arch is so common in OS X that let's make an exception...
+        for arg in args.iter_mut() {
+            if !arg.as_slice().starts_with("-") { break }
+            if arg.equiv(&"-arch") {
+                *arg = "--arch".to_string();
+            }
+        }
+        let top = "fat (-arch ARCH | -s SLICE)";
+        let mut optgrps = vec!(
+            getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
+            getopts::optopt("s", "slice", "choose by slice number", ""),
+        );
+        let mut m = util::do_getopts(args.as_slice(), top, 0, std::uint::MAX, &mut optgrps);
+        let slice_num = m.opt_str("slice");
+        let arch = m.opt_str("arch");
+        if slice_num.is_some() == arch.is_some() {
+            util::usage(top, &optgrps);
+        }
+        let slice_i = slice_num.map_or(0u64, |s| from_str(s.as_slice()).unwrap());
+        let mut result = None;
+        let ok = self.probe_cb(&mc, |i, fa| {
+            if !result.is_some() && if arch.is_some() {
+                  mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == arch.as_ref().unwrap().as_slice())
+               } else {
+                  i == slice_i
+               }
+            {
+                let off = fa.offset.to_ui();
+                let size = fa.size.to_ui();
+                result = Some(exec::create(eps, mc.slice(off, off + size), replace(&mut m.free, vec!())));
+            }
+        });
+        if !ok { fail!("invalid fat mach-o"); }
+        match result {
+            Some(e) => e,
+            None => fail!("fat arch not found")
+        }
     }
 }
 

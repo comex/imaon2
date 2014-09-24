@@ -1,4 +1,5 @@
 #![feature(macro_rules)]
+#![feature(unboxed_closures, unboxed_closure_sugar)]
 #![allow(non_camel_case_types)]
 #![feature(phase)]
 
@@ -6,6 +7,7 @@
 extern crate macros;
 extern crate util;
 extern crate collections;
+extern crate getopts;
 use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
@@ -48,7 +50,7 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
-    pub buf: Option<util::ArcMC>,
+    pub buf: Option<util::MCRef>,
 }
 
 pub trait Exec {
@@ -57,9 +59,9 @@ pub trait Exec {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, buf: util::ArcMC, eps: &Vec<&'static ExecProber+'static>) -> Vec<ProbeResult>;
+    fn probe(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, buf: util::ArcMC, pr: &ProbeResult, args: &str) -> Box<Exec>;
+    fn create(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> Box<Exec>;
 }
 
 pub struct ProbeResult {
@@ -69,13 +71,23 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::ArcMC) -> Vec<(&'static ExecProber+'static, ProbeResult)> {
+pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<(&'static ExecProber+'static, ProbeResult)> {
     let mut result = vec!();
     for epp in eps.iter() {
-        for pr in epp.probe(buf.clone(), eps).into_iter() {
+        for pr in epp.probe(eps, buf.clone()).into_iter() {
             result.push((*epp, pr))
         }
     }
     result
+}
+
+pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args: Vec<String>) -> Box<Exec+'static> {
+    let prober_name = args.remove(0).unwrap();
+    for epp in eps.iter() {
+        if epp.name() == prober_name.as_slice() {
+            return epp.create(eps, buf, args)
+        }
+    }
+    fail!("no format named {}", prober_name)
 }
 

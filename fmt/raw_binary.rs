@@ -13,7 +13,7 @@ impl exec::Exec for RawBinary {
 }
 
 impl RawBinary {
-    pub fn new(buf: util::ArcMC, _args: &str) -> RawBinary {
+    pub fn new(buf: util::MCRef, _args: Vec<String>) -> RawBinary {
         let len = buf.get().len();
         // todo: parse args
         let seg = exec::Segment {
@@ -42,7 +42,7 @@ impl exec::ExecProber for RawProber {
     fn name(&self) -> &str {
         "raw"
     }
-    fn probe(&self, _: util::ArcMC, _eps: &Vec<&'static exec::ExecProber>) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, _: util::MCRef) -> Vec<exec::ProbeResult> {
         vec!(exec::ProbeResult {
             desc: "raw".to_string(),
             arch: arch::UnknownArch,
@@ -50,8 +50,7 @@ impl exec::ExecProber for RawProber {
             cmd: vec!("raw".to_string()),
         })
     }
-    fn create(&self, buf: util::ArcMC, pr: &exec::ProbeResult, args: &str) -> Box<exec::Exec> {
-        let _ = pr; let _ = args;
+    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: util::MCRef, args: Vec<String>) -> Box<exec::Exec> {
         box RawBinary::new(buf, args) as Box<exec::Exec>
     }
 }
