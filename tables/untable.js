@@ -20,7 +20,7 @@ try {
 var instructions = result.filter(function(defn) {
     return (
         defn.supers.indexOf('Instruction') != -1 &&
-        defn.props.Inst &&
+        defn.props.Opcode &&
         defn.props.Namespace != 'TargetOpcode' &&
         !defn.props.isPseudo &&
         !defn.props.isAsmParserOnly &&
@@ -33,7 +33,7 @@ var instructions = result.filter(function(defn) {
     });
     return {
         name: defn.name,
-        inst: defn.props.Inst,
+        inst: defn.props.Opcode,
         pattern: defn.props.Pattern,
         asm_string: defn.props.AsmString,
         predicates: predicates,
