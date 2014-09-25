@@ -277,19 +277,19 @@ impl exec::ExecProber for FatMachOProber {
     }
     fn probe(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef) -> Vec<exec::ProbeResult> {
         let mut result = Vec::new();
-        let ok = self.probe_cb(&mc, |i, fa| { 
+        let ok = self.probe_cb(&mc, |i, fa| {
             let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
                 Some(desc) => desc.to_string(),
                 None => format!("{}", i),
             };
             let off = fa.offset.to_ui();
             let size = fa.size.to_ui();
-            for (_ep, pr) in exec::probe_all(eps, mc.slice(off, off + size)).into_iter() {
+            for pr in exec::probe_all(eps, mc.slice(off, off + size)).into_iter() {
                 let npr = exec::ProbeResult {
                     desc: format!("(slice #{}) {}", i, pr.desc),
                     arch: pr.arch,
                     likely: pr.likely,
-                    cmd: vec!("fat", "-arch", arch.as_slice()).owneds() + pr.cmd,
+                    cmd: vec!("fat", "--arch", arch.as_slice()).owneds() + pr.cmd,
                 };
                 result.push(npr);
             }
@@ -298,15 +298,8 @@ impl exec::ExecProber for FatMachOProber {
         result
     }
 
-    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, mut args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
-        // -arch is so common in OS X that let's make an exception...
-        for arg in args.iter_mut() {
-            if !arg.as_slice().starts_with("-") { break }
-            if arg.equiv(&"-arch") {
-                *arg = "--arch".to_string();
-            }
-        }
-        let top = "fat (-arch ARCH | -s SLICE)";
+    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
+        let top = "fat (--arch ARCH | -s SLICE)";
         let mut optgrps = vec!(
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),

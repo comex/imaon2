@@ -37,6 +37,7 @@ fn main() {
     let top = "Usage: exectool <binary> [format...] [-- ops...]";
     let mut optgrps = vec!(
         getopts::optflag("v", "verbose", "Verbose mode"),
+        getopts::optopt( "",  "arch", "Architecture bias", "arch"),
         getopts::optflag("",  "list-segs", "List segments"),
         getopts::optflag("",  "list-sects", "List sections"),
     );
@@ -52,26 +53,22 @@ fn main() {
     });
     let mm = util::safe_mmap(&mut fp);
     if args.len() > 0 {
-        let ex: Box<exec::Exec>;
-        let real_args: Vec<String>;
         if args[0].as_slice().starts_with("-") {
-            real_args = args;
-            fail!("set ex");
-        } else {
-            let (ex_, rest) = exec::create(&execall::all_probers(), mm.clone(), args);
-            ex = ex_; real_args = rest;
+            let m_ = util::do_getopts(args.as_slice(), top, 0, 0, &mut optgrps);
+            args.insert(0, "--".to_string());
+            match m_.opt_str("arch") {
+                Some(arch) => { args.insert(0, arch); args.insert(0, "--arch".to_string()); }
+                None => ()
+            }
+            args.insert(0, "auto".to_string());
         }
+        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args);
         let m = util::do_getopts(real_args.as_slice(), top, 0, 0, &mut optgrps);
         do_stuff(ex, m)
     } else {
         let results = exec::probe_all(&execall::all_probers(), mm.clone());
         // no format specified, give a list
-        let likely: Vec<&(&'static exec::ExecProber, exec::ProbeResult)> = results.iter().filter(|&&(_, ref pr)| pr.likely).collect();
-        if likely.len() == 0 {
-            util::errln(format!("open {}: no formats were likely", filename));
-            util::exit();
-        }
-        for &(_, ref pr) in results.iter() {
+        for pr in results.iter() {
             let name = util::shell_quote(pr.cmd.as_slice());
             println!("? [{}] {}{}",
                 name,

@@ -1,5 +1,6 @@
 #![feature(macro_rules)]
 #![feature(unboxed_closures, unboxed_closure_sugar)]
+#![feature(tuple_indexing)]
 #![allow(non_camel_case_types)]
 #![feature(phase)]
 
@@ -12,6 +13,7 @@ use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
 use std::fmt;
+use std::mem::replace;
 
 pub mod arch;
 
@@ -87,18 +89,19 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<(&'static ExecProber+'static, ProbeResult)> {
+pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<ProbeResult> {
     let mut result = vec!();
     for epp in eps.iter() {
-        for pr in epp.probe(eps, buf.clone()).into_iter() {
-            result.push((*epp, pr))
-        }
+        result.extend(epp.probe(eps, buf.clone()).into_iter());
     }
     result
 }
 
 pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
     let prober_name = args.remove(0).unwrap();
+    if prober_name.equiv(&"auto") {
+        return create_auto(eps, buf, args)
+    }
     for epp in eps.iter() {
         if epp.name() == prober_name.as_slice() {
             return epp.create(eps, buf, args)
@@ -107,3 +110,30 @@ pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args
     fail!("no format named {}", prober_name)
 }
 
+fn create_auto(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
+    let m = util::do_getopts(args.as_slice(), "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
+        getopts::optopt("", "arch", "Architecture bias", "arch"),
+    ));
+    let mut results = probe_all(eps, buf.clone());
+    match m.opt_str("arch") {
+        Some(arch_str) => {
+            let arch = from_str(arch_str.as_slice()).unwrap();
+            for pr in results.iter_mut() {
+                if pr.likely && pr.arch == arch {
+                    return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
+                }
+            }
+        }
+        None => ()
+    }
+    for pr in results.iter_mut() {
+        if pr.likely {
+            return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
+        }
+    }
+    for pr in results.iter_mut() {
+        return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
+    }
+    fail!("create_auto: no formats, not even raw_binary??");
+
+}
