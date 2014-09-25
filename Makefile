@@ -35,7 +35,8 @@ endef
 define_crate = $(eval $(define_crate_))
 
 $(call define_crate,rlib,macros,macros.rs,)
-$(call define_crate,dylib,util,util.rs,macros)
+$(call define_crate,dylib,bsdlike_getopts,bsdlike_getopts.rs,)
+$(call define_crate,dylib,util,util.rs,macros bsdlike_getopts)
 
 cratefile-llvmshim := $(call cratefile_dylib,llvmshim)
 all: $(cratefile-llvmshim)

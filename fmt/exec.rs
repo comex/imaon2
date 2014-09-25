@@ -7,24 +7,40 @@
 extern crate macros;
 extern crate util;
 extern crate collections;
-extern crate getopts;
+extern crate "bsdlike_getopts" as getopts;
 use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
+use std::fmt;
 
 pub mod arch;
 
-#[deriving(Default, Copy, Clone, Show, PartialEq, Eq, PartialOrd, Ord)]
+#[deriving(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VMA(pub u64);
+
+impl fmt::Show for VMA {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::FormatError> {
+        write!(fmt, "0x{:x}", self.0)
+    }
+}
 
 delegate_arith!(VMA, Sub, sub, u64)
 delegate_arith!(VMA, Add, add, u64)
 
-#[deriving(Default, Copy, Clone, Show, PartialEq, Eq)]
+#[deriving(Default, Copy, Clone, PartialEq, Eq)]
 pub struct Prot {
     pub r: bool,
     pub w: bool,
     pub x: bool,
+}
+
+impl fmt::Show for Prot {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::FormatError> {
+        write!(fmt, "{}{}{}",
+            if self.r { 'r' } else { '-' },
+            if self.w { 'w' } else { '-' },
+            if self.x { 'x' } else { '-' })
+    }
 }
 
 pub static prot_all : Prot = Prot { r: true, w: true, x: true };
@@ -33,7 +49,7 @@ pub static prot_all : Prot = Prot { r: true, w: true, x: true };
 // formats often have redundant fields.  (e.g. ELF sections have protection
 // and alignment, Mach-O segments have names)
 
-#[deriving(Default, Clone)]
+#[deriving(Default, Show, Clone)]
 pub struct Segment {
     pub vmaddr: VMA,
     pub vmsize: u64,
@@ -61,7 +77,7 @@ pub trait ExecProber {
     fn name(&self) -> &str;
     fn probe(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> Box<Exec>;
+    fn create(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec>, Vec<String>);
 }
 
 pub struct ProbeResult {
@@ -81,7 +97,7 @@ pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Ve
     result
 }
 
-pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args: Vec<String>) -> Box<Exec+'static> {
+pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
     let prober_name = args.remove(0).unwrap();
     for epp in eps.iter() {
         if epp.name() == prober_name.as_slice() {

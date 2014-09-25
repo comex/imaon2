@@ -3,7 +3,7 @@
 
 extern crate native;
 extern crate libc;
-extern crate getopts;
+extern crate "bsdlike_getopts" as getopts;
 extern crate sync;
 
 extern crate regex;
@@ -216,10 +216,8 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MCRef {
 
 
 pub fn do_getopts(args: &[String], top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
-    optgrps.push(getopts::optflag("h", "help", "This help"));
     match getopts::getopts(args, optgrps.as_slice()) {
-        Ok(m) => if !m.opt_present("help") &&
-                    m.free.len() >= min_expected_free &&
+        Ok(m) => if m.free.len() >= min_expected_free &&
                     m.free.len() <= max_expected_free {
                         m
                  } else {
@@ -229,7 +227,8 @@ pub fn do_getopts(args: &[String], top: &str, min_expected_free: uint, max_expec
     }
 }
 
-pub fn usage(top: &str, optgrps: &Vec<getopts::OptGroup>) -> ! {
+pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) -> ! {
+    optgrps.push(getopts::optflag("h", "help", "This help"));
     println!("{}", getopts::usage(top, optgrps.as_slice()));
     fail!();
 }

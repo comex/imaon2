@@ -6,7 +6,7 @@
 extern crate macros;
 extern crate util;
 extern crate exec;
-extern crate getopts;
+extern crate "bsdlike_getopts" as getopts;
 extern crate collections;
 extern crate sync;
 extern crate libc;
@@ -235,9 +235,11 @@ impl exec::ExecProber for MachOProber {
             None => vec!(),
         }
     }
-   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> Box<exec::Exec> {
-        let _ = args;
-        box MachO::new(buf, true).unwrap_or_else(|| fail!("not mach-o")) as Box<exec::Exec>
+   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
+        (box MachO::new(buf, true)
+            .unwrap_or_else(|| fail!("not mach-o"))
+            as Box<exec::Exec>,
+         args)
     }
 }
 
@@ -296,7 +298,7 @@ impl exec::ExecProber for FatMachOProber {
         result
     }
 
-    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, mut args: Vec<String>) -> Box<exec::Exec> {
+    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, mut args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
         // -arch is so common in OS X that let's make an exception...
         for arg in args.iter_mut() {
             if !arg.as_slice().starts_with("-") { break }
@@ -313,7 +315,7 @@ impl exec::ExecProber for FatMachOProber {
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
-            util::usage(top, &optgrps);
+            util::usage(top, &mut optgrps);
         }
         let slice_i = slice_num.map_or(0u64, |s| from_str(s.as_slice()).unwrap());
         let mut result = None;
@@ -332,7 +334,7 @@ impl exec::ExecProber for FatMachOProber {
         if !ok { fail!("invalid fat mach-o"); }
         match result {
             Some(e) => e,
-            None => fail!("fat arch not found")
+            None => fail!("fat arch matching command line not found")
         }
     }
 }
