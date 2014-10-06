@@ -272,11 +272,11 @@ pub fn shell_quote(args: &[String]) -> String {
     let mut sb = std::string::String::new();
     for arg_ in args.iter() {
         let arg = arg_.as_slice();
-        if sb.len() != 0 { sb.push_char(' ') }
+        if sb.len() != 0 { sb.push(' ') }
         if regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
             sb.push_str(arg);
         } else {
-            sb.push_char('"');
+            sb.push('"');
             for ch_ in arg.as_bytes().iter() {
                 let chu = *ch_;
                 let ch = *ch_ as char;
@@ -284,16 +284,16 @@ pub fn shell_quote(args: &[String]) -> String {
                     if ch == '\n' {
                         sb.push_str("\\n");
                     } else {
-                        sb.push_char('\\');
-                        sb.push_char(ch);
+                        sb.push('\\');
+                        sb.push(ch);
                     }
                 } else if !chu.is_ascii() || !chu.to_ascii().is_print() {
                     sb.push_str(format!("\\\\x{:02x}", chu).as_slice());
                 } else {
-                    sb.push_char(ch);
+                    sb.push(ch);
                 }
             }
-            sb.push_char('"');
+            sb.push('"');
         }
     }
     sb.into_string()

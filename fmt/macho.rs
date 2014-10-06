@@ -2,6 +2,7 @@
 #![feature(phase)]
 #![feature(globs)]
 #![allow(non_camel_case_types)]
+#![allow(non_uppercase_statics)]
 #[phase(plugin)]
 extern crate macros;
 extern crate util;

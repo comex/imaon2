@@ -2,6 +2,7 @@
 #![feature(unboxed_closures, unboxed_closure_sugar)]
 #![feature(tuple_indexing)]
 #![allow(non_camel_case_types)]
+#![allow(non_uppercase_statics)]
 #![feature(phase)]
 
 #[phase(plugin)]
@@ -95,7 +96,7 @@ pub enum SymbolSource {
     ExportedSymbols,
 }
 
-pub trait Exec {
+pub trait Exec :'static {
     fn get_exec_base(&self) -> &ExecBase;
 
     fn as_any(&self) -> &std::any::Any {
