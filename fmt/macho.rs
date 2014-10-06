@@ -15,23 +15,77 @@ use std::default::Default;
 use std::vec::Vec;
 use std::mem::replace;
 use std::mem::size_of;
-use util::{ToUi, OptionExt, VecStrExt, MCRef};
+use util::{ToUi, VecStrExt, MCRef, Swap, zeroed_t};
 use macho_bind::*;
 use exec::{arch, VMA};
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
 
+// dont bother with the unions
+deriving_swap!(
+#[repr(C)]
+pub struct x_nlist {
+    pub n_strx: uint32_t,
+    pub n_type: uint8_t,
+    pub n_sect: uint8_t,
+    pub n_desc: int16_t,
+    pub n_value: uint32_t,
+}
+)
+deriving_swap!(
+#[repr(C)]
+pub struct x_nlist_64 {
+    pub n_strx: uint32_t,
+    pub n_type: uint8_t,
+    pub n_sect: uint8_t,
+    pub n_desc: uint16_t,
+    pub n_value: uint64_t,
+}
+)
+
+#[deriving(Default, Show)]
+pub struct SymSubset(uint, uint);
+#[deriving(Default, Show)]
+pub struct RelSubset(uint, uint);
+
 #[deriving(Default)]
 pub struct MachO {
-    eb: exec::ExecBase,
-    is64: bool,
-    mh: mach_header,
+    pub eb: exec::ExecBase,
+    pub is64: bool,
+    pub mh: mach_header,
+    // old-style symbol table:
+    pub nlist_size: uint,
+    pub symtab: MCRef,
+    pub strtab: MCRef,
+    pub localsym: SymSubset,
+    pub extdefsym: SymSubset,
+    pub undefsym: SymSubset,
+    pub toc: MCRef,
+    pub modtab: MCRef,
+    pub extrefsym: MCRef,
+    pub indirectsym: MCRef,
+    pub extrel: RelSubset,
+    pub locrel: RelSubset,
+    // new-style
+    pub dyld_rebase: MCRef,
+    pub dyld_bind: MCRef,
+    pub dyld_weak_bind: MCRef,
+    pub dyld_lazy_bind: MCRef,
+    pub dyld_export: MCRef,
 }
 
 impl exec::Exec for MachO {
     fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
         &self.eb
+    }
+
+    fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
+        if source == exec::AllSymbols {
+            self.nlist_symbols(0, self.symtab.len() / self.nlist_size)
+        } else {
+            unimplemented!()
+        }
     }
 }
 
@@ -109,7 +163,7 @@ impl MachO {
             // useless 'reserved' field
             if is64 { lc_off += 4; }
         }
-        me.eb.buf = Some(mc);
+        me.eb.buf = mc;
         me.parse_header();
         if do_lcs {
             me.parse_load_commands(lc_off);
@@ -155,16 +209,16 @@ impl MachO {
     }
 
     fn parse_load_commands(&mut self, mut lc_off: uint) {
+        self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
-        let buf = self.eb.buf.unwrap_ref().get();
-        let segs = &mut self.eb.segments;
-        let sects = &mut self.eb.sections;
+        let buf = self.eb.buf.get();
+        //let buf_len = buf.len();
         let mut segi = 0u;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
-            let data = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
+            let lc_buf = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
             let this_lc_off = lc_off;
-            let do_segment = |is64: bool| {
+            let do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if is64 == true {
                     type segment_command_x = segment_command_64;@
                     type section_x = section_64;
@@ -173,7 +227,7 @@ impl MachO {
                     type section_x = section;
                 } then {
                     let mut off = size_of::<segment_command_x>();
-                    let sc: segment_command_x = util::copy_from_slice(data.slice_to(off), end);
+                    let sc: segment_command_x = util::copy_from_slice(lc_buf.slice_to(off), end);
                     let ip = sc.initprot.to_ui();
                     let segprot = exec::Prot {
                         r: (ip & VM_PROT_READ) != 0,
@@ -190,7 +244,7 @@ impl MachO {
                         private: this_lc_off,
                     });
                     for _ in range(0, sc.nsects) {
-                        let s: section_x = util::copy_from_slice(data.slice(off, off + size_of::<section_x>()), end);
+                        let s: section_x = util::copy_from_slice(lc_buf.slice(off, off + size_of::<section_x>()), end);
                         sects.push(exec::Segment {
                             vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
@@ -206,14 +260,87 @@ impl MachO {
                 segi += 1;
             };
             match lc.cmd.to_ui() {
-                LC_SEGMENT => do_segment(false),
-                LC_SEGMENT_64 => do_segment(true),
+                LC_SEGMENT => do_segment(false, &mut self.eb.segments, &mut self.eb.sections),
+                LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
+                LC_DYLD_INFO | LC_DYLD_INFO_ONLY => {
+                    let di: dyld_info_command = util::copy_from_slice(lc_buf.slice_to(size_of::<dyld_info_command>()), end);
+                    self.dyld_rebase = self.file_array("dyld rebase info", di.rebase_off, di.rebase_size, 1);
+                    self.dyld_bind = self.file_array("dyld bind info", di.bind_off, di.bind_size, 1);
+                    self.dyld_weak_bind = self.file_array("dyld weak bind info", di.weak_bind_off, di.weak_bind_size, 1);
+                    self.dyld_lazy_bind = self.file_array("dyld lazy bind info", di.lazy_bind_off, di.lazy_bind_size, 1);
+                    self.dyld_export = self.file_array("dyld lazy bind info", di.export_off, di.export_size, 1);
+
+                },
+                LC_SYMTAB => {
+                    let sy: symtab_command = util::copy_from_slice(lc_buf.slice_to(size_of::<symtab_command>()), end);
+                    self.symtab = self.file_array("symbol table", sy.symoff, sy.nsyms, self.nlist_size);
+                    self.strtab = self.file_array("string table", sy.stroff, sy.strsize, 1);
+                    //if sy.std::uint::MAX / nlist_size
+                    //sy.symoff
+
+                },
+                LC_DYSYMTAB => {
+                    let ds: dysymtab_command = util::copy_from_slice(lc_buf.slice_to(size_of::<dysymtab_command>()), end);
+                    self.localsym = SymSubset(ds.ilocalsym.to_ui(), ds.nlocalsym.to_ui());
+                    self.extdefsym = SymSubset(ds.iextdefsym.to_ui(), ds.nextdefsym.to_ui());
+                    self.undefsym = SymSubset(ds.iundefsym.to_ui(), ds.nundefsym.to_ui());
+                    self.toc = self.file_array("dylib table of contents", ds.tocoff, ds.ntoc, size_of::<dylib_table_of_contents>());
+                    let dylib_module_size = if self.is64 { size_of::<dylib_module_64>() } else { size_of::<dylib_module>() };
+                    self.modtab = self.file_array("module table", ds.modtaboff, ds.nmodtab, dylib_module_size);
+                    self.extrefsym = self.file_array("referenced symbol table", ds.extrefsymoff, ds.nextrefsyms, size_of::<dylib_reference>());
+                    self.indirectsym = self.file_array("'indirect symbol' table", ds.indirectsymoff, ds.nindirectsyms, 4);
+                    self.extrel = RelSubset(ds.extreloff.to_ui(), ds.nextrel.to_ui());
+                    self.locrel = RelSubset(ds.locreloff.to_ui(), ds.nlocrel.to_ui());
+                },
 
 
                 _ => ()
             }
             lc_off += lc.cmdsize.to_ui();
         }
+    }
+
+    fn file_array(&self, name: &str, off: u32, count: u32, elm_size: uint) -> MCRef {
+        let off_ = off.to_ui();
+        let count_ = count.to_ui();
+        let buf_len = self.eb.buf.len();
+        if off_ >= buf_len || count_ > (buf_len - off_) / elm_size {
+            util::errln(format!("{} ({}, {} * {}-sized elements) out of bounds", name, off_, count_, elm_size));
+            Default::default()
+        } else {
+            self.eb.buf.slice(off_, off_ + count_ * elm_size)
+        }
+    }
+
+
+    fn nlist_symbols(&self, start: uint, count: uint) -> Vec<exec::Symbol> {
+        let mut result = vec!();
+        let data = self.symtab.get();
+        let strtab = self.strtab.get();
+        let mut off = start * self.nlist_size;
+        for _ in range(start, start + count) {
+            let slice = data.slice(off, off + self.nlist_size);
+            branch!(if self.is64 == true {
+                type nlist_x = x_nlist_64;
+            } else {
+                type nlist_x = x_nlist;
+            } then {
+                let nl: nlist_x = util::copy_from_slice(slice, self.eb.endian);
+                let _n_pext = (nl.n_type & 0x10) != 0;
+                let _n_stab = (nl.n_type & 0xe0) >> 5;
+                let n_type = nl.n_type & 0x0e;
+                let name = util::trim_to_null(strtab.slice_from(nl.n_strx.to_ui()));
+                result.push(exec::Symbol {
+                    name: name,
+                    is_public: true,
+                    is_weak: true,
+                    val: exec::Undefined,
+                    private: 0
+                })
+            });
+            off += self.nlist_size;
+        }
+        result
     }
 }
 
@@ -236,10 +363,13 @@ impl exec::ExecProber for MachOProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
+        let m = util::do_getopts(args.as_slice(), "macho ...", 0, std::uint::MAX, &mut vec!(
+            // ...
+        ));
         (box MachO::new(buf, true)
             .unwrap_or_else(|| fail!("not mach-o"))
             as Box<exec::Exec>,
-         args)
+         m.free)
     }
 }
 

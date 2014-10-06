@@ -7,14 +7,41 @@ extern crate exec;
 extern crate sync;
 extern crate native;
 extern crate debug;
+extern crate macho;
 
 use native::io;
 use std::rt::rtio;
+use std::any::{AnyRefExt};
 mod execall;
+
+fn macho_filedata_info(mo: &macho::MachO) {
+    println!("File data:");
+    let entry = |mc: &util::MCRef, name| {
+        match mc.offset_in(&mo.eb.buf) {
+            None => (),
+            Some(offset) => {
+                println!("{}: offset {:#x}, length {:#x}",
+                    name, offset, mc.len());
+            }
+        }
+    };
+    entry(&mo.symtab,         "symtab");
+    entry(&mo.strtab,         "strtab");
+    entry(&mo.toc,            "toc");
+    entry(&mo.modtab,         "modtab");
+    entry(&mo.extrefsym,      "extrefsym");
+    entry(&mo.indirectsym,    "indirectsym");
+    entry(&mo.dyld_rebase,    "dyld rebase");
+    entry(&mo.dyld_bind,      "dyld bind");
+    entry(&mo.dyld_weak_bind, "dyld weak_bind");
+    entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
+    entry(&mo.dyld_export,    "dyld export");
+}
 
 fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     let eb = ex.get_exec_base();
-    if m.opt_present("list-segs") {
+    let macho = ex.as_any().downcast_ref::<macho::MachO>();
+    if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
             println!("{:<16} @ {:<#18x} sz {:<#12x}  off:{:<#8x} filesz {:<#8x} {}",
@@ -25,11 +52,21 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
             );
         }
     }
-    if m.opt_present("list-sects") {
+    if m.opt_present("sects") {
         println!("All sections:");
         for seg in eb.sections.iter() {
             println!("{}", seg);
         }
+    }
+    if m.opt_present("syms") {
+        println!("All symbols:");
+        for sym in ex.get_symbol_list(exec::AllSymbols).iter() {
+            let s = String::from_utf8_lossy(sym.name);
+            println!("{}", s);
+        }
+    }
+    if m.opt_present("macho-filedata-info") {
+        macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
     }
 }
 
@@ -37,9 +74,12 @@ fn main() {
     let top = "Usage: exectool <binary> [format...] [-- ops...]";
     let mut optgrps = vec!(
         getopts::optflag("v", "verbose", "Verbose mode"),
-        getopts::optopt( "",  "arch", "Architecture bias", "arch"),
-        getopts::optflag("",  "list-segs", "List segments"),
-        getopts::optflag("",  "list-sects", "List sections"),
+        getopts::optopt( "",  "arch",  "Architecture bias", "arch"),
+        getopts::optflag("",  "segs",  "List segments"),
+        getopts::optflag("",  "sects", "List sections"),
+        getopts::optflag("",  "syms",  "List symbols"),
+        // todo: option groups
+        getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
     );
     let mut args = std::os::args();
     args.remove(0);

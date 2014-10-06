@@ -68,12 +68,45 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
-    pub buf: Option<util::MCRef>,
+    pub buf: util::MCRef,
+}
+
+#[deriving(Show, PartialEq, Eq)]
+pub enum SymbolValue {
+    Addr(VMA),
+    Undefined,
+    Resolver(VMA),
+    SeeOther(uint),
+}
+
+#[deriving(Show, PartialEq, Eq)]
+pub struct Symbol<'a> {
+    pub name: &'a [u8],
+    pub is_public: bool,
+    pub is_weak: bool,
+    pub val: SymbolValue,
+    pub private: uint,
+}
+
+#[deriving(Show, PartialEq, Eq)]
+pub enum SymbolSource {
+    AllSymbols,
+    ImportedSymbols,
+    ExportedSymbols,
 }
 
 pub trait Exec {
-    fn get_exec_base<'a>(&'a self) -> &'a ExecBase;
+    fn get_exec_base(&self) -> &ExecBase;
+
+    fn as_any(&self) -> &std::any::Any {
+        self as &std::any::Any
+    }
+
+    // Todo: add a monomorphizable iterator version of this
+    fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol>;
 }
+
+// Prober:
 
 pub trait ExecProber {
     fn name(&self) -> &str;

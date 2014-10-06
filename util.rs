@@ -148,12 +148,20 @@ impl<T : ToPrimitive> ToUi for T {
     }
 }
 
-pub fn from_cstr(chs_: &[i8]) -> String {
+pub trait X8 {}
+impl X8 for u8 {}
+impl X8 for i8 {}
+
+pub fn trim_to_null<T: X8>(chs_: &[T]) -> &[u8] {
     let chs: &[u8] = unsafe { transmute(chs_) };
-    let truncated = match chs.iter().position(|c| *c == 0) {
+    match chs.iter().position(|c| *c == 0) {
         None => chs,
         Some(i) => chs.slice_to(i)
-    };
+    }
+}
+
+pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
+    let truncated = trim_to_null(chs_);
     String::from_utf8_lossy(truncated).to_string()
 }
 
@@ -161,9 +169,9 @@ pub trait MCOwner: Send+Sync {
     fn dispose(&self, _buf: *mut u8, _len: uint) {}
 }
 
-#[deriving(Send, Clone)]
+#[deriving(Send, Clone, Default)]
 pub struct MCRef {
-    mm: Arc<MemoryMap>,
+    mm: Option<Arc<MemoryMap>>,
     off: uint,
     len: uint
 }
@@ -178,10 +186,24 @@ impl MCRef {
     }
     pub fn get<'a>(&'a self) -> &'a [u8] {
         unsafe { std::slice::raw::buf_as_slice::<u8, &'a [u8]>(
-            transmute(self.mm.data().offset(self.off as int)),
+            transmute(self.mm.as_ref().unwrap().data().offset(self.off as int)),
             self.len,
             |slice| transmute(slice)
         ) }
+    }
+    pub fn offset_in(&self, other: &MCRef) -> Option<uint> {
+        match (&self.mm, &other.mm) {
+            (&Some(ref mm1), &Some(ref mm2)) => {
+                if (&**mm1 as *const MemoryMap) == (&**mm2 as *const MemoryMap) &&
+                   other.off <= self.off && self.off <= other.off + other.len {
+                    Some(self.off - other.off)
+                } else { None }
+            }
+            _ => None
+        }
+    }
+    pub fn len(&self) -> uint {
+        self.len
     }
 }
 
@@ -211,7 +233,7 @@ pub fn safe_mmap(fd: &mut file::FileDesc) -> MCRef {
         std::os::MapFd(cfd),
     ]).unwrap();
     let len = mm.len();
-    MCRef { mm: Arc::new(mm), off: 0, len: len }
+    MCRef { mm: Some(Arc::new(mm)), off: 0, len: len }
 }
 
 

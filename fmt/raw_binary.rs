@@ -10,6 +10,9 @@ impl exec::Exec for RawBinary {
     fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
         &self.eb
     }
+    fn get_symbol_list(&self, _: exec::SymbolSource) -> Vec<exec::Symbol> {
+        vec!()
+    }
 }
 
 impl RawBinary {
@@ -31,7 +34,7 @@ impl RawBinary {
                 endian: util::BigEndian,
                 segments: vec!(seg.clone()),
                 sections: vec!(seg.clone()),
-                buf: Some(buf),
+                buf: buf,
             }
         }
     }

@@ -3,13 +3,21 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -C codegen-units=4 -C rpath -C prefer-dynamic --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -C rpath --out-dir $(OUT) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
-cratematch_dylib = lib$(1)-*.dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
+
+ifeq ($(OPT),1)
+LIB := rlib
+RUSTC := $(RUSTC) -O
+RUSTCFLAGS_bin := -C lto
+else
+LIB := dylib
+RUSTC := $(RUSTC) -C codegen-units=4 -C prefer-dynamic 
+endif
 
 all:
 
@@ -18,7 +26,7 @@ define define_crate_
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
-	$(RUSTC) --crate-type $(1) $$<
+	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) $$<
 	#cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 
 all: $$(cratefile-$(2))
@@ -35,8 +43,8 @@ endef
 define_crate = $(eval $(define_crate_))
 
 $(call define_crate,rlib,macros,macros.rs,)
-$(call define_crate,dylib,bsdlike_getopts,bsdlike_getopts.rs,)
-$(call define_crate,dylib,util,util.rs,macros bsdlike_getopts)
+$(call define_crate,$(LIB),bsdlike_getopts,bsdlike_getopts.rs,)
+$(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts)
 
 cratefile-llvmshim := $(call cratefile_dylib,llvmshim)
 all: $(cratefile-llvmshim)
@@ -44,7 +52,7 @@ $(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
 	$(CC) -std=c++11 -c -o $(OUT)/llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
 	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=$(OUT)/llvmshim_cpp.o
 
-#$(call define_crate,dylib,llvmhelp,llvmhelp.rs,llvmshim)
+#$(call define_crate,$(LIB),llvmhelp,llvmhelp.rs,llvmshim)
 
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
@@ -69,12 +77,12 @@ externals/rust-bindgen/bindgen: externals/rust-bindgen/src/bin/bindgen.rs $(OUT)
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
-$(call define_crate,dylib,exec,fmt/exec.rs fmt/arch.rs,util)
-$(call define_crate,dylib,macho,fmt/macho.rs $(OUT)/macho_bind.rs,exec util)
-$(call define_crate,dylib,raw_binary,fmt/raw_binary.rs,exec util)
+$(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
+$(call define_crate,$(LIB),macho,fmt/macho.rs $(OUT)/macho_bind.rs,exec util)
+$(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
-$(call define_crate,dylib,elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
+$(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
 
 $(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 
