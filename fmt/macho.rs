@@ -364,7 +364,7 @@ impl exec::ExecProber for MachOProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
-        let m = util::do_getopts(args.as_slice(), "macho ...", 0, std::uint::MAX, &mut vec!(
+        let m = util::do_getopts(args[], "macho ...", 0, std::uint::MAX, &mut vec!(
             // ...
         ));
         (box MachO::new(buf, true)
@@ -420,7 +420,7 @@ impl exec::ExecProber for FatMachOProber {
                     desc: format!("(slice #{}) {}", i, pr.desc),
                     arch: pr.arch,
                     likely: pr.likely,
-                    cmd: vec!("fat", "--arch", arch.as_slice()).owneds() + pr.cmd,
+                    cmd: vec!("fat", "--arch", arch[]).strings() + pr.cmd,
                 };
                 result.push(npr);
             }
@@ -435,17 +435,17 @@ impl exec::ExecProber for FatMachOProber {
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),
         );
-        let mut m = util::do_getopts(args.as_slice(), top, 0, std::uint::MAX, &mut optgrps);
+        let mut m = util::do_getopts(args[], top, 0, std::uint::MAX, &mut optgrps);
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
             util::usage(top, &mut optgrps);
         }
-        let slice_i = slice_num.map_or(0u64, |s| from_str(s.as_slice()).unwrap());
+        let slice_i = slice_num.map_or(0u64, |s| from_str(s[]).unwrap());
         let mut result = None;
         let ok = self.probe_cb(&mc, |i, fa| {
             if !result.is_some() && if arch.is_some() {
-                  mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == arch.as_ref().unwrap().as_slice())
+                  mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == arch.as_ref().unwrap()[])
                } else {
                   i == slice_i
                }

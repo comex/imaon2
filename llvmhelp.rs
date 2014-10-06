@@ -861,7 +861,7 @@ impl<'f> Builder<'f> {
             self.inbounds_gep(base, small_vec.slice(0, ixs.len()))
         } else {
             let v = ixs.iter().map(|i| C_i32(self.ctx, *i as i32)).collect::<Vec<Value<'f>>>();
-            self.inbounds_gep(base, v.as_slice())
+            self.inbounds_gep(base, v[])
         }
     }
 
@@ -1049,7 +1049,7 @@ impl<'f> Builder<'f> {
 
         let argtys = inputs.iter().map(|v| v.ty()).collect();
 
-        let fty = Type::func(argtys.as_slice(), output);
+        let fty = Type::func(argtys[], output);
         unsafe {
             let v = Value::new(llvm::LLVMInlineAsm(
                 *fty, asm, cons, volatile, alignstack, dia as c_uint));

@@ -137,7 +137,7 @@ pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args
         return create_auto(eps, buf, args)
     }
     for epp in eps.iter() {
-        if epp.name() == prober_name.as_slice() {
+        if epp.name() == prober_name[] {
             return epp.create(eps, buf, args)
         }
     }
@@ -145,13 +145,13 @@ pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args
 }
 
 fn create_auto(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
-    let m = util::do_getopts(args.as_slice(), "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
+    let m = util::do_getopts(args[], "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
         getopts::optopt("", "arch", "Architecture bias", "arch"),
     ));
     let mut results = probe_all(eps, buf.clone());
     match m.opt_str("arch") {
         Some(arch_str) => {
-            let arch = from_str(arch_str.as_slice()).unwrap();
+            let arch = from_str(arch_str[]).unwrap();
             for pr in results.iter_mut() {
                 if pr.likely && pr.arch == arch {
                     return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)

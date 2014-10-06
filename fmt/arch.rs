@@ -22,8 +22,8 @@ impl FromStr for Arch {
     fn from_str(s: &str) -> Option<Arch> {
         let s = s.replace("-", "_");
         let asc = s.into_ascii();
-        let asc = asc.as_slice().to_lower();
-        let sl = asc.as_slice();
+        let asc = asc[].to_lower();
+        let sl = asc[];
         let s = sl.as_str_ascii();
         if s == "x86" || s == "i386" {
             Some(X86)

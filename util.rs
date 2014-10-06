@@ -265,13 +265,13 @@ pub fn errlnb(s: &str) {
 }
 
 pub fn errln(s: String) {
-    errlnb(s.as_slice())
+    errlnb(s[])
 }
 
 pub fn shell_quote(args: &[String]) -> String {
     let mut sb = std::string::String::new();
     for arg_ in args.iter() {
-        let arg = arg_.as_slice();
+        let arg = arg_[];
         if sb.len() != 0 { sb.push(' ') }
         if regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
             sb.push_str(arg);
@@ -288,7 +288,7 @@ pub fn shell_quote(args: &[String]) -> String {
                         sb.push(ch);
                     }
                 } else if !chu.is_ascii() || !chu.to_ascii().is_print() {
-                    sb.push_str(format!("\\\\x{:02x}", chu).as_slice());
+                    sb.push_str(format!("\\\\x{:02x}", chu)[]);
                 } else {
                     sb.push(ch);
                 }
@@ -316,10 +316,10 @@ impl<T> VecExt<T> for Vec<T> {
     }
 }
 pub trait VecStrExt {
-    fn owneds(&self) -> Vec<String>;
+    fn strings(&self) -> Vec<String>;
 }
-impl<T: collections::str::StrAllocating> VecStrExt for Vec<T> {
-    fn owneds(&self) -> Vec<String> { self.map(|x| x.to_owned()) }
+impl<T: std::to_string::ToString> VecStrExt for Vec<T> {
+    fn strings(&self) -> Vec<String> { self.map(|x| x.to_string()) }
 }
 
 #[test]
