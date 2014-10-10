@@ -23,12 +23,16 @@ pub struct VMA(pub u64);
 
 impl fmt::Show for VMA {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::FormatError> {
-        write!(fmt, "0x{:x}", self.0)
+        write!(fmt, "0x");
+        self.0.fmt(fmt);
     }
 }
 
 delegate_arith!(VMA, Sub, sub, u64)
 delegate_arith!(VMA, Add, add, u64)
+delegate_arith!(VMA, BitOr, bitor, u64)
+delegate_arith!(VMA, BitAnd, bitand, u64)
+delegate_arith!(VMA, BitXor, bitxor, u64)
 
 #[deriving(Default, Copy, Clone, PartialEq, Eq)]
 pub struct Prot {
@@ -73,11 +77,11 @@ pub struct ExecBase {
 }
 
 #[deriving(Show, PartialEq, Eq)]
-pub enum SymbolValue {
+pub enum SymbolValue<'a> {
     Addr(VMA),
     Undefined,
     Resolver(VMA),
-    SeeOther(uint),
+    ReExport(&'a [u8]),
 }
 
 #[deriving(Show, PartialEq, Eq)]
@@ -85,7 +89,7 @@ pub struct Symbol<'a> {
     pub name: &'a [u8],
     pub is_public: bool,
     pub is_weak: bool,
-    pub val: SymbolValue,
+    pub val: SymbolValue<'a>,
     pub private: uint,
 }
 

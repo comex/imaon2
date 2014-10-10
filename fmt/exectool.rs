@@ -61,8 +61,17 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     if m.opt_present("syms") {
         println!("All symbols:");
         for sym in ex.get_symbol_list(exec::AllSymbols).iter() {
-            let s = String::from_utf8_lossy(sym.name);
-            println!("{}", s);
+            let name = String::from_utf8_lossy(sym.name);
+            match sym.val {
+                exec::Addr(vma) =>     print!("{:<16}", vma),
+                exec::Undefined =>     print!("[undef]         "),
+                exec::Resolver(vma) => print!("{:<16} [resolver]", vma),
+                exec::ReExport(..) =>  print!("[re-export]     "),
+            }
+            print!(" ");
+            if sym.is_public { print!("[pub] ") }
+            if sym.is_weak   { print!("[weak] ") }
+            println!("{}", name);
         }
     }
     if m.opt_present("macho-filedata-info") {

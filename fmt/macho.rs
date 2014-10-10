@@ -327,16 +327,34 @@ impl MachO {
                 type nlist_x = x_nlist;
             } then {
                 let nl: nlist_x = util::copy_from_slice(slice, self.eb.endian);
-                let _n_pext = (nl.n_type & 0x10) != 0;
-                let _n_stab = (nl.n_type & 0xe0) >> 5;
-                let n_type = nl.n_type & 0x0e;
+                let n_type_field = nl.n_type.to_ui();
+                let n_desc_field = nl.n_desc.to_ui();
+                let _n_pext = (n_type_field & N_PEXT) != 0;
+                let _n_stab = (n_type_field & N_STAB) >> 5;
+                let n_type = n_type_field & N_TYPE;
+                let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
+                let public = (n_type_field & N_EXT) != 0;
                 let name = util::trim_to_null(strtab.slice_from(nl.n_strx.to_ui()));
+                let vma = VMA(nl.n_value as u64);
+                let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
+                let val =
+                    if n_desc_field & N_SYMBOL_RESOLVER != 0 {
+                        exec::Resolver(vma)
+                    } else if n_type == N_UNDF {
+                        exec::Undefined
+                    } else if n_type == N_INDR {
+                        let indr_name = util::trim_to_null(strtab.slice_from(nl.n_value.to_ui()));
+                        exec::ReExport(indr_name)
+
+                    } else {
+                        exec::Addr(vma)
+                    };
                 result.push(exec::Symbol {
                     name: name,
-                    is_public: true,
-                    is_weak: true,
-                    val: exec::Undefined,
-                    private: 0
+                    is_public: public,
+                    is_weak: weak,
+                    val: val,
+                    private: off,
                 })
             });
             off += self.nlist_size;
