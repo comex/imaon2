@@ -45,27 +45,6 @@ struct RcBox<T> {
 }
 
 #[inline]
-pub fn get_mut_if_nonshared<'a, T>(rc: &'a mut Rc<T>) -> Option<&'a mut T> {
-    unsafe {
-        let bp : *const *mut RcBox<T> = transmute(rc);
-        if (**bp).strong.get() == 1 && (**bp).weak.get() == 1 {
-            Some(&mut (**bp).value)
-        } else {
-            None
-        }
-    }
-}
-
-#[test]
-#[allow(unused_variable)]
-fn test_gmin() {
-    let mut a: Rc<int> = Rc::new(42);
-    assert!(!get_mut_if_nonshared(&mut a).is_none());
-    let b = a.clone();
-    assert!(get_mut_if_nonshared(&mut a).is_none());
-}
-
-#[inline]
 pub fn bswap64(x: u64) -> u64 {
     unsafe { intrinsics::bswap64(x) }
 }
