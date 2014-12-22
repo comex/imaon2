@@ -75,6 +75,25 @@ externals/rust-bindgen/bindgen: externals/rust-bindgen/src/bin/bindgen.rs $(OUT)
 	# I think the -rpath bit is a Homebrew bug.
 	rustc -C rpath -o $@ $< -O -L $(OUT) -C link-args="-L$(ANOTHER_LLVM)/lib -rpath $(ANOTHER_LLVM)/lib"
 
+$(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
+	rm -rf $@
+	mkdir $@
+	cp -a $< $@/bindgen
+	mod=1; \
+	while [ "$$mod" = "1" ]; do \
+		mod=0; \
+		for exe in $@/*; do \
+			otool -L $$exe | fgrep -q /stage || continue; \
+			mod=1; \
+			for dylib in `otool -L $$exe | fgrep /stage | awk '{print $$1}'`; do \
+				d=$$(basename $$dylib); \
+				cp -n /usr/local/lib/$$d $$dylib) $@/; \
+				install_name_tool -id $$d $@/$$d; \
+				install_name_tool -change $$dylib $$(echo $$dylib | sed 's!.*lib/!@loader_path/!') $$exe; \
+			done; \
+		done; \
+	done
+
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
