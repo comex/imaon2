@@ -135,10 +135,6 @@ pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
     String::from_utf8_lossy(truncated).to_string()
 }
 
-pub trait MCOwner: Send+Sync {
-    fn dispose(&self, _buf: *mut u8, _len: uint) {}
-}
-
 #[deriving(Send, Clone, Default)]
 pub struct MCRef {
     mm: Option<Arc<MemoryMap>>,
@@ -181,34 +177,35 @@ pub fn safe_mmap(fil: &mut std::io::File) -> MCRef {
     fil.seek(0, io::SeekStyle::SeekEnd).unwrap();
     let size = fil.tell().unwrap();
     fil.seek(oldpos as i64, io::SeekStyle::SeekSet).unwrap();
-    let size = std::cmp::max(size, 0x1000);
+    let rounded = std::cmp::max(size, 0x1000);
     let fd = fil.as_raw_fd();
-    let mm = MemoryMap::new(size.to_ui(), &[
+    let mm = MemoryMap::new(rounded.to_ui(), &[
         std::os::MapReadable,
         std::os::MapWritable,
         std::os::MapFd(fd),
     ]).unwrap();
-    let len = mm.len();
-    MCRef { mm: Some(Arc::new(mm)), off: 0, len: len }
+    assert!(mm.len() >= size as uint);
+    MCRef { mm: Some(Arc::new(mm)), off: 0, len: size as uint }
 }
 
 
-pub fn do_getopts(args: &[String], top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
-    match getopts::getopts(args, optgrps.as_slice()) {
-        Ok(m) => if m.free.len() >= min_expected_free &&
-                    m.free.len() <= max_expected_free {
-                        m
-                 } else {
-                   usage(top, optgrps) 
-                 },
-        _ => usage(top, optgrps),
+pub fn do_getopts(args: &[String], min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
+    if let Ok(m) = getopts::getopts(args, optgrps.as_slice()) {
+        if m.free.len() >= min_expected_free &&
+            m.free.len() <= max_expected_free {
+            return Some(m);
+        }
     }
+    None
 }
 
-pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) -> ! {
+pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
+    do_getopts(args, min_expected_free, max_expected_free, optgrps).unwrap_or_else(|:| { usage(top, optgrps); panic!(); })
+}
+
+pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) {
     optgrps.push(getopts::optflag("h", "help", "This help"));
     println!("{}", getopts::usage(top, optgrps.as_slice()));
-    panic!();
 }
 
 pub fn exit() -> ! {

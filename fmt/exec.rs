@@ -18,6 +18,22 @@ use std::mem::replace;
 
 pub mod arch;
 
+#[deriving(Clone, Copy, Show)]
+pub enum ErrorKind {
+    BadData,
+    Other
+}
+
+#[deriving(Clone, Show)]
+pub struct Error {
+    kind: ErrorKind,
+    message: std::str::CowString<'static>,
+}
+pub type ExecResult<T> = Result<T, Error>;
+pub fn err<T, S: std::borrow::IntoCow<'static, String, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
+    Err(Error { kind: kind, message: s.into_cow() })
+}
+
 #[deriving(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VMA(pub u64);
 
@@ -117,7 +133,7 @@ pub trait ExecProber {
     fn name(&self) -> &str;
     fn probe(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec>, Vec<String>);
+    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)>;
 }
 
 pub type ExecProberRef = &'static (ExecProber+'static);
@@ -137,42 +153,40 @@ pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>
     result
 }
 
-pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
+pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     let prober_name = args.remove(0).unwrap();
     if prober_name == "auto" {
-        return create_auto(eps, buf, args)
+        return create_auto(eps, buf, args);
     }
     for epp in eps.iter() {
         if epp.name() == prober_name {
-            return epp.create(eps, buf, args)
+            return epp.create(eps, buf, args);
         }
     }
     panic!("no format named {}", prober_name)
 }
 
-fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
-    let m = util::do_getopts(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
+fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+    // TODO: error conversion
+    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
         getopts::optopt("", "arch", "Architecture bias", "arch"),
     ));
     let mut results = probe_all(eps, buf.clone());
-    match m.opt_str("arch") {
-        Some(arch_str) => {
-            let arch = from_str(&*arch_str).unwrap();
-            for pr in results.iter_mut() {
-                if pr.likely && pr.arch == arch {
-                    return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
-                }
+    if let Some(arch_str) = m.opt_str("arch") {
+        let arch = from_str(&*arch_str).unwrap();
+        for pr in results.iter_mut() {
+            if pr.likely && pr.arch == arch {
+                return Ok((try!(create(eps, buf, replace(&mut pr.cmd, vec!()))).0, m.free))
             }
         }
-        None => ()
     }
     for pr in results.iter_mut() {
         if pr.likely {
-            return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
+            return Ok((try!(create(eps, buf, replace(&mut pr.cmd, vec!()))).0, m.free))
         }
     }
     for pr in results.iter_mut() {
-        return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
+        return Ok((try!(create(eps, buf, replace(&mut pr.cmd, vec!()))).0, m.free))
     }
     panic!("create_auto: no formats, not even raw_binary??");
 

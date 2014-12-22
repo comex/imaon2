@@ -144,12 +144,12 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
 }
 
 impl MachO {
-    pub fn new(mc: MCRef, do_lcs: bool) -> Option<MachO> {
+    pub fn new(mc: MCRef, do_lcs: bool) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
         let mut lc_off = size_of::<mach_header>();
         {
             let buf = mc.get();
-            if buf.len() < lc_off { return None }
+            if buf.len() < lc_off { return exec::err(exec::ErrorKind::BadData, "truncated"); }
             let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
             let is64; let end;
             match magic {
@@ -157,7 +157,7 @@ impl MachO {
                 0xfeedfacf => { end = util::BigEndian; is64 = true; }
                 0xcefaedfe => { end = util::LittleEndian; is64 = false; }
                 0xcffaedfe => { end = util::LittleEndian; is64 = true; }
-                _ => return None
+                _ => return exec::err(exec::ErrorKind::BadData, "bad magic")
             }
             me.eb.endian = end;
             me.is64 = is64;
@@ -170,7 +170,7 @@ impl MachO {
         if do_lcs {
             me.parse_load_commands(lc_off);
         }
-        Some(me)
+        Ok(me)
     }
 
     pub fn subtype_desc(&self) -> Option<&'static str> {
@@ -372,24 +372,23 @@ impl exec::ExecProber for MachOProber {
         "macho"
     }
     fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
-        match MachO::new(buf, false) {
-            Some(m) => vec!(exec::ProbeResult {
+        if let Ok(m) = MachO::new(buf, false) {
+            vec!(exec::ProbeResult {
                 desc: m.desc(),
                 arch: m.eb.arch,
                 likely: true,
                 cmd: vec!("macho".to_string()),
-            }),
-            None => vec!(),
+            })
+        } else {
+            vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
-        let m = util::do_getopts(&*args, "macho ...", 0, std::uint::MAX, &mut vec!(
+   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+        let m = util::do_getopts_or_panic(&*args, "macho ...", 0, std::uint::MAX, &mut vec!(
             // ...
         ));
-        (box MachO::new(buf, true)
-            .unwrap_or_else(|| panic!("not mach-o"))
-            as Box<exec::Exec>,
-         m.free)
+        let mo: MachO = try!(MachO::new(buf, true));
+        Ok((box mo as Box<exec::Exec>, m.free))
     }
 }
 
@@ -449,17 +448,19 @@ impl exec::ExecProber for FatMachOProber {
         result
     }
 
-    fn create(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
+    fn create(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
         let top = "fat (--arch ARCH | -s SLICE)";
         let mut optgrps = vec!(
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),
         );
-        let mut m = util::do_getopts(&*args, top, 0, std::uint::MAX, &mut optgrps);
+        let mut m = util::do_getopts_or_panic(&*args, top, 0, std::uint::MAX, &mut optgrps);
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
+            // TODO
             util::usage(top, &mut optgrps);
+            panic!();
         }
         let slice_i = slice_num.map_or(0u64, |s| from_str(&*s).unwrap());
         let mut result = None;
@@ -475,10 +476,12 @@ impl exec::ExecProber for FatMachOProber {
                 result = Some(exec::create(eps, mc.slice(off, off + size), replace(&mut m.free, vec!())));
             }
         });
-        if !ok { panic!("invalid fat mach-o"); }
+        if !ok {
+            return exec::err(exec::ErrorKind::BadData, "invalid fat mach-o");
+        }
         match result {
             Some(e) => e,
-            None => panic!("fat arch matching command line not found")
+            None => exec::err(exec::ErrorKind::Other, "fat arch matching command line not found")
         }
     }
 }

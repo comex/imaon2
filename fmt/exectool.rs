@@ -100,16 +100,16 @@ fn main() {
     let mm = util::safe_mmap(&mut fp);
     if args.len() > 0 {
         if args[0].starts_with("-") {
-            let m_ = util::do_getopts(&*args, top, 0, 0, &mut optgrps);
+            let m_ = util::do_getopts_or_panic(&*args, top, 0, 0, &mut optgrps);
             args.insert(0, "--".to_string());
-            match m_.opt_str("arch") {
-                Some(arch) => { args.insert(0, arch); args.insert(0, "--arch".to_string()); }
-                None => ()
+            if let Some(arch) = m_.opt_str("arch") {
+                args.insert(0, arch);
+                args.insert(0, "--arch".to_string());
             }
             args.insert(0, "auto".to_string());
         }
-        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args);
-        let m = util::do_getopts(&*real_args, top, 0, 0, &mut optgrps);
+        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap();
+        let m = util::do_getopts_or_panic(&*real_args, top, 0, 0, &mut optgrps);
         do_stuff(ex, m)
     } else {
         let results = exec::probe_all(&execall::all_probers(), mm.clone());
