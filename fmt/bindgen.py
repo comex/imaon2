@@ -15,7 +15,7 @@ while i < len(all_args):
 print open('fmt/bind_defs.rs').read()
 bg = subprocess.check_output(['externals/rust-bindgen/bindgen', '-allow-bitfields', infile] + all_args)
 bg = bg.replace('Struct_', '').replace('use libc::*;', '')
-bg = re.sub(re.compile('(#\[repr\(C\)\]\npub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n)', bg)
+bg = re.sub(re.compile('(#\[repr\(C\)\]\n#\[deriving\(Copy\)\]\npub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n);', bg)
 
 print bg
 print '// start of macros'
@@ -38,7 +38,7 @@ for line in clang.split('\n'):
         val = val.rstrip()
         if val.endswith('\\') or not val: continue
         if name in seen: continue
-        to_compile += 'pub static xxx%s: uint = %s;\n' % (name, val)
+        to_compile += 'pub const xxx%s: uint = %s;\n' % (name, val)
         seen.add(name)
 
 
@@ -50,7 +50,7 @@ if stde:
     print >> sys.stderr, stde
     assert 0
 for line in final.split('\n'):
-    if 'static xxx' in line and not re.search('"|\'|sizeof|\*|{', line):
+    if 'const xxx' in line and not re.search('"|\'|sizeof|\*|{', line):
         # remove casts
         line = re.sub('\([a-z][a-zA-Z0-9_]+\)', '', line)
         line = line.replace('0X', '0x')

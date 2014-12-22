@@ -6,6 +6,7 @@ macro_rules! deriving_swap(
     (
         $(twin $twin:ident)*
         #[repr(C)]
+        #[deriving(Copy)]
         pub struct $name:ident {
             $(
                 pub $field:ident: $typ:ty
@@ -15,6 +16,7 @@ macro_rules! deriving_swap(
         $($etc:item)*
     ) => (
         #[repr(C)]
+        #[deriving(Copy)]
         pub struct $name {
             $(
                 pub $field: $typ
@@ -34,26 +36,26 @@ macro_rules! deriving_swap(
         }
         $($etc)*
     )
-)
+);
 
 #[macro_export]
 macro_rules! branch(
-    (if $cond:expr { $($a:stmt)@* } else { $($b:stmt)@* } then $c:expr) => (
+    (if $cond:expr { $($a:stmt)* } else { $($b:stmt)* } then $c:expr) => (
         if $cond {
             $($a);*; $c
         } else {
             $($b);*; $c
         }
     )
-)
+);
 
 #[macro_export]
 macro_rules! delegate_arith(($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
     impl $traitname<$oty, $stru> for $stru {
-        fn $methname(&self, rhs: &$oty) -> $stru {
-            let $stru(a) = *self;
+        fn $methname(self, rhs: $oty) -> $stru {
+            let $stru(a) = self;
             $stru(a.$methname(rhs))
         }
     }
-))
+));
 

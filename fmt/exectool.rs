@@ -4,14 +4,11 @@
 extern crate util;
 extern crate "bsdlike_getopts" as getopts;
 extern crate exec;
-extern crate sync;
-extern crate native;
-extern crate debug;
 extern crate macho;
 
-use native::io;
-use std::rt::rtio;
 use std::any::{AnyRefExt};
+use exec::SymbolValue;
+use std::io;
 mod execall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
@@ -45,7 +42,7 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
         println!("All segments:");
         for seg in eb.segments.iter() {
             println!("{:<16} @ {:<#18x} sz {:<#12x}  off:{:<#8x} filesz {:<#8x} {}",
-                match seg.name { Some(ref n) => n[], None => "(unnamed)" },
+                match seg.name { Some(ref n) => &**n, None => "(unnamed)" },
                 seg.vmaddr.0, seg.vmsize,
                 seg.fileoff, seg.filesize,
                 seg.prot,
@@ -60,13 +57,13 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     }
     if m.opt_present("syms") {
         println!("All symbols:");
-        for sym in ex.get_symbol_list(exec::AllSymbols).iter() {
+        for sym in ex.get_symbol_list(exec::SymbolSource::All).iter() {
             let name = String::from_utf8_lossy(sym.name);
             match sym.val {
-                exec::Addr(vma) =>     print!("{:<16}", vma),
-                exec::Undefined =>     print!("[undef]         "),
-                exec::Resolver(vma) => print!("{:<16} [resolver]", vma),
-                exec::ReExport(..) =>  print!("[re-export]     "),
+                SymbolValue::Addr(vma) =>     print!("{:<16}", vma),
+                SymbolValue::Undefined =>     print!("[undef]         "),
+                SymbolValue::Resolver(vma) => print!("{:<16} [resolver]", vma),
+                SymbolValue::ReExport(..) =>  print!("[re-export]     "),
             }
             print!(" ");
             if sym.is_public { print!("[pub] ") }
@@ -92,18 +89,18 @@ fn main() {
     );
     let mut args = std::os::args();
     args.remove(0);
-    if args[0][].starts_with("-") {
+    if args[0].starts_with("-") {
         util::usage(top, &mut optgrps);
     }
     let filename = args.remove(0).unwrap();
-    let mut fp = io::file::open(&filename.to_c_str(), rtio::Open, rtio::Read).unwrap_or_else(|e| {
-        util::errln(format!("open {} failed: {}", filename, util::rtio_err_msg(e)));
+    let mut fp = io::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
+        util::errln(format!("open {} failed: {}", filename, e));
         util::exit();
     });
     let mm = util::safe_mmap(&mut fp);
     if args.len() > 0 {
-        if args[0][].starts_with("-") {
-            let m_ = util::do_getopts(args[], top, 0, 0, &mut optgrps);
+        if args[0].starts_with("-") {
+            let m_ = util::do_getopts(&*args, top, 0, 0, &mut optgrps);
             args.insert(0, "--".to_string());
             match m_.opt_str("arch") {
                 Some(arch) => { args.insert(0, arch); args.insert(0, "--arch".to_string()); }
@@ -112,13 +109,13 @@ fn main() {
             args.insert(0, "auto".to_string());
         }
         let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args);
-        let m = util::do_getopts(real_args[], top, 0, 0, &mut optgrps);
+        let m = util::do_getopts(&*real_args, top, 0, 0, &mut optgrps);
         do_stuff(ex, m)
     } else {
         let results = exec::probe_all(&execall::all_probers(), mm.clone());
         // no format specified, give a list
         for pr in results.iter() {
-            let name = util::shell_quote(pr.cmd[]);
+            let name = util::shell_quote(&*pr.cmd);
             println!("? [{}] {}{}",
                 name,
                 pr.desc,

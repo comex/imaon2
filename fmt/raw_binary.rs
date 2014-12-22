@@ -40,6 +40,7 @@ impl RawBinary {
     }
 }
 
+#[deriving(Copy)]
 pub struct RawProber;
 
 impl exec::ExecProber for RawProber {
@@ -55,7 +56,7 @@ impl exec::ExecProber for RawProber {
         })
     }
     fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: util::MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
-        let m = util::do_getopts(args[], "raw ...", 0, std::uint::MAX, &mut vec!(
+        let m = util::do_getopts(&*args, "raw ...", 0, std::uint::MAX, &mut vec!(
             // ...
         ));
         (box RawBinary::new(buf, args) as Box<exec::Exec>, m.free)

@@ -1,8 +1,8 @@
 use std::default::Default;
-// error: failed to resolve. Use of undeclared module `std::from_str`
-use std::from_str::FromStr;
+use std::str::FromStr;
+pub use self::Arch::*;
 
-#[deriving(PartialEq, Eq, Show)]
+#[deriving(PartialEq, Eq, Show, Copy)]
 pub enum Arch {
     X86,
     X86_64,
@@ -20,11 +20,7 @@ impl Default for Arch {
 
 impl FromStr for Arch {
     fn from_str(s: &str) -> Option<Arch> {
-        let s = s.replace("-", "_");
-        let asc = s.into_ascii();
-        let asc = asc[].to_lower();
-        let sl = asc[];
-        let s = sl.as_str_ascii();
+        let s: String = s.replace("-", "_").chars().map(|c| c.to_lowercase()).collect();
         if s == "x86" || s == "i386" {
             Some(X86)
         } else if s == "x86_64" || s == "amd64" {

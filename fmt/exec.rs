@@ -1,8 +1,8 @@
 #![feature(macro_rules)]
-#![feature(unboxed_closures, unboxed_closure_sugar)]
-#![feature(tuple_indexing)]
+#![feature(unboxed_closures)]
+#![feature(globs)]
 #![allow(non_camel_case_types)]
-#![allow(non_uppercase_statics)]
+#![allow(non_upper_case_globals)]
 #![feature(phase)]
 
 #[phase(plugin)]
@@ -22,17 +22,17 @@ pub mod arch;
 pub struct VMA(pub u64);
 
 impl fmt::Show for VMA {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::FormatError> {
-        write!(fmt, "0x");
-        self.0.fmt(fmt);
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        try!(write!(fmt, "0x"));
+        self.0.fmt(fmt)
     }
 }
 
-delegate_arith!(VMA, Sub, sub, u64)
-delegate_arith!(VMA, Add, add, u64)
-delegate_arith!(VMA, BitOr, bitor, u64)
-delegate_arith!(VMA, BitAnd, bitand, u64)
-delegate_arith!(VMA, BitXor, bitxor, u64)
+delegate_arith!(VMA, Sub, sub, u64);
+delegate_arith!(VMA, Add, add, u64);
+delegate_arith!(VMA, BitOr, bitor, u64);
+delegate_arith!(VMA, BitAnd, bitand, u64);
+delegate_arith!(VMA, BitXor, bitxor, u64);
 
 #[deriving(Default, Copy, Clone, PartialEq, Eq)]
 pub struct Prot {
@@ -42,7 +42,7 @@ pub struct Prot {
 }
 
 impl fmt::Show for Prot {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::FormatError> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(fmt, "{}{}{}",
             if self.r { 'r' } else { '-' },
             if self.w { 'w' } else { '-' },
@@ -93,11 +93,11 @@ pub struct Symbol<'a> {
     pub private: uint,
 }
 
-#[deriving(Show, PartialEq, Eq)]
+#[deriving(Show, PartialEq, Eq, Copy)]
 pub enum SymbolSource {
-    AllSymbols,
-    ImportedSymbols,
-    ExportedSymbols,
+    All,
+    Imported,
+    Exported,
 }
 
 pub trait Exec :'static {
@@ -115,10 +115,12 @@ pub trait Exec :'static {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<ProbeResult>;
+    fn probe(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec>, Vec<String>);
+    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec>, Vec<String>);
 }
+
+pub type ExecProberRef = &'static (ExecProber+'static);
 
 pub struct ProbeResult {
     pub desc: String,
@@ -127,7 +129,7 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Vec<ProbeResult> {
+pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult> {
     let mut result = vec!();
     for epp in eps.iter() {
         result.extend(epp.probe(eps, buf.clone()).into_iter());
@@ -135,27 +137,27 @@ pub fn probe_all(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef) -> Ve
     result
 }
 
-pub fn create(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, mut args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
+pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
     let prober_name = args.remove(0).unwrap();
-    if prober_name.equiv(&"auto") {
+    if prober_name == "auto" {
         return create_auto(eps, buf, args)
     }
     for epp in eps.iter() {
-        if epp.name() == prober_name[] {
+        if epp.name() == prober_name {
             return epp.create(eps, buf, args)
         }
     }
-    fail!("no format named {}", prober_name)
+    panic!("no format named {}", prober_name)
 }
 
-fn create_auto(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
-    let m = util::do_getopts(args[], "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
+fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> (Box<Exec+'static>, Vec<String>) {
+    let m = util::do_getopts(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
         getopts::optopt("", "arch", "Architecture bias", "arch"),
     ));
     let mut results = probe_all(eps, buf.clone());
     match m.opt_str("arch") {
         Some(arch_str) => {
-            let arch = from_str(arch_str[]).unwrap();
+            let arch = from_str(&*arch_str).unwrap();
             for pr in results.iter_mut() {
                 if pr.likely && pr.arch == arch {
                     return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
@@ -172,6 +174,6 @@ fn create_auto(eps: &Vec<&'static ExecProber+'static>, buf: util::MCRef, args: V
     for pr in results.iter_mut() {
         return (create(eps, buf, replace(&mut pr.cmd, vec!())).0, m.free)
     }
-    fail!("create_auto: no formats, not even raw_binary??");
+    panic!("create_auto: no formats, not even raw_binary??");
 
 }

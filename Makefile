@@ -46,14 +46,6 @@ $(call define_crate,rlib,macros,macros.rs,)
 $(call define_crate,$(LIB),bsdlike_getopts,bsdlike_getopts.rs,)
 $(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts)
 
-cratefile-llvmshim := $(call cratefile_dylib,llvmshim)
-all: $(cratefile-llvmshim)
-$(cratefile-llvmshim): llvmshim.cpp llvmshim.rs Makefile
-	$(CC) -std=c++11 -c -o $(OUT)/llvmshim_cpp.o -I$(LLVM)/include -I$(ANOTHER_LLVM)/include -D __STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS $<
-	$(RUSTC) --crate-type dylib llvmshim.rs -C link-args=$(OUT)/llvmshim_cpp.o
-
-#$(call define_crate,$(LIB),llvmhelp,llvmhelp.rs,llvmshim)
-
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
 	cd tables; ./build-tblgen.sh "$(LLVM)"

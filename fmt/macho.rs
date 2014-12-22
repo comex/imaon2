@@ -2,14 +2,13 @@
 #![feature(phase)]
 #![feature(globs)]
 #![allow(non_camel_case_types)]
-#![allow(non_uppercase_statics)]
+#![allow(non_upper_case_globals)]
 #[phase(plugin)]
 extern crate macros;
 extern crate util;
 extern crate exec;
 extern crate "bsdlike_getopts" as getopts;
 extern crate collections;
-extern crate sync;
 extern crate libc;
 use std::default::Default;
 //use collections::HashMap;
@@ -18,7 +17,7 @@ use std::mem::replace;
 use std::mem::size_of;
 use util::{ToUi, VecStrExt, MCRef, Swap, zeroed_t};
 use macho_bind::*;
-use exec::{arch, VMA};
+use exec::{arch, VMA, SymbolValue};
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
@@ -26,6 +25,7 @@ mod macho_bind;
 // dont bother with the unions
 deriving_swap!(
 #[repr(C)]
+#[deriving(Copy)]
 pub struct x_nlist {
     pub n_strx: uint32_t,
     pub n_type: uint8_t,
@@ -33,9 +33,10 @@ pub struct x_nlist {
     pub n_desc: int16_t,
     pub n_value: uint32_t,
 }
-)
+);
 deriving_swap!(
 #[repr(C)]
+#[deriving(Copy)]
 pub struct x_nlist_64 {
     pub n_strx: uint32_t,
     pub n_type: uint8_t,
@@ -43,11 +44,11 @@ pub struct x_nlist_64 {
     pub n_desc: uint16_t,
     pub n_value: uint64_t,
 }
-)
+);
 
-#[deriving(Default, Show)]
+#[deriving(Default, Show, Copy)]
 pub struct SymSubset(uint, uint);
-#[deriving(Default, Show)]
+#[deriving(Default, Show, Copy)]
 pub struct RelSubset(uint, uint);
 
 #[deriving(Default)]
@@ -82,7 +83,7 @@ impl exec::Exec for MachO {
     }
 
     fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
-        if source == exec::AllSymbols {
+        if source == exec::SymbolSource::All {
             self.nlist_symbols(0, self.symtab.len() / self.nlist_size)
         } else {
             unimplemented!()
@@ -189,8 +190,8 @@ impl MachO {
             _ => "<unknown filetype>"
         };
         let st_desc = match self.subtype_desc() {
-            Some(d) => std::str::Slice(d),
-            None => std::str::Owned(format!("<unknown cpu {}/{}>", self.mh.cputype, self.mh.cpusubtype))
+            Some(d) => d.into_cow(),
+            None => format!("<unknown cpu {}/{}>", self.mh.cputype, self.mh.cpusubtype).into_cow()
         };
         format!("Mach-O {}/{}", ft_desc, st_desc)
     }
@@ -221,10 +222,10 @@ impl MachO {
             let this_lc_off = lc_off;
             let do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if is64 == true {
-                    type segment_command_x = segment_command_64;@
+                    type segment_command_x = segment_command_64;
                     type section_x = section_64;
                 } else {
-                    type segment_command_x = segment_command;@
+                    type segment_command_x = segment_command;
                     type section_x = section;
                 } then {
                     let mut off = size_of::<segment_command_x>();
@@ -240,7 +241,7 @@ impl MachO {
                         vmsize: sc.vmsize as u64,
                         fileoff: sc.fileoff as u64,
                         filesize: sc.filesize as u64,
-                        name: Some(util::from_cstr(sc.segname)),
+                        name: Some(util::from_cstr(&sc.segname)),
                         prot: segprot,
                         private: this_lc_off,
                     });
@@ -251,13 +252,13 @@ impl MachO {
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
                             filesize: s.size as u64,
-                            name: Some(util::from_cstr(s.sectname)),
+                            name: Some(util::from_cstr(&s.sectname)),
                             prot: segprot,
                             private: this_lc_off + off,
                         });
                         off += size_of::<section_x>();
                     }
-                })
+                });
                 segi += 1;
             };
             match lc.cmd.to_ui() {
@@ -339,15 +340,15 @@ impl MachO {
                 let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
                 let val =
                     if n_desc_field & N_SYMBOL_RESOLVER != 0 {
-                        exec::Resolver(vma)
+                        SymbolValue::Resolver(vma)
                     } else if n_type == N_UNDF {
-                        exec::Undefined
+                        SymbolValue::Undefined
                     } else if n_type == N_INDR {
                         let indr_name = util::trim_to_null(strtab.slice_from(nl.n_value.to_ui()));
-                        exec::ReExport(indr_name)
+                        SymbolValue::ReExport(indr_name)
 
                     } else {
-                        exec::Addr(vma)
+                        SymbolValue::Addr(vma)
                     };
                 result.push(exec::Symbol {
                     name: name,
@@ -363,7 +364,7 @@ impl MachO {
     }
 }
 
-
+#[deriving(Copy)]
 pub struct MachOProber;
 
 impl exec::ExecProber for MachOProber {
@@ -382,16 +383,17 @@ impl exec::ExecProber for MachOProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
-        let m = util::do_getopts(args[], "macho ...", 0, std::uint::MAX, &mut vec!(
+        let m = util::do_getopts(&*args, "macho ...", 0, std::uint::MAX, &mut vec!(
             // ...
         ));
         (box MachO::new(buf, true)
-            .unwrap_or_else(|| fail!("not mach-o"))
+            .unwrap_or_else(|| panic!("not mach-o"))
             as Box<exec::Exec>,
          m.free)
     }
 }
 
+#[deriving(Copy)]
 pub struct FatMachOProber;
 
 impl FatMachOProber {
@@ -424,7 +426,7 @@ impl exec::ExecProber for FatMachOProber {
     fn name(&self) -> &str {
         "fat"
     }
-    fn probe(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef) -> Vec<exec::ProbeResult> {
         let mut result = Vec::new();
         let ok = self.probe_cb(&mc, |i, fa| {
             let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
@@ -438,7 +440,7 @@ impl exec::ExecProber for FatMachOProber {
                     desc: format!("(slice #{}) {}", i, pr.desc),
                     arch: pr.arch,
                     likely: pr.likely,
-                    cmd: vec!("fat", "--arch", arch[]).strings() + pr.cmd,
+                    cmd: vec!("fat", "--arch", &*arch).strings() + &*pr.cmd,
                 };
                 result.push(npr);
             }
@@ -447,36 +449,36 @@ impl exec::ExecProber for FatMachOProber {
         result
     }
 
-    fn create(&self, eps: &Vec<&'static exec::ExecProber+'static>, mc: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
+    fn create(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef, args: Vec<String>) -> (Box<exec::Exec>, Vec<String>) {
         let top = "fat (--arch ARCH | -s SLICE)";
         let mut optgrps = vec!(
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),
         );
-        let mut m = util::do_getopts(args[], top, 0, std::uint::MAX, &mut optgrps);
+        let mut m = util::do_getopts(&*args, top, 0, std::uint::MAX, &mut optgrps);
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
             util::usage(top, &mut optgrps);
         }
-        let slice_i = slice_num.map_or(0u64, |s| from_str(s[]).unwrap());
+        let slice_i = slice_num.map_or(0u64, |s| from_str(&*s).unwrap());
         let mut result = None;
         let ok = self.probe_cb(&mc, |i, fa| {
-            if !result.is_some() && if arch.is_some() {
-                  mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == arch.as_ref().unwrap()[])
-               } else {
-                  i == slice_i
-               }
+            if if let (&None, &Some(ref arch_)) = (&result, &arch) {
+                mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == &**arch_)
+            } else {
+                i == slice_i
+            }
             {
                 let off = fa.offset.to_ui();
                 let size = fa.size.to_ui();
                 result = Some(exec::create(eps, mc.slice(off, off + size), replace(&mut m.free, vec!())));
             }
         });
-        if !ok { fail!("invalid fat mach-o"); }
+        if !ok { panic!("invalid fat mach-o"); }
         match result {
             Some(e) => e,
-            None => fail!("fat arch matching command line not found")
+            None => panic!("fat arch matching command line not found")
         }
     }
 }
