@@ -564,8 +564,21 @@ var insns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; }
 var ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
     ns = opt.options['namespace'];
-    var r = new RegExp('^('+ns+')$');
-    insns = insns.filter(function(insn) { return r.exec(insn.decoderNamespace); });
+    var dns;
+    switch(ns) {
+    case '_thumb':
+        dns = ['Thumb', 'ThumbSBit'];
+        break;
+    case '_thumb2':
+        dns = ['Thumb2', 'VFP'];
+        break;
+    case '_arm':
+        dns = ['ARM', 'VFP'];
+        break;
+    default:
+        dns = ns.split('|');
+    }
+    insns = insns.filter(function(insn) { return dns.indexOf(insn.decoderNamespace) != -1; });
 }
 
 inputInsns.forEach(function(insn) { fixInstruction(insn, false); });
@@ -603,9 +616,10 @@ if(opt.options['gen-hook-disassembler']) {
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
+        var isBranch = insn.isBranch;
         // Is it any type of load instruction?
         var mapped = insn.inst.map(function(bit) {
-            if(bit[0] == 'addr' || (isAdd && bit[0] == 'Rm') || (isMov && bit[0] == 'Rm')) {
+            if(bit[0] == 'addr' || (isAdd && bit[0] == 'Rm') || (isMov && bit[0] == 'Rm') || (isBranch && bit[0] == 'target')) {
                 if(nbits && addrName != bit[0])
                     throw 'conflict';
                 nbits++;
@@ -627,6 +641,7 @@ if(opt.options['gen-hook-disassembler']) {
             if(cantBePcModes[name])
                 return null;
             name += '*' + mapped;
+            console.log('representing', insn.name);
             return name;
         }
         return null;

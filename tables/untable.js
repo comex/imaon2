@@ -42,6 +42,7 @@ var instructions = result.filter(function(defn) {
         decoderNamespace: defn.props.DecoderNamespace,
         outOperandList: defn.props.OutOperandList,
         inOperandList: defn.props.InOperandList,
+        isBranch: defn.props.isBranch,
     };
 });
 var patternOperators = {};
