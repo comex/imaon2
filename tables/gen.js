@@ -1,4 +1,6 @@
 var fs = require('fs');
+// this isn't a very efficient module, replace/
+var HashMap = require('hashmap').HashMap;
 // (node stable is really old and doesn't support Harmony iteration :()
 
 function hex(n, len) {
@@ -82,7 +84,7 @@ var choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
 
-function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, name, depth) {
+function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, name, depth, options) {
     //console.log(indent + insns.length);
     if(insns.length == 0)
         return {insn: nullInstruction};
@@ -112,7 +114,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
         }
     }
     var bestBuckets, bestStart, bestLength, bestMax = 10000;
-    var maxLength = 11; //allowConflicts ? 8 : 4;
+    var maxLength = options.maxLength;
     var cacheCutoff = 4;
 
     function tryFilter(start, length) {
@@ -218,7 +220,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
                             knownValue,
                             false,
                             name,
-                            depth + 1
+                            depth + 1,
+                            options
                         ),
                         genDisassemblerRec(
                             [insn],
@@ -227,7 +230,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
                             knownValue,
                             false,
                             name,
-                            depth + 1
+                            depth + 1,
+                            options
                         )
                     ],
                     possibilities: insns,
@@ -260,7 +264,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
             bucketKnownValue,
             useCache,
             name,
-            depth + 1
+            depth + 1,
+            options
         ));
     }
 
@@ -330,18 +335,22 @@ function printConflictGroups(insns) {
     }
 }
 
+function visitDag(pat, visitor) {
+    if(Array.isArray(pat)) {
+        visitor(pat);
+        for(var i = 1; i < pat.length; i++)
+            visitDag(pat[i], visitor);
+    }
+}
+
 function printHeads(insns) {
     seen = {};
-    function add(pat) {
-        if(!Array.isArray(pat) || pat[0] == ':')
-            return;
-        if(pat[0].replace)
-            seen[pat[0]] = (seen[pat[0]] || 0) + 1;
-        for(var i = 1; i < pat.length; i++)
-            add(pat[i]);
-    }
     insns.forEach(function(insn) {
         if(insn.pattern != '?' && insn.pattern.length) {
+            visitDag(insn.pattern, function(tuple) {
+                if(tuple[0].replace && tuple[0] !== ':')
+                    seen[tuple[0]] = (seen[tuple[0]] || 0) + 1;
+            });
             insn.pattern.forEach(add);
         } else {
             console.log('nopat ' + insn.name);
@@ -400,16 +409,18 @@ function checkTableMissingInsns(node, insns) {
     });
 }
 
-function genDisassembler(insns, ns) {
+function genDisassembler(insns, ns, options) {
+    options.maxLength = options.maxLength || 11;
+
     var bitLength = insns[0].inst.length;
     var name = insns[0].namespace + '/' + ns;
     console.log(name, bitLength);
     // find potential conflicts (by brute force)
     addConflictGroups(insns);
     //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, name, 0);
+    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, name, 0, options);
     checkTableMissingInsns(node, insns);
-    return tableToRust(node);
+    return node;
     //console.log(stuff);
 }
 
@@ -418,11 +429,94 @@ function genSema(insns, ns) {
 
 }
 
-function fixInstruction(insn, patternOperators) {
+function coalesceInsnsWithMap(insns, func) {
+    var byGroup = new HashMap();
+    insns.forEach(function(insn) {
+        var key = func(insn);
+        if(key === null)
+            return;
+        var ginsns = byGroup.get(key);
+        if(!ginsns)
+            byGroup.set(key, ginsns = []);
+        ginsns.push(insn);
+    });
+    // for each group, continually coalesce instructions which are the same but for one bit, until we can do no more.  probably slooow
+    // actually, not enough insns to be slow
+    var out = [];
+    var coalid = 0;
+    byGroup.forEach(function(ginsns, key) {
+        // inst -> null
+        var byPat = new HashMap();
+        ginsns.map(function(insn) {
+            var instMinusVars = insn.inst.map(function(b) {
+                return Array.isArray(b) ? '?' : b;
+            });
+            //console.log('**>', instMinusVars+'');
+            byPat.set(instMinusVars, insn.inst);
+        });
+        do {
+            var didSomething = false;
+            //console.log('pass');
+            // merge combinations that together take up the whole space
+            byPat.forEach(function(_, inst) {
+                for(var i = 0; i < inst.length; i++) {
+                    var old = inst[i];
+                    if(old == '?')
+                        continue;
+                    inst[i] = old == '1' ? '0' : '1';
+                    if(byPat.has(inst)) {
+                        byPat.remove(inst);
+                        inst[i] = old;
+                        byPat.remove(inst);
+                        inst[i] = '?';
+                        byPat.set(inst, null);
+                        didSomething = true;
+                        break;
+                    }
+                    inst[i] = old;
+                }
+            });
+
+            //console.log('MD');
+            // merge dominators; could be optimized
+            byPat.forEach(function(_, inst) {
+                byPat.forEach(function(_, inst2) {
+                    if(inst2 === inst)
+                        return;
+                    for(var i = 0; i < inst.length; i++) {
+                        var b1 = inst[i], b2 = inst2[i];
+                        if(!(b1 == b2 || b1 == '?'))
+                            return;
+                    }
+                    // ok, inst dominates inst2; we do not need to distinguish
+                    byPat.remove(inst2);
+                });
+            });
+            //console.log('MD+');
+        } while(didSomething);
+
+        var origLength = ginsns.length;
+        var newLength = byPat.count();
+        //console.log('collapsed', origLength, '-->', newLength);
+        byPat.forEach(function(_, inst) {
+            // make a fake insn
+            var insn = {
+                namespace: ns,
+                inst: inst,
+                name: 'coal' + (coalid++) + '_' + (origLength - newLength) + '*' + key,
+            };
+            fixInstruction(insn, /*noFlip*/ true);
+            out.push(insn);
+        });
+    });
+    return out;
+}
+
+function fixInstruction(insn, noFlip) {
     // Incoming goes from MSB to LSB, but we assume that inst[n] corresponds to
     // 1 << n, so reverse it.
     // But not on PPC...
-    if(insn.namespace != 'PPC')
+    if(!noFlip && insn.namespace != 'PPC')
         insn.inst.reverse();
 
     insn.instKnownMask = 0;
@@ -440,17 +534,16 @@ function fixInstruction(insn, patternOperators) {
         }
         insn.instKnown.push(res);
     };
-
-    patternOperators
 }
 
 var getopt = require('node-getopt').create([
     ['n', 'namespace=ARG', 'Decoder namespace of instructions to use.'],
     ['',  'print-conflict-groups', 'Print potentially conflicting instructions.'],
-    ['',  'print-heads', 'Print what needs to be done.'],
+    ['',  'print-heads', 'Print the DAG primitives that need to be implemented.'],
     ['d', 'gen-disassembler', 'Generate a full disassembler.'],
-    ['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
-    ['',  'gen-sema', 'Generate the step after the disassembler.'],
+    //['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
+    //['',  'gen-sema', 'Generate the step after the disassembler.'],
+    ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes address regs'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -470,11 +563,12 @@ var insns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; }
 
 var ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
-    insns = insns.filter(function(insn) { return insn.decoderNamespace == opt.options['namespace']; });
-    ns = opt.optons['namespace'];
+    ns = opt.options['namespace'];
+    var r = new RegExp('^('+ns+')$');
+    insns = insns.filter(function(insn) { return r.exec(insn.decoderNamespace); });
 }
 
-inputInsns.forEach(function(insn) { fixInstruction(insn, input.patternOperators); });
+inputInsns.forEach(function(insn) { fixInstruction(insn, false); });
 
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
@@ -484,7 +578,62 @@ if(opt.options['print-heads']) {
     printHeads(insns);
 }
 if(opt.options['gen-disassembler']) {
-    genDisassembler(insns, ns);
+    genDisassembler(insns, ns, {});
+    // tableToRust
+}
+if(opt.options['gen-hook-disassembler']) {
+    var cantBePcModes = {
+        // Thumb (most of the modes, for obvious reasons)
+        't_addrmode_is4': true,
+        't_addrmode_is2': true,
+        't_addrmode_is1': true,
+        't_addrmode_rr': true,
+        't_addrmode_rrs1': true,
+        't_addrmode_rrs2': true,
+        't_addrmode_rrs4': true,
+        't_addrmode_sp': true,
+
+    };
+    var insns2 = coalesceInsnsWithMap(insns, function(insn) {
+        // This is not fully general.  But I don't think it's important to hook functions that do MUL PC, PC or crap like that...
+        // This takes care of all load instructions, plus the first operand of ADD.
+        var nbits = 0;
+        var addrName;
+        if(insn.name.match(/^PL/i))
+            return null;
+        var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
+        var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
+        // Is it any type of load instruction?
+        var mapped = insn.inst.map(function(bit) {
+            if(bit[0] == 'addr' || (isAdd && bit[0] == 'Rm') || (isMov && bit[0] == 'Rm')) {
+                if(nbits && addrName != bit[0])
+                    throw 'conflict';
+                nbits++;
+                addrName = bit[0];
+                return bit[1];
+            } else {
+                return null;
+            }
+        });
+        if(nbits) {
+            if(nbits < 4)
+                return null;
+            var name = '';
+            visitDag(insn.inOperandList, function(tuple) {
+                if(tuple[0] == ':' && tuple[2] == '$'+addrName)
+                    name = tuple[1];
+            });
+            if(!name) throw '? ' + insn.name;
+            if(cantBePcModes[name])
+                return null;
+            name += '*' + mapped;
+            return name;
+        }
+        return null;
+    });
+    //console.log(insns2);
+    var node = genDisassembler(insns2, ns, {maxLength: 5});
+    console.log(ppTable(node));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);

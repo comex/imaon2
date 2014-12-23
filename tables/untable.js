@@ -20,7 +20,8 @@ try {
 var instructions = result.filter(function(defn) {
     return (
         defn.supers.indexOf('Instruction') != -1 &&
-        defn.props.Opcode &&
+        defn.props.AsmString &&
+        defn.props.Inst &&
         defn.props.Namespace != 'TargetOpcode' &&
         !defn.props.isPseudo &&
         !defn.props.isAsmParserOnly &&
@@ -33,12 +34,14 @@ var instructions = result.filter(function(defn) {
     });
     return {
         name: defn.name,
-        inst: defn.props.Opcode,
+        inst: defn.props.Inst,
         pattern: defn.props.Pattern,
         asm_string: defn.props.AsmString,
         predicates: predicates,
         namespace: defn.props.Namespace,
         decoderNamespace: defn.props.DecoderNamespace,
+        outOperandList: defn.props.OutOperandList,
+        inOperandList: defn.props.InOperandList,
     };
 });
 var patternOperators = {};
@@ -55,8 +58,21 @@ result.filter(function(defn) {
         fragment: defn.props.Fragment,
     };
 });
+var dagOperands = {};
+result.filter(function(defn) {
+    return (
+        defn.supers.indexOf('DAGOperand') != -1 &&
+        defn.supers.indexOf('Operand') != -1
+    );
+}).forEach(function(defn) {
+    dagOperands[defn.name] = {
+        name: defn.name,
+        miOperandInfo: defn.MIOperandInfo,
+    };
+});
 var output = {
     instructions: instructions,
-    patternOperators: patternOperators
+    patternOperators: patternOperators,
+    dagOperands: dagOperands,
 };
 fs.writeFileSync(process.argv[3], JSON.stringify(output));
