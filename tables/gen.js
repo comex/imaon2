@@ -619,7 +619,13 @@ if(opt.options['gen-hook-disassembler']) {
         var isBranch = insn.isBranch;
         // Is it any type of load instruction?
         var mapped = insn.inst.map(function(bit) {
-            if(bit[0] == 'addr' || (isAdd && bit[0] == 'Rm') || (isMov && bit[0] == 'Rm') || (isBranch && bit[0] == 'target')) {
+            // this is currently ARM specific, obviously
+            if(bit[0] == 'addr' || 
+               bit[0] == 'label' /* ARM64 */ ||
+               (isAdd && bit[0] == 'Rm') ||
+               (isMov && bit[0] == 'Rm') ||
+               (isBranch && bit[0] == 'target')
+            ) {
                 if(nbits && addrName != bit[0])
                     throw 'conflict';
                 nbits++;
@@ -637,7 +643,10 @@ if(opt.options['gen-hook-disassembler']) {
                 if(tuple[0] == ':' && tuple[2] == '$'+addrName)
                     name = tuple[1];
             });
-            if(!name) throw '? ' + insn.name;
+            if(!name) {
+                //console.log('BAD', insn.name, hex(insn.instKnownValue,32));
+                name = 'welp[' + insn.inOperandList + ']';
+            }
             if(cantBePcModes[name])
                 return null;
             name += '*' + mapped;
