@@ -34,6 +34,21 @@ function setdefault(obj, key, def) {
 // - I want to detect jumps very quickly.
 
 function fillBuckets(buckets, insn, instKnown, start, end, n, builtUp) {
+    if(n > 0) {
+        var old = n - 1;
+        var ceb = insn.instConstrainedEqualBits[old];
+        if(ceb !== undefined) {
+            // Rule it out if it would violate a constraint.  Uncommon, speed doesn't matter
+            var thisBit = (builtUp >> old) & 1;
+            for(var i = 0; i < ceb.length; i++) {
+                var thatBit = (builtUp >> ceb[i]) & 1;
+                if(thisBit != thatBit) {
+                    console.log('ruling out ' + insn.name);
+                    return;
+                }
+            }
+        }
+    }
     if(n == end) {
         buckets[builtUp].push(insn);
         return;
@@ -74,6 +89,9 @@ function knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue) {
         !(insn.instKnownMask & ~hypotheticalKnownMask) &&
         // And it implies insn matches...
         (hypotheticalKnownValue & insn.instKnownMask) == insn.instKnownValue &&
+        // (hopefully we don't have to care about equality constraints -
+        //  returning false is safe)
+        !insn.instHaveAnyConstrainedEqualBits &&
         // And insn takes precedence
         takesPrecedence(insn, insn2)
     );
@@ -98,18 +116,17 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
 
     if(useCache) {
         var names = [];
+        var m = 0;
         insns.forEach(function(insn) {
             names.push(insn.name);
-            knownMask &= insn.instKnownMask;
-            knownValue &= insn.instKnownMask;
+            m |= insn.instDependsMask;
         });
-        names.push(knownMask);
-        names.push(knownValue);
+        names.push(knownMask & m);
+        names.push(knownValue & m);
         var cacheKey = names.join(',');
-        //console.log(cacheKey);
         var result = gdCache[cacheKey];
         if(typeof result !== 'undefined') {
-            //console.log('cache hit');
+            console.log('cache hit');
             return result;
         }
     }
@@ -409,6 +426,8 @@ function checkTableMissingInsns(node, insns) {
     });
 }
 
+// there are instructions that put, say, addr{12} in multiple locations in Inst to assert that the value is the same.
+
 function genDisassembler(insns, ns, options) {
     options.maxLength = options.maxLength || 11;
 
@@ -522,10 +541,15 @@ function fixInstruction(insn, noFlip) {
     insn.instKnownMask = 0;
     insn.instKnownValue = 0;
     insn.instSpecificity = 0;
+    insn.instDependsMask = 0;
     insn.instKnown = [];
+    var bitEqualityConstraints = {};
     for(var i = 0; i < insn.inst.length; i++) {
         var bit = insn.inst[i];
+        if(Array.isArray(bit))
+            setdefault(bitEqualityConstraints, bit, []).push(i);
         var res = bit === '0' ? 0 : bit === '1' ? 1 : 2;
+
         // filter out useless instructions
         if(res != 2) {
             insn.instKnownMask |= (1 << i);
@@ -534,6 +558,19 @@ function fixInstruction(insn, noFlip) {
         }
         insn.instKnown.push(res);
     };
+    insn.instConstrainedEqualBits = {};
+    insn.instHaveAnyConstrainedEqualBits = false;
+    for(var k in bitEqualityConstraints) {
+        var bits = bitEqualityConstraints[k];
+        if(bits.length > 1) {
+            bits.forEach(function(bit) {
+                insn.instConstrainedEqualBits[bit] = bits.filter(function(bit2) { return bit2 != bit; });
+                insn.instDependsMask |= (1 << i);
+                insn.instHaveAnyConstrainedEqualBits = true;
+            });
+            //console.log('!', insn.name, insn.instConstrainedEqualBits);
+        }
+    }
 }
 
 var getopt = require('node-getopt').create([
@@ -610,32 +647,38 @@ if(opt.options['gen-hook-disassembler']) {
     var insns2 = coalesceInsnsWithMap(insns, function(insn) {
         // This is not fully general.  But I don't think it's important to hook functions that do MUL PC, PC or crap like that...
         // This takes care of all load instructions, plus the first operand of ADD.
-        var nbits = 0;
-        var addrName;
+        var bitlocs = [];
+        var addrName = null;
         if(insn.name.match(/^PL/i))
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var isBranch = insn.isBranch;
-        // Is it any type of load instruction?
-        var mapped = insn.inst.map(function(bit) {
+        var opBitLocs = [];
+        var nbits = 0;
+        insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
-            if(bit[0] == 'addr' || 
+            if(!Array.isArray(bit))
+                return null;
+            if(bit[0] == 'addr' ||
                bit[0] == 'label' /* ARM64 */ ||
                (isAdd && bit[0] == 'Rm') ||
                (isMov && bit[0] == 'Rm') ||
                (isBranch && bit[0] == 'target')
             ) {
-                if(nbits && addrName != bit[0])
+                if(addrName !== null && addrName != bit[0])
                     throw 'conflict';
+                opBitLocs[bit[1]] = i;
                 nbits++;
                 addrName = bit[0];
-                return bit[1];
-            } else {
-                return null;
             }
         });
         if(nbits) {
+            /*
+            happens sometimes
+            if(nbits < opBitLocs.length)
+                console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
+            */
             if(nbits < 4)
                 return null;
             var name = '';
@@ -649,8 +692,8 @@ if(opt.options['gen-hook-disassembler']) {
             }
             if(cantBePcModes[name])
                 return null;
-            name += '*' + mapped;
-            console.log('representing', insn.name);
+            name += '*' + opBitLocs;
+            console.log('representing', insn.name, 'as', name);
             return name;
         }
         return null;
