@@ -33,7 +33,9 @@ function setdefault(obj, key, def) {
 // Dolphin is actually a good model here.
 // - I want to detect jumps very quickly.
 
-function fillBuckets(buckets, insn, instKnown, start, end, n, builtUp) {
+// Optimization: Returns true if we can skip this whole iteration due to losing to bestMax already.
+
+function fillBuckets(buckets, bestMax, insn, instKnown, start, end, n, builtUp) {
     if(n > 0) {
         var old = n - 1;
         var ceb = insn.instConstrainedEqualBits[old];
@@ -43,21 +45,30 @@ function fillBuckets(buckets, insn, instKnown, start, end, n, builtUp) {
             for(var i = 0; i < ceb.length; i++) {
                 var thatBit = (builtUp >> ceb[i]) & 1;
                 if(thisBit != thatBit) {
-                    console.log('ruling out ' + insn.name);
-                    return;
+                    //console.log('ruling out ' + insn.name);
+                    return false;
                 }
             }
         }
     }
     if(n == end) {
-        buckets[builtUp].push(insn);
-        return;
+        var l = buckets[builtUp];
+        if(l.length > bestMax) {
+            return true;
+        }
+        l.push(insn);
+        return false;
     }
     var bit = instKnown[n];
-    if(bit != 1) // 0 or 2
-        fillBuckets(buckets, insn, instKnown, start, end, n+1, builtUp);
-    if(bit != 0) // 1 or 2
-        fillBuckets(buckets, insn, instKnown, start, end, n+1, builtUp | (1 << (n - start)));
+    if(bit != 1) { // 0 or 2
+        if(fillBuckets(buckets, bestMax, insn, instKnown, start, end, n+1, builtUp))
+            return true;
+    }
+    if(bit != 0) { // 1 or 2
+        if(fillBuckets(buckets, bestMax, insn, instKnown, start, end, n+1, builtUp | (1 << (n - start))))
+            return true;
+    }
+    return false;
 }
 
 function mask2bits(mask, bitLength) {
@@ -102,7 +113,7 @@ var choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
 
-function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, name, depth, options) {
+function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, uid, depth, options) {
     //console.log(indent + insns.length);
     if(insns.length == 0)
         return {insn: nullInstruction};
@@ -126,11 +137,11 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
         var cacheKey = names.join(',');
         var result = gdCache[cacheKey];
         if(typeof result !== 'undefined') {
-            console.log('cache hit');
+            //console.log('cache hit');
             return result;
         }
     }
-    var bestBuckets, bestStart, bestLength, bestMax = 10000;
+    var bestBuckets, bestStart, bestLength, bestMax = 1000000;
     var maxLength = options.maxLength;
     var cacheCutoff = 4;
 
@@ -143,9 +154,13 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
         var buckets = [];
         for(var i = 0; i < (1 << length); i++)
             buckets.push([]);
-        insns.forEach(function(insn) {
-            fillBuckets(buckets, insn, insn.instKnown, start, start + length, start, 0);
-        });
+        for(var i = 0; i < insns.length; i++) {
+            var insn = insns[i];
+            if(fillBuckets(buckets, bestMax, insn, insn.instKnown, start, start + length, start, 0)) {
+                //console.log('early return');
+                return;
+            }
+        }
 
         if(length <= cacheCutoff || insns.length < 10) {
             // There are sometimes instances of a general case and special
@@ -202,7 +217,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
 
     var override;
     // not currently used, but...
-    if(depth <= 3 && (override = choiceOverrides[name + ':' + hex(knownMask, bitLength)])) {
+    if(depth <= 3 && (override = choiceOverrides[uid + ':' + hex(knownMask, bitLength)])) {
         tryFilter(override[0], override[1]);
     } else {
         for(var length = 0; length <= maxLength; length++) {
@@ -236,7 +251,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
                             knownMask,
                             knownValue,
                             false,
-                            name,
+                            uid,
                             depth + 1,
                             options
                         ),
@@ -246,7 +261,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
                             knownMask,
                             knownValue,
                             false,
-                            name,
+                            uid,
                             depth + 1,
                             options
                         )
@@ -280,7 +295,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, n
             bucketKnownMask,
             bucketKnownValue,
             useCache,
-            name,
+            uid,
             depth + 1,
             options
         ));
@@ -429,15 +444,15 @@ function checkTableMissingInsns(node, insns) {
 // there are instructions that put, say, addr{12} in multiple locations in Inst to assert that the value is the same.
 
 function genDisassembler(insns, ns, options) {
-    options.maxLength = options.maxLength || 11;
+    options.maxLength = options.maxLength || 6;
 
     var bitLength = insns[0].inst.length;
-    var name = insns[0].namespace + '/' + ns;
-    console.log(name, bitLength);
+    var uid = insns[0].namespace + '/' + ns;
+    console.log('genDisassembler:', uid, bitLength);
     // find potential conflicts (by brute force)
     addConflictGroups(insns);
     //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, name, 0, options);
+    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, ui, 0, options);
     checkTableMissingInsns(node, insns);
     return node;
     //console.log(stuff);
@@ -628,8 +643,8 @@ if(opt.options['print-heads']) {
     printHeads(insns);
 }
 if(opt.options['gen-disassembler']) {
-    genDisassembler(insns, ns, {});
-    // tableToRust
+    var node = genDisassembler(insns, ns, {});
+    console.log(ppTable(node));
 }
 if(opt.options['gen-hook-disassembler']) {
     var cantBePcModes = {
