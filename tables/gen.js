@@ -119,15 +119,14 @@ function knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue) {
     );
 }
 
-var gdCache = {};
 var choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
 
-function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, uid, depth, options) {
+function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, depth, data) {
     //console.log(indent + insns.length);
     if(insns.length == 0)
-        return {fail: true};
+        return data.failNode;
     if(insns.length == 1) {
         return {
             insn: insns[0],
@@ -146,14 +145,14 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
         names.push(knownMask & m);
         names.push(knownValue & m);
         var cacheKey = names.join(',');
-        var result = gdCache[cacheKey];
+        var result = data.cache[cacheKey];
         if(typeof result !== 'undefined') {
             //console.log('cache hit');
             return result;
         }
     }
     var bestBuckets, bestStart, bestLength, bestMax = 1000000;
-    var maxLength = options.maxLength;
+    var maxLength = data.maxLength;
     var cacheCutoff = 4;
 
     function tryFilter(start, length) {
@@ -228,7 +227,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
 
     var override;
     // not currently used, but...
-    if(depth <= 3 && (override = choiceOverrides[uid + ':' + hex(knownMask, bitLength)])) {
+    if(depth <= 3 && (override = choiceOverrides[data.uid + ':' + hex(knownMask, bitLength)])) {
         tryFilter(override[0], override[1]);
     } else {
         for(var length = 0; length <= maxLength; length++) {
@@ -253,7 +252,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
                 }
                 var newInsns = insns.slice(0);
                 newInsns.splice(i, 1);
-                return gdCache[cacheKey] = {
+                return data.cache[cacheKey] = {
                     isBinary: 1,
                     buckets: [
                         genDisassemblerRec(
@@ -262,9 +261,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
                             knownMask,
                             knownValue,
                             false,
-                            uid,
                             depth + 1,
-                            options
+                            data
                         ),
                         genDisassemblerRec(
                             newInsns,
@@ -272,9 +270,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
                             knownMask,
                             knownValue,
                             false,
-                            uid,
                             depth + 1,
-                            options
+                            data
                         )
                     ],
                     possibilities: insns,
@@ -290,7 +287,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
         });
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, bitLength).join(','));
-        return gdCache[cacheKey] = {fail: true};
+        return data.cache[cacheKey] = data.failNode;
         throw '?';
     }
 
@@ -306,17 +303,16 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, u
             bucketKnownMask,
             bucketKnownValue,
             useCache,
-            uid,
             depth + 1,
-            options
+            data
         ));
     }
 
     if(bestLength == 0) {
-        return gdCache[cacheKey] = resultBuckets[0];
+        return data.cache[cacheKey] = resultBuckets[0];
     }
 
-    return gdCache[cacheKey] = {
+    return data.cache[cacheKey] = {
         start: bestStart,
         length: bestLength,
         max: bestMax,
@@ -516,12 +512,12 @@ function genConstraintTest(insn, unknown, indent) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, prefix, indent, bits, skipConstraintTest) {
+function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
+    var bits = [];
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
-        return;
-    }
-    if(node.insn) {
+        push('return ' + prefix + 'unidentified()');
+    } else if(node.insn) {
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
@@ -535,35 +531,55 @@ function tableToSimpleCRec(node, prefix, indent, bits, skipConstraintTest) {
             args.push(op);
         }
         push('return ' + prefix + insn.name + '(' + args.join(', ') + ');');
-        return;
-    }
-    if(node.isBinary) {
+    } else if(node.isBinary) {
         var insn = node.buckets[0].insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown)
             throw new Error("binary + constraints not supported because it's a hack anyway");
         push('if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue) + ') {');
-        tableToSimpleCRec(node.buckets[0], prefix, indent + indentStep, bits);
+        bits.push(tableToSimpleCRec(node.buckets[0], prefix, indent + indentStep));
         push('} else {');
-        tableToSimpleCRec(node.buckets[1], prefix, indent + indentStep, bits);
+        bits.push(tableToSimpleCRec(node.buckets[1], prefix, indent + indentStep));
         push('}');
-        return;
-    }
-    push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
-    for(var i = 0; i < node.buckets.length; i++) {
-        var subnode = node.buckets[i];
-        push('case ' + i + ': {');
-        tableToSimpleCRec(subnode, prefix, indent + indentStep, bits);
-        //push(indentStep + 'break;');
+    } else {
+        var buckets = node.buckets.slice(0);
+        var cases = {};
+        for(var i = 0; i < buckets.length; i++) {
+            var subnode = buckets[i];
+            if(subnode === null)
+                continue;
+            var myis = [i];
+            for(var j = i + 1; j < buckets.length; j++) {
+                if(buckets[j] === subnode) {
+                    myis.push(j);
+                    buckets[j] = null;
+                }
+            }
+            var rec = tableToSimpleCRec(subnode, prefix, indent + indentStep);
+            var is = setdefault(cases, rec, []);
+            is.push.apply(is, myis);
+        }
+        push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
+        for(var rec in cases) {
+            var is = cases[rec];
+            is.forEach(function(i) {
+                push('case ' + i + ':');
+            });
+            if(rec.indexOf('\n') !== -1) {
+                bits[bits.length - 1] += ' {';
+                bits.push(rec);
+                push('}');
+            } else {
+                bits.push(rec);
+            }
+        }
         push('}');
     }
-    push('}');
+    return bits.join('\n');
 }
 
 function tableToSimpleC(node, prefix) {
-    var bits = [];
-    tableToSimpleCRec(node, prefix, indentStep, bits);
-    return bits.join('\n');
+    return tableToSimpleCRec(node, prefix, indentStep);
 }
 
 function checkTableMissingInsns(node, insns) {
@@ -589,11 +605,15 @@ function genDisassembler(insns, ns, options) {
 
     var bitLength = insns[0].inst.length;
     var uid = insns[0].namespace + '/' + ns;
+    options.uid = uid;
+    options.cache = {};
+    options.insnNodeCache = {};
+    options.failNode = {fail: true};
     console.log('genDisassembler:', uid, bitLength);
     // find potential conflicts (by brute force)
     addConflictGroups(insns);
     //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, uid, 0, options);
+    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, 0, options);
     checkTableMissingInsns(node, insns);
     return node;
     //console.log(stuff);
@@ -664,7 +684,7 @@ function coalesceInsnsWithMap(insns, func) {
                             return;
                     }
                     // ok, inst dominates inst2; we do not need to distinguish
-                    insns2.forEach(function(insn) { insns.push(insn); });
+                    insns.push.apply(insns, insns2);
                     byPat.remove(inst2);
                 });
             });
