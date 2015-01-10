@@ -59,3 +59,12 @@ macro_rules! delegate_arith{($stru:ident, $traitname:ident, $methname:ident, $ot
     }
 )}
 
+
+#[macro_export]
+macro_rules! string_as_show{($ty:ty) => (
+    impl ::std::fmt::String for $ty {
+        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result  {
+            ::std::fmt::Show::fmt(self, fmt)
+        }
+    }
+)}

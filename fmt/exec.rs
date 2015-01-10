@@ -36,11 +36,12 @@ pub fn err<T, S: std::borrow::IntoCow<'static, String, str>>(kind: ErrorKind, s:
 pub struct VMA(pub u64);
 
 impl fmt::Show for VMA {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         try!(write!(fmt, "0x"));
-        self.0.fmt(fmt)
+        fmt::String::fmt(&self.0, fmt)
     }
 }
+string_as_show!(VMA);
 
 delegate_arith!(VMA, Sub, sub, u64);
 delegate_arith!(VMA, Add, add, u64);
@@ -48,15 +49,15 @@ delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
 delegate_arith!(VMA, BitXor, bitxor, u64);
 
-#[derive(Default, Copy, Clone, PartialEq, Eq)]
+#[derive(Default, Copy, Clone, PartialEq, Eq, Show)]
 pub struct Prot {
     pub r: bool,
     pub w: bool,
     pub x: bool,
 }
 
-impl fmt::Show for Prot {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+impl fmt::String for Prot {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "{}{}{}",
             if self.r { 'r' } else { '-' },
             if self.w { 'w' } else { '-' },
