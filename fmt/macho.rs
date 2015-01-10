@@ -1,9 +1,6 @@
-#![feature(macro_rules)]
-#![feature(phase)]
-#![feature(globs)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#[phase(plugin)]
+#[macro_use]
 extern crate macros;
 extern crate util;
 extern crate exec;
@@ -15,6 +12,8 @@ use std::default::Default;
 use std::vec::Vec;
 use std::mem::replace;
 use std::mem::size_of;
+use std::str::FromStr;
+use std::borrow::IntoCow;
 use util::{ToUi, VecStrExt, MCRef, Swap, zeroed_t};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
@@ -25,7 +24,7 @@ mod macho_bind;
 // dont bother with the unions
 deriving_swap!(
 #[repr(C)]
-#[deriving(Copy)]
+#[derive(Copy)]
 pub struct x_nlist {
     pub n_strx: uint32_t,
     pub n_type: uint8_t,
@@ -36,7 +35,7 @@ pub struct x_nlist {
 );
 deriving_swap!(
 #[repr(C)]
-#[deriving(Copy)]
+#[derive(Copy)]
 pub struct x_nlist_64 {
     pub n_strx: uint32_t,
     pub n_type: uint8_t,
@@ -46,18 +45,18 @@ pub struct x_nlist_64 {
 }
 );
 
-#[deriving(Default, Show, Copy)]
-pub struct SymSubset(uint, uint);
-#[deriving(Default, Show, Copy)]
-pub struct RelSubset(uint, uint);
+#[derive(Default, Show, Copy)]
+pub struct SymSubset(usize, usize);
+#[derive(Default, Show, Copy)]
+pub struct RelSubset(usize, usize);
 
-#[deriving(Default)]
+#[derive(Default)]
 pub struct MachO {
     pub eb: exec::ExecBase,
     pub is64: bool,
     pub mh: mach_header,
     // old-style symbol table:
-    pub nlist_size: uint,
+    pub nlist_size: usize,
     pub symtab: MCRef,
     pub strtab: MCRef,
     pub localsym: SymSubset,
@@ -89,12 +88,14 @@ impl exec::Exec for MachO {
             unimplemented!()
         }
     }
+
+    fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 }
 
 fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
     let cputype = cputype as u32;
     let cpusubtype = cpusubtype as u32;
-    Some(match (cputype.to_ui(), cpusubtype.to_ui() & !0x80000000) {
+    Some(match (cputype, cpusubtype & !0x80000000) {
         (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_ALL) => "hppa",
         (CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL) => "i386",
         (CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL) => "x86_64",
@@ -178,7 +179,7 @@ impl MachO {
     }
 
     pub fn desc(&self) -> String {
-        let ft_desc = match self.mh.filetype.to_ui() {
+        let ft_desc = match self.mh.filetype {
             MH_OBJECT => "object",
             MH_EXECUTE => "executable",
             MH_CORE => "core",
@@ -197,7 +198,7 @@ impl MachO {
     }
 
     fn parse_header(&mut self) {
-        self.eb.arch = match self.mh.cputype.to_ui() {
+        self.eb.arch = match self.mh.cputype as u32 {
             CPU_TYPE_X86 => arch::X86,
             CPU_TYPE_X86_64 => arch::X86_64,
             CPU_TYPE_ARM => arch::ARM,
@@ -210,17 +211,17 @@ impl MachO {
         // we don't really care about cpusubtype but could fill it in
     }
 
-    fn parse_load_commands(&mut self, mut lc_off: uint) {
+    fn parse_load_commands(&mut self, mut lc_off: usize) {
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
         let buf = self.eb.buf.get();
         //let buf_len = buf.len();
-        let mut segi = 0u;
+        let mut segi = 0us;
         for _ in range(0, self.mh.ncmds - 1) {
             let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
             let lc_buf = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
             let this_lc_off = lc_off;
-            let do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
+            let mut do_segment = |&mut: is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if is64 == true {
                     type segment_command_x = segment_command_64;
                     type section_x = section_64;
@@ -230,7 +231,7 @@ impl MachO {
                 } then {
                     let mut off = size_of::<segment_command_x>();
                     let sc: segment_command_x = util::copy_from_slice(lc_buf.slice_to(off), end);
-                    let ip = sc.initprot.to_ui();
+                    let ip = sc.initprot as u32;
                     let segprot = exec::Prot {
                         r: (ip & VM_PROT_READ) != 0,
                         w: (ip & VM_PROT_WRITE) != 0,
@@ -261,7 +262,7 @@ impl MachO {
                 });
                 segi += 1;
             };
-            match lc.cmd.to_ui() {
+            match lc.cmd {
                 LC_SEGMENT => do_segment(false, &mut self.eb.segments, &mut self.eb.sections),
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY => {
@@ -277,7 +278,7 @@ impl MachO {
                     let sy: symtab_command = util::copy_from_slice(lc_buf.slice_to(size_of::<symtab_command>()), end);
                     self.symtab = self.file_array("symbol table", sy.symoff, sy.nsyms, self.nlist_size);
                     self.strtab = self.file_array("string table", sy.stroff, sy.strsize, 1);
-                    //if sy.std::uint::MAX / nlist_size
+                    //if sy.std::usize::MAX / nlist_size
                     //sy.symoff
 
                 },
@@ -302,7 +303,7 @@ impl MachO {
         }
     }
 
-    fn file_array(&self, name: &str, off: u32, count: u32, elm_size: uint) -> MCRef {
+    fn file_array(&self, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
         let off_ = off.to_ui();
         let count_ = count.to_ui();
         let buf_len = self.eb.buf.len();
@@ -315,7 +316,7 @@ impl MachO {
     }
 
 
-    fn nlist_symbols(&self, start: uint, count: uint) -> Vec<exec::Symbol> {
+    fn nlist_symbols(&self, start: usize, count: usize) -> Vec<exec::Symbol> {
         let mut result = vec!();
         let data = self.symtab.get();
         let strtab = self.strtab.get();
@@ -328,8 +329,8 @@ impl MachO {
                 type nlist_x = x_nlist;
             } then {
                 let nl: nlist_x = util::copy_from_slice(slice, self.eb.endian);
-                let n_type_field = nl.n_type.to_ui();
-                let n_desc_field = nl.n_desc.to_ui();
+                let n_type_field = nl.n_type as u32;
+                let n_desc_field = nl.n_desc as u32;
                 let _n_pext = (n_type_field & N_PEXT) != 0;
                 let _n_stab = (n_type_field & N_STAB) >> 5;
                 let n_type = n_type_field & N_TYPE;
@@ -344,7 +345,8 @@ impl MachO {
                     } else if n_type == N_UNDF {
                         SymbolValue::Undefined
                     } else if n_type == N_INDR {
-                        let indr_name = util::trim_to_null(strtab.slice_from(nl.n_value.to_ui()));
+                        assert!(nl.n_value <= 0xfffffffe);
+                        let indr_name = util::trim_to_null(strtab.slice_from(nl.n_value as usize));
                         SymbolValue::ReExport(indr_name)
 
                     } else {
@@ -364,7 +366,7 @@ impl MachO {
     }
 }
 
-#[deriving(Copy)]
+#[derive(Copy)]
 pub struct MachOProber;
 
 impl exec::ExecProber for MachOProber {
@@ -384,25 +386,25 @@ impl exec::ExecProber for MachOProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "macho ...", 0, std::uint::MAX, &mut vec!(
+        let m = util::do_getopts_or_panic(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ));
         let mo: MachO = try!(MachO::new(buf, true));
-        Ok((box mo as Box<exec::Exec>, m.free))
+        Ok((Box::new(mo) as Box<exec::Exec>, m.free))
     }
 }
 
-#[deriving(Copy)]
+#[derive(Copy)]
 pub struct FatMachOProber;
 
 impl FatMachOProber {
-    fn probe_cb(&self, mc: &MCRef, cb: |u64, fat_arch|) -> bool {
+    fn probe_cb(&self, mc: &MCRef, cb: &mut FnMut(u64, fat_arch)) -> bool {
         let buf = mc.get();
         if buf.len() < 8 { return false }
         let fh: fat_header = util::copy_from_slice(buf.slice_to(8), util::BigEndian);
         if fh.magic != FAT_MAGIC as u32 { return false }
         let nfat = fh.nfat_arch as u64;
-        let mut off: uint = 8;
+        let mut off: usize = 8;
         if (buf.len() as u64) < (off as u64) + (nfat * size_of::<fat_arch>() as u64) {
             util::errln(format!("fatmacho: no room for {} fat archs", nfat));
             return false
@@ -427,7 +429,7 @@ impl exec::ExecProber for FatMachOProber {
     }
     fn probe(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef) -> Vec<exec::ProbeResult> {
         let mut result = Vec::new();
-        let ok = self.probe_cb(&mc, |i, fa| {
+        let ok = self.probe_cb(&mc, &mut |i, fa| {
             let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
                 Some(desc) => desc.to_string(),
                 None => format!("{}", i),
@@ -454,7 +456,7 @@ impl exec::ExecProber for FatMachOProber {
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),
         );
-        let mut m = util::do_getopts_or_panic(&*args, top, 0, std::uint::MAX, &mut optgrps);
+        let mut m = util::do_getopts_or_panic(&*args, top, 0, std::usize::MAX, &mut optgrps);
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
@@ -462,9 +464,9 @@ impl exec::ExecProber for FatMachOProber {
             util::usage(top, &mut optgrps);
             panic!();
         }
-        let slice_i = slice_num.map_or(0u64, |s| from_str(&*s).unwrap());
+        let slice_i = slice_num.map_or(0u64, |s| FromStr::from_str(&*s).unwrap());
         let mut result = None;
-        let ok = self.probe_cb(&mc, |i, fa| {
+        let ok = self.probe_cb(&mc, &mut |i, fa| {
             if if let (&None, &Some(ref arch_)) = (&result, &arch) {
                 mach_arch_desc(fa.cputype, fa.cpusubtype).map_or(false, |d| d == &**arch_)
             } else {

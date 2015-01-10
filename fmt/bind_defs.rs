@@ -1,6 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![allow(raw_pointer_deriving)]
+#![allow(raw_pointer_derive)]
 #![allow(dead_code)]
 
 use util::{Swap, zeroed_t};

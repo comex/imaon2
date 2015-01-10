@@ -782,9 +782,10 @@ var getopt = require('node-getopt').create([
     ['d', 'gen-disassembler', 'Generate a full disassembler.'],
     //['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
     //['',  'gen-sema', 'Generate the step after the disassembler.'],
-    ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes address regs'],
+    ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes PC inputs and jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
+    ['p',  'dis-prefix=PREFIX', 'Prefix for function calls from generated disassemblers'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -906,7 +907,7 @@ if(opt.options['gen-hook-disassembler']) {
     var node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
-    console.log(tableToSimpleC(node, 'transform_dis_'));
+    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || 'transform_dis_'));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);

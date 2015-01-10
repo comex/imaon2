@@ -1,11 +1,8 @@
-#![feature(macro_rules)]
 #![feature(unboxed_closures)]
-#![feature(globs)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(phase)]
 
-#[phase(plugin)]
+#[macro_use]
 extern crate macros;
 extern crate util;
 extern crate collections;
@@ -15,26 +12,27 @@ use arch::Arch;
 use std::vec::Vec;
 use std::fmt;
 use std::mem::replace;
+use std::str::FromStr;
 
 pub mod arch;
 
-#[deriving(Clone, Copy, Show)]
+#[derive(Clone, Copy, Show)]
 pub enum ErrorKind {
     BadData,
     Other
 }
 
-#[deriving(Clone, Show)]
+#[derive(Clone, Show)]
 pub struct Error {
     kind: ErrorKind,
-    message: std::str::CowString<'static>,
+    message: std::string::CowString<'static>,
 }
 pub type ExecResult<T> = Result<T, Error>;
 pub fn err<T, S: std::borrow::IntoCow<'static, String, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
     Err(Error { kind: kind, message: s.into_cow() })
 }
 
-#[deriving(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VMA(pub u64);
 
 impl fmt::Show for VMA {
@@ -50,7 +48,7 @@ delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
 delegate_arith!(VMA, BitXor, bitxor, u64);
 
-#[deriving(Default, Copy, Clone, PartialEq, Eq)]
+#[derive(Default, Copy, Clone, PartialEq, Eq)]
 pub struct Prot {
     pub r: bool,
     pub w: bool,
@@ -72,7 +70,7 @@ pub static prot_all : Prot = Prot { r: true, w: true, x: true };
 // formats often have redundant fields.  (e.g. ELF sections have protection
 // and alignment, Mach-O segments have names)
 
-#[deriving(Default, Show, Clone)]
+#[derive(Default, Show, Clone)]
 pub struct Segment {
     pub vmaddr: VMA,
     pub vmsize: u64,
@@ -80,10 +78,10 @@ pub struct Segment {
     pub filesize: u64,
     pub name: Option<String>,
     pub prot: Prot,
-    pub private: uint,
+    pub private: usize,
 }
 
-#[deriving(Default)]
+#[derive(Default)]
 pub struct ExecBase {
     pub arch: Arch,
     pub endian: util::Endian,
@@ -92,7 +90,7 @@ pub struct ExecBase {
     pub buf: util::MCRef,
 }
 
-#[deriving(Show, PartialEq, Eq)]
+#[derive(Show, PartialEq, Eq)]
 pub enum SymbolValue<'a> {
     Addr(VMA),
     Undefined,
@@ -100,31 +98,29 @@ pub enum SymbolValue<'a> {
     ReExport(&'a [u8]),
 }
 
-#[deriving(Show, PartialEq, Eq)]
+#[derive(Show, PartialEq, Eq)]
 pub struct Symbol<'a> {
     pub name: &'a [u8],
     pub is_public: bool,
     pub is_weak: bool,
     pub val: SymbolValue<'a>,
-    pub private: uint,
+    pub private: usize,
 }
 
-#[deriving(Show, PartialEq, Eq, Copy)]
+#[derive(Show, PartialEq, Eq, Copy)]
 pub enum SymbolSource {
     All,
     Imported,
     Exported,
 }
 
-pub trait Exec :'static {
+pub trait Exec : 'static {
     fn get_exec_base(&self) -> &ExecBase;
-
-    fn as_any(&self) -> &std::any::Any {
-        self as &std::any::Any
-    }
 
     // Todo: add a monomorphizable iterator version of this
     fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol>;
+
+    fn as_any(&self) -> &std::any::Any;// { self as &std::any::Any }
 }
 
 // Prober:
@@ -154,7 +150,7 @@ pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>
 }
 
 pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
-    let prober_name = args.remove(0).unwrap();
+    let prober_name = args.remove(0);
     if prober_name == "auto" {
         return create_auto(eps, buf, args);
     }
@@ -168,12 +164,12 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>)
 
 fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     // TODO: error conversion
-    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec!(
+    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec![
         getopts::optopt("", "arch", "Architecture bias", "arch"),
-    ));
+    ]);
     let mut results = probe_all(eps, buf.clone());
     if let Some(arch_str) = m.opt_str("arch") {
-        let arch = from_str(&*arch_str).unwrap();
+        let arch: Arch = FromStr::from_str(&*arch_str).unwrap();
         for pr in results.iter_mut() {
             if pr.likely && pr.arch == arch {
                 return Ok((try!(create(eps, buf, replace(&mut pr.cmd, vec!()))).0, m.free))

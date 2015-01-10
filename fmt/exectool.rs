@@ -1,4 +1,3 @@
-#![feature(macro_rules)]
 #![allow(non_camel_case_types)]
 
 extern crate util;
@@ -6,14 +5,13 @@ extern crate "bsdlike_getopts" as getopts;
 extern crate exec;
 extern crate macho;
 
-use std::any::{AnyRefExt};
 use exec::SymbolValue;
 use std::io;
 mod execall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
-    let entry = |mc: &util::MCRef, name| {
+    let mut entry = |&mut: mc: &util::MCRef, name| {
         match mc.offset_in(&mo.eb.buf) {
             None => (),
             Some(offset) => {
@@ -41,7 +39,7 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
-            println!("{:<16} @ {:<#18x} sz {:<#12x}  off:{:<#8x} filesz {:<#8x} {}",
+            println!("{:<16} @ {:<#18x} sz {:<#12x}  off:{:<#8x} filesz {:<#8x} {:?}",
                 match seg.name { Some(ref n) => &**n, None => "(unnamed)" },
                 seg.vmaddr.0, seg.vmsize,
                 seg.fileoff, seg.filesize,
@@ -52,7 +50,7 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     if m.opt_present("sects") {
         println!("All sections:");
         for seg in eb.sections.iter() {
-            println!("{}", seg);
+            println!("{:?}", seg);
         }
     }
     if m.opt_present("syms") {
@@ -60,9 +58,9 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
         for sym in ex.get_symbol_list(exec::SymbolSource::All).iter() {
             let name = String::from_utf8_lossy(sym.name);
             match sym.val {
-                SymbolValue::Addr(vma) =>     print!("{:<16}", vma),
+                SymbolValue::Addr(vma) =>     print!("{:<16?}", vma),
                 SymbolValue::Undefined =>     print!("[undef]         "),
-                SymbolValue::Resolver(vma) => print!("{:<16} [resolver]", vma),
+                SymbolValue::Resolver(vma) => print!("{:<16?} [resolver]", vma),
                 SymbolValue::ReExport(..) =>  print!("[re-export]     "),
             }
             print!(" ");
@@ -92,7 +90,7 @@ fn main() {
     if args[0].starts_with("-") {
         util::usage(top, &mut optgrps);
     }
-    let filename = args.remove(0).unwrap();
+    let filename = args.remove(0);
     let mut fp = io::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
         util::errln(format!("open {} failed: {}", filename, e));
         util::exit();

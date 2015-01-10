@@ -13,6 +13,8 @@ impl exec::Exec for RawBinary {
     fn get_symbol_list(&self, _: exec::SymbolSource) -> Vec<exec::Symbol> {
         vec!()
     }
+
+    fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 }
 
 impl RawBinary {
@@ -40,7 +42,7 @@ impl RawBinary {
     }
 }
 
-#[deriving(Copy)]
+#[derive(Copy)]
 pub struct RawProber;
 
 impl exec::ExecProber for RawProber {
@@ -59,7 +61,7 @@ impl exec::ExecProber for RawProber {
         let m = util::do_getopts_or_panic(&*args, "raw ...", 0, std::uint::MAX, &mut vec!(
             // ...
         ));
-        Ok((box RawBinary::new(buf, args) as Box<exec::Exec>, m.free))
+        Ok((Box::new(RawBinary::new(buf, args)) as Box<exec::Exec>, m.free))
     }
 }
 

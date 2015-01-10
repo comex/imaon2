@@ -2,7 +2,7 @@ use std::default::Default;
 use std::str::FromStr;
 pub use self::Arch::*;
 
-#[deriving(PartialEq, Eq, Show, Copy)]
+#[derive(PartialEq, Eq, Show, Copy)]
 pub enum Arch {
     X86,
     X86_64,

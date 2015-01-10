@@ -1,3 +1,0 @@
-[submodule "externals/rust-bindgen"]
-	path = externals/rust-bindgen
-	url = https://github.com/crabtw/rust-bindgen

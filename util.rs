@@ -1,18 +1,15 @@
-#![feature(macro_rules)]
-#![feature(phase)]
-#![feature(globs)]
+#![feature(plugin)]
 
 extern crate libc;
 extern crate "bsdlike_getopts" as getopts;
 
 extern crate regex;
-#[phase(plugin)]
+#[plugin] #[no_link]
 extern crate regex_macros;
-#[phase(plugin)]
+#[macro_use]
 extern crate macros;
 extern crate collections;
 
-use std::kinds::Copy;
 use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy_memory, zero_memory};
 use std::sync::Arc;
@@ -48,7 +45,7 @@ pub fn bswap16(x: u16) -> u16 {
     unsafe { intrinsics::bswap16(x) }
 }
 
-#[deriving(Show, PartialEq, Eq, Copy)]
+#[derive(Show, PartialEq, Eq, Copy)]
 pub enum Endian {
     BigEndian,
     LittleEndian,
@@ -65,7 +62,7 @@ pub trait Swap {
     }
 }
 
-macro_rules! impl_swap(
+macro_rules! impl_swap {
     ($ty:ty, $bsty:ty, $bsfun:ident) => (
         impl Swap for $ty {
             fn bswap(&mut self) {
@@ -73,7 +70,7 @@ macro_rules! impl_swap(
             }
         }
     )
-);
+}
 
 impl_swap!(u64, u64, bswap64);
 impl_swap!(i64, u64, bswap64);
@@ -90,11 +87,11 @@ impl Swap for i8 {
 }
 
 // dumb
-macro_rules! impl_for_array(($cnt:expr) => (
-    impl<T> Swap for [T, ..$cnt] {
+macro_rules! impl_for_array{($cnt:expr) => (
+    impl<T> Swap for [T; $cnt] {
         fn bswap(&mut self) {}
     }
-));
+)}
 impl_for_array!(1);
 impl_for_array!(2);
 impl_for_array!(4);
@@ -109,14 +106,16 @@ pub unsafe fn zeroed_t<T>() -> T {
     me
 }
 
+// TODO remove this
 pub trait ToUi {
-    fn to_ui(&self) -> uint;
+    fn to_ui(&self) -> usize;
 }
-impl<T : ToPrimitive> ToUi for T {
-    fn to_ui(&self) -> uint {
-        self.to_uint().unwrap()
-    }
-}
+impl ToUi for i32 { fn to_ui(&self) -> usize { *self as usize } }
+impl ToUi for u32 { fn to_ui(&self) -> usize { *self as usize } }
+impl ToUi for i16 { fn to_ui(&self) -> usize { *self as usize } }
+impl ToUi for u16 { fn to_ui(&self) -> usize { *self as usize } }
+impl ToUi for i8 { fn to_ui(&self) -> usize { *self as usize } }
+impl ToUi for u8 { fn to_ui(&self) -> usize { *self as usize } }
 
 pub trait X8 {}
 impl X8 for u8 {}
@@ -135,15 +134,17 @@ pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
     String::from_utf8_lossy(truncated).to_string()
 }
 
-#[deriving(Send, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MCRef {
     mm: Option<Arc<MemoryMap>>,
-    off: uint,
-    len: uint
+    off: usize,
+    len: usize
 }
 
+unsafe impl Send for MCRef {}
+
 impl MCRef {
-    pub fn slice(&self, from: uint, to: uint) -> MCRef {
+    pub fn slice(&self, from: usize, to: usize) -> MCRef {
         let len = to - from;
         if from > self.len || len > self.len - from {
             panic!("MCRef::slice: bad slice");
@@ -152,11 +153,11 @@ impl MCRef {
     }
     pub fn get<'a>(&'a self) -> &'a [u8] {
         unsafe { std::slice::from_raw_buf::<u8>(
-            transmute(&(self.mm.as_ref().unwrap().data().offset(self.off as int) as *const u8)),
+            transmute(&(self.mm.as_ref().unwrap().data().offset(self.off as isize) as *const u8)),
             self.len
         ) }
     }
-    pub fn offset_in(&self, other: &MCRef) -> Option<uint> {
+    pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
         match (&self.mm, &other.mm) {
             (&Some(ref mm1), &Some(ref mm2)) => {
                 if (&**mm1 as *const MemoryMap) == (&**mm2 as *const MemoryMap) &&
@@ -167,7 +168,7 @@ impl MCRef {
             _ => None
         }
     }
-    pub fn len(&self) -> uint {
+    pub fn len(&self) -> usize {
         self.len
     }
 }
@@ -178,18 +179,22 @@ pub fn safe_mmap(fil: &mut std::io::File) -> MCRef {
     let size = fil.tell().unwrap();
     fil.seek(oldpos as i64, io::SeekStyle::SeekSet).unwrap();
     let rounded = std::cmp::max(size, 0x1000);
+    let rsize = rounded as usize;
+    if rsize as u64 != rounded {
+        panic!("safe_mmap: file too big");
+    }
     let fd = fil.as_raw_fd();
-    let mm = MemoryMap::new(rounded.to_ui(), &[
-        std::os::MapReadable,
-        std::os::MapWritable,
-        std::os::MapFd(fd),
+    let mm = MemoryMap::new(rsize, &[
+        std::os::MapOption::MapReadable,
+        std::os::MapOption::MapWritable,
+        std::os::MapOption::MapFd(fd),
     ]).unwrap();
-    assert!(mm.len() >= size as uint);
-    MCRef { mm: Some(Arc::new(mm)), off: 0, len: size as uint }
+    assert!(mm.len() >= size as usize);
+    MCRef { mm: Some(Arc::new(mm)), off: 0, len: size as usize }
 }
 
 
-pub fn do_getopts(args: &[String], min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
+pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
     if let Ok(m) = getopts::getopts(args, optgrps.as_slice()) {
         if m.free.len() >= min_expected_free &&
             m.free.len() <= max_expected_free {
@@ -199,7 +204,7 @@ pub fn do_getopts(args: &[String], min_expected_free: uint, max_expected_free: u
     None
 }
 
-pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: uint, max_expected_free: uint, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
+pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
     do_getopts(args, min_expected_free, max_expected_free, optgrps).unwrap_or_else(|:| { usage(top, optgrps); panic!(); })
 }
 
@@ -221,17 +226,21 @@ pub fn errln(s: String) {
     errlnb(s.as_slice())
 }
 
+fn isprint(c: char) -> bool {
+    let c = c as u32;
+    if c >= 32 { c < 127 } else { (1 << c) & 0x3e00 != 0 }
+}
+
 pub fn shell_quote(args: &[String]) -> String {
     let mut sb = std::string::String::new();
     for arg_ in args.iter() {
         let arg = arg_.as_slice();
         if sb.len() != 0 { sb.push(' ') }
-        if regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
+        if false { // XXX regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
             sb.push_str(arg);
         } else {
             sb.push('"');
             for ch_ in arg.as_bytes().iter() {
-                let chu = *ch_;
                 let ch = *ch_ as char;
                 if ch == '$' || ch == '`' || ch == '\\' || ch == '"' || ch == '\n' {
                     if ch == '\n' {
@@ -240,8 +249,8 @@ pub fn shell_quote(args: &[String]) -> String {
                         sb.push('\\');
                         sb.push(ch);
                     }
-                } else if !chu.is_ascii() || !chu.to_ascii().is_print() {
-                    sb.push_str(format!("\\\\x{:02x}", chu).as_slice());
+                } else if !isprint(ch) {
+                    sb.push_str(format!("\\\\x{:02x}", *ch_).as_slice());
                 } else {
                     sb.push(ch);
                 }
@@ -249,7 +258,7 @@ pub fn shell_quote(args: &[String]) -> String {
             sb.push('"');
         }
     }
-    sb.into_string()
+    sb
 }
 
 
@@ -269,21 +278,21 @@ impl<T: std::string::ToString> VecStrExt for Vec<T> {
 
 #[test]
 fn test_branch() {
-    let do_i = |i: uint| {
+    let do_i = |i: usize| {
         branch!(if i == 1 {
             // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
-            type A = int;
-            type B = int;
-            let (b, c) = (7u, 8)
+            type A = isize;
+            type B = isize;
+            let (b, c) = (7us, 8)
         } else {
-            type A = uint;
-            type B = uint;
-            let (b, c) = (8u, 9)
+            type A = usize;
+            type B = usize;
+            let (b, c) = (8us, 9)
         } then {
             println!("{}", (b + c) as A);
         })
     };
-    for i in range(0u, 2) {
+    for i in range(0, 2) {
         do_i(i)
     }
 }

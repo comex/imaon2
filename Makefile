@@ -3,7 +3,7 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -C rpath --out-dir $(OUT) -L. -L$(OUT)
+RUSTC := rustc -C rpath --out-dir $(OUT) -Ltarget/deps --extern regex=`echo target/deps/libregex*.rlib` -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
@@ -19,13 +19,15 @@ LIB := dylib
 RUSTC := $(RUSTC) -C codegen-units=4 -C prefer-dynamic 
 endif
 
+RUSTC := $(RUSTC) -A unstable
+
 all:
 
 define define_crate_
 # 1=kind 2=name 3=sources 4=deps
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
-$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
+$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) cargo-build
 	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) $$<
 	#cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 
@@ -62,10 +64,9 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-$(call define_crate,rlib,bindgen,externals/rust-bindgen/src/lib.rs $(glob externals/rust-bindgen/src/*.rs),)
-externals/rust-bindgen/bindgen: externals/rust-bindgen/src/bin/bindgen.rs $(OUT)/libbindgen.rlib
-	# I think the -rpath bit is a Homebrew bug.
-	rustc -C rpath -o $@ $< -O -L $(OUT) -C link-args="-L$(ANOTHER_LLVM)/lib -rpath $(ANOTHER_LLVM)/lib"
+cargo-build:
+	cargo build
+	touch $@ # xxx
 
 $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
 	rm -rf $@
@@ -98,7 +99,7 @@ $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
 $(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 
 clean:
-	rm -rf out
+	rm -rf out cargo-build
 
 extraclean: clean
-	rm -f tables/llvm-tblgen
+	rm -f tables/llvm-tblgen Cargo.lock target
