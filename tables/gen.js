@@ -535,22 +535,22 @@ function genConstraintTest(insn, unknown, indent) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
+function tableToSimpleCRec(node, prefix, extraArgs, indent, skipConstraintTest) {
     var bits = [];
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
-        push('return ' + prefix + 'unidentified();');
+        push('return ' + prefix + 'unidentified(' + extraArgs + ');');
     } else if(node.insn) {
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
             push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))');
-            push('    return ' + prefix + 'unidentified();');
+            push('    return ' + prefix + 'unidentified(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
-        var args = [];
+        var args = [extraArgs];
         for(var op in runsByOp) {
-            push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false));
+            push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
             args.push(op);
         }
         push('return ' + prefix + insn.name + '(' + args.join(', ') + ');');
@@ -560,9 +560,9 @@ function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
         if(unknown)
             throw new Error("binary + constraints not supported because it's a hack anyway");
         push('if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue) + ') {');
-        bits.push(tableToSimpleCRec(node.buckets[0], prefix, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, indent + indentStep));
         push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], prefix, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[1], prefix, extraArgs, indent + indentStep));
         push('}');
     } else {
         var buckets = node.buckets.slice(0);
@@ -578,7 +578,7 @@ function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
                     buckets[j] = null;
                 }
             }
-            var rec = tableToSimpleCRec(subnode, prefix, indent + indentStep);
+            var rec = tableToSimpleCRec(subnode, prefix, extraArgs, indent + indentStep);
             var is = setdefault(cases, rec, []);
             is.push.apply(is, myis);
         }
@@ -601,8 +601,8 @@ function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
     return bits.join('\n');
 }
 
-function tableToSimpleC(node, prefix) {
-    return tableToSimpleCRec(node, prefix, indentStep);
+function tableToSimpleC(node, prefix, extraArgs) {
+    return tableToSimpleCRec(node, prefix, extraArgs, indentStep);
 }
 
 function checkTableMissingInsns(node, insns) {
@@ -722,7 +722,7 @@ function coalesceInsnsWithMap(insns, func) {
             // make a fake insn
             var insn = {
                 namespace: ns,
-                inst: inst,
+                inst: insns[0].inst,
                 //name: 'coal' + (coalid++) + '_' + (origLength - newLength) + '*' + key,
                 name: 'coal_' + (origLength - newLength) + '_' + insns[0].name,
             };
@@ -786,7 +786,8 @@ var getopt = require('node-getopt').create([
     ['',  'gen-hook-jump-disassembler', 'only jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
-    ['p',  'dis-prefix=PREFIX', 'Prefix for function calls from generated disassemblers'],
+    ['p', 'dis-prefix=PREFIX', 'Prefix for function calls from generated disassemblers'],
+    ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -916,7 +917,7 @@ function genHookDisassembler(includeNonJumps) {
     var node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
-    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || ''));
+    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || '', opt.options['dis-extra-args'] || 'ctx'));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);
