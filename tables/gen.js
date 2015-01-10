@@ -492,7 +492,7 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
 }
 
 function genGeneratedWarning() {
-    var describe = sh.exec('git --git-dir=\'' + __dirname + '/../.git\' describe --dirty --always').stdout.trim();
+    var describe = sh.exec('cd \'' + __dirname + '\'; git describe --abbrev=0 --dirty --always').stdout.trim();
     var cmdline = process.argv.slice(2).map(function(arg) {
         arg = arg.replace(/^.*imaon2\//, '');
         if(arg.indexOf(' ') !== -1)
