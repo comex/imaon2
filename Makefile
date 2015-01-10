@@ -19,7 +19,7 @@ LIB := dylib
 RUSTC := $(RUSTC) -C codegen-units=4 -C prefer-dynamic 
 endif
 
-RUSTC := $(RUSTC) -A unstable
+RUSTC := $(RUSTC) -A unstable -Z no-landing-pads
 
 all:
 
