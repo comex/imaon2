@@ -411,7 +411,7 @@ impl FatMachOProber {
         }
         for i in range(0, nfat) {
             let fa: fat_arch = util::copy_from_slice(buf.slice(off, off + size_of::<fat_arch>()), util::BigEndian);
-            if (fa.offset as u64) + (fa.size as u64) >= (buf.len() as u64) {
+            if (fa.offset as u64) + (fa.size as u64) > (buf.len() as u64) {
                 util::errln(format!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
                               fa.cputype, fa.cpusubtype, fa.offset, fa.size));
             } else {
