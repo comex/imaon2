@@ -539,13 +539,13 @@ function tableToSimpleCRec(node, prefix, indent, skipConstraintTest) {
     var bits = [];
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
-        push('return ' + prefix + 'unidentified()');
+        push('return ' + prefix + 'unidentified();');
     } else if(node.insn) {
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
             push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))');
-            push('    return ' + prefix + 'unidentified()');
+            push('    return ' + prefix + 'unidentified();');
         }
         var runsByOp = instToOpRuns(insn.inst);
         var args = [];
@@ -783,6 +783,7 @@ var getopt = require('node-getopt').create([
     //['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
     //['',  'gen-sema', 'Generate the step after the disassembler.'],
     ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes PC inputs and jumps'],
+    ['',  'gen-hook-jump-disassembler', 'only jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
     ['p',  'dis-prefix=PREFIX', 'Prefix for function calls from generated disassemblers'],
@@ -837,6 +838,12 @@ if(opt.options['gen-disassembler']) {
     console.log(ppTable(node));
 }
 if(opt.options['gen-hook-disassembler']) {
+    genHookDisassembler(true);
+}
+if(opt.options['gen-hook-jump-disassembler']) {
+    genHookDisassembler(false);
+}
+function genHookDisassembler(includeNonJumps) {
     var cantBePcModes = {
         // Thumb (most of the modes, for obvious reasons)
         't_addrmode_is4': true,
@@ -856,9 +863,11 @@ if(opt.options['gen-hook-disassembler']) {
         var addrName = null;
         if(insn.name.match(/^PL/i))
             return null;
+        var isBranch = insn.isBranch;
+        if(!isBranch && !includeNonJumps)
+            return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
-        var isBranch = insn.isBranch;
         var opBitLocs = [];
         var nbits = 0;
         insn.inst.forEach(function(bit, i) {
@@ -907,7 +916,7 @@ if(opt.options['gen-hook-disassembler']) {
     var node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
-    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || 'transform_dis_'));
+    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || ''));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);
