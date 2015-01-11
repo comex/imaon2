@@ -511,7 +511,7 @@ function genGeneratedWarning() {
 */\n'   .replace(/DESCRIBE/, describe).replace(/CMDLINE/, cmdline);
 }
 
-function genConstraintTest(insn, unknown, indent) {
+function genConstraintTest(insn, unknown, indent, andandFirstToo) {
     var ceb = insn.instConstrainedEqualBits;
     var pairs = [];
     for(var lo in ceb) {
@@ -527,11 +527,11 @@ function genConstraintTest(insn, unknown, indent) {
         var mask = (1 << run[2]) - 1;
         var part = '((op >> ' + run[0] + ') & 0x' + hexnopad(mask) + ') == ' +
                    '((op >> ' + run[1] + ') & 0x' + hexnopad(mask) + ')';
-        if(out)
+        if(out || andandFirstToo)
             out += ' &&\n' + indent;
         out += part;
     });
-
+    return out;
 }
 
 var indentStep = '    ';
@@ -544,7 +544,7 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
-            push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))');
+            push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))', false);
             push('    return ' + prefix + 'unidentified(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
@@ -564,10 +564,13 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
     } else if(node.isBinary) {
         var insn = node.buckets[0].insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
-        if(unknown)
-            throw new Error("binary + constraints not supported because it's a hack anyway");
-        push('if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue) + ') {');
-        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, prototypes, indent + indentStep));
+        var test = 'if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
+        if(unknown) {
+            test += genConstraintTest(insn, unknown, indent + '    ', true);
+        }
+        test += ') { /* binary + constraints, yay */';
+        push(test);
+        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, prototypes, indent + indentStep, true));
         push('} else {');
         bits.push(tableToSimpleCRec(node.buckets[1], prefix, extraArgs, prototypes, indent + indentStep));
         push('}');
@@ -672,7 +675,9 @@ function coalesceInsnsWithMap(insns, func) {
         var key = func(insn);
         if(key === null)
             return;
-        var ginsns = setdefault_hashmap(byGroup, key, []);
+        var locs = '' + insn.inst.map(function(bit) { Array.isArray(bit) ? bit : '' });
+        var realKey = [key, locs];
+        var ginsns = setdefault_hashmap(byGroup, realKey, []);
         ginsns.push(insn);
     });
     // for each group, continually coalesce instructions which are the same but for one bit, until we can do no more.  probably slooow
@@ -735,7 +740,7 @@ function coalesceInsnsWithMap(insns, func) {
 
         var origLength = ginsns.length;
         var newLength = byPat.count();
-        var groupName = 'g_' + ginsns.length + '_' + ginsns[0].name;
+        var groupName = key[0].replace(/[^a-zA-Z0-9_]+/g, '_') + '_' + + ginsns.length + '_' + ginsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
         byPat.forEach(function(insns, inst) {
             insns.sort(); // get a consistent representative for the name
@@ -880,10 +885,10 @@ function genHookDisassembler(includeNonJumps) {
 
     };
     var insns2 = coalesceInsnsWithMap(insns, function(insn) {
-        // This is not fully general.  But I don't think it's important to hook functions that do MUL PC, PC or crap like that...
-        // This takes care of all load instructions, plus the first operand of ADD.
-        var bitlocs = [];
-        var addrName = null;
+        // This is not fully general.  But I don't think it's important to hook
+        // functions that do MUL PC, PC or crap like that...  This takes care
+        // of all load instructions (LLVM mashes both registers into one big
+        // operand), plus ADD and MOV.
         if(insn.name.match(/^PL/i))
             return null;
         var isBranch = insn.isBranch;
@@ -891,25 +896,23 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
-        var opBitLocs = [];
         var nbits = 0;
-        var allVars = {}
+        var addrNames = {};
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
-                return null;
-            allVars[bit[0]] = true;
+                return;
             if(bit[0] == 'addr' ||
                bit[0] == 'label' /* ARM64 */ ||
-               (isAdd && bit[0] == 'Rm') ||
+               (isAdd && (bit[0] == 'Rm' || bit[0] == 'Rn')) ||
                (isMov && bit[0] == 'Rm') ||
                (isBranch && bit[0] == 'target')
             ) {
-                if(addrName !== null && addrName != bit[0])
-                    throw 'conflict';
-                opBitLocs[bit[1]] = i;
                 nbits++;
-                addrName = bit[0];
+                addrNames[bit[0]] = true;
+            } else {
+                // redact
+                insn.inst[i] = '?';
             }
         });
         if(nbits) {
@@ -922,20 +925,18 @@ function genHookDisassembler(includeNonJumps) {
                 return null;
             var nameBits = [];
             visitDag(insn.inOperandList, function(tuple) {
-                if(tuple[0] == ':')
+                if(tuple[0] == ':' && tuple[2][0] == '$' && addrNames[tuple[2].substr(1)]) {
+                    if(cantBePcModes[tuple[1]])
+                        return null;
                     nameBits.push(tuple[1] + ':' + tuple[2]);
+                }
             });
-            nameBits.sort();
-            name = nameBits.join(',');
+            var name = nameBits.join(',');
             if(!name) {
                 //console.log('BAD', insn.name, hex(insn.instKnownValue,32));
                 name = 'welp[' + insn.inOperandList + ']';
             }
-            if(cantBePcModes[name])
-                return null;
             //name += '*' + opBitLocs;
-            for(var v in allVars)
-                name += '*' + v;
             //console.log('representing', insn.name, 'as', name);
             return name;
         }
