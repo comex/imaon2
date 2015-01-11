@@ -535,7 +535,7 @@ function genConstraintTest(insn, unknown, indent) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, prefix, extraArgs, indent, skipConstraintTest) {
+function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipConstraintTest) {
     var bits = [];
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
@@ -548,21 +548,28 @@ function tableToSimpleCRec(node, prefix, extraArgs, indent, skipConstraintTest) 
             push('    return ' + prefix + 'unidentified(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
-        var args = [extraArgs];
+        var args = [];
+        var funcName = prefix + (insn.groupName || insn.name);
         for(var op in runsByOp) {
             push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
             args.push(op);
         }
-        push('return ' + prefix + insn.name + '(' + args.join(', ') + ');');
+        var hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
+        push('return ' + funcName + '(' + [extraArgs].concat(args).join(', ') + '); /* ' + hexComment + ' */');
+        // be helpful
+        if(prototypes) {
+            var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'unsigned ' + arg; }).join(', ') + ') {}';
+            prototypes[prototype] = null;
+        }
     } else if(node.isBinary) {
         var insn = node.buckets[0].insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown)
             throw new Error("binary + constraints not supported because it's a hack anyway");
         push('if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue) + ') {');
-        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, prototypes, indent + indentStep));
         push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], prefix, extraArgs, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[1], prefix, extraArgs, prototypes, indent + indentStep));
         push('}');
     } else {
         var buckets = node.buckets.slice(0);
@@ -578,11 +585,12 @@ function tableToSimpleCRec(node, prefix, extraArgs, indent, skipConstraintTest) 
                     buckets[j] = null;
                 }
             }
-            var rec = tableToSimpleCRec(subnode, prefix, extraArgs, indent + indentStep);
+            var rec = tableToSimpleCRec(subnode, prefix, extraArgs, prototypes, indent + indentStep);
             var is = setdefault(cases, rec, []);
             is.push.apply(is, myis);
         }
         push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
+        var ncases = 0;
         for(var rec in cases) {
             var is = cases[rec];
             is.forEach(function(i) {
@@ -602,7 +610,18 @@ function tableToSimpleCRec(node, prefix, extraArgs, indent, skipConstraintTest) 
 }
 
 function tableToSimpleC(node, prefix, extraArgs) {
-    return tableToSimpleCRec(node, prefix, extraArgs, indentStep);
+    var prototypes = {}; 
+    var ret = tableToSimpleCRec(node, prefix, extraArgs, prototypes, indentStep);
+    var ps = '\n';
+    for(var proto in prototypes) {
+        ps += '/*\n';
+        for(var proto in prototypes) {
+            ps += proto + '\n';
+        }
+        ps += '*/\n';
+        break;
+    }
+    return ret + ps;
 }
 
 function checkTableMissingInsns(node, insns) {
@@ -716,6 +735,7 @@ function coalesceInsnsWithMap(insns, func) {
 
         var origLength = ginsns.length;
         var newLength = byPat.count();
+        var groupName = 'g_' + ginsns.length + '_' + ginsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
         byPat.forEach(function(insns, inst) {
             insns.sort(); // get a consistent representative for the name
@@ -724,8 +744,10 @@ function coalesceInsnsWithMap(insns, func) {
                 namespace: ns,
                 inst: insns[0].inst,
                 //name: 'coal' + (coalid++) + '_' + (origLength - newLength) + '*' + key,
-                name: 'coal_' + (origLength - newLength) + '_' + insns[0].name,
+                name: 'coal_' + insns.length + '_' + insns[0].name,
+                groupName: groupName,
             };
+            //console.log(insn.name + ' >>>' + ginsns.map(function(i) { return i.name; }));
             fixInstruction(insn, /*noFlip*/ true);
             out.push(insn);
         });
@@ -871,10 +893,12 @@ function genHookDisassembler(includeNonJumps) {
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var opBitLocs = [];
         var nbits = 0;
+        var allVars = {}
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
                 return null;
+            allVars[bit[0]] = true;
             if(bit[0] == 'addr' ||
                bit[0] == 'label' /* ARM64 */ ||
                (isAdd && bit[0] == 'Rm') ||
@@ -894,20 +918,24 @@ function genHookDisassembler(includeNonJumps) {
             if(nbits < opBitLocs.length)
                 console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
             */
-            if(nbits < 4)
+            if((isAdd || isMov) && nbits < 4)
                 return null;
-            var name = '';
+            var nameBits = [];
             visitDag(insn.inOperandList, function(tuple) {
-                if(tuple[0] == ':' && tuple[2] == '$'+addrName)
-                    name = tuple[1];
+                if(tuple[0] == ':')
+                    nameBits.push(tuple[1] + ':' + tuple[2]);
             });
+            nameBits.sort();
+            name = nameBits.join(',');
             if(!name) {
                 //console.log('BAD', insn.name, hex(insn.instKnownValue,32));
                 name = 'welp[' + insn.inOperandList + ']';
             }
             if(cantBePcModes[name])
                 return null;
-            name += '*' + opBitLocs;
+            //name += '*' + opBitLocs;
+            for(var v in allVars)
+                name += '*' + v;
             //console.log('representing', insn.name, 'as', name);
             return name;
         }
