@@ -499,7 +499,7 @@ function opRunsToBitsliceLiteral(runs, reverse) {
         return '{' + run + '}';
     });
     //return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
-    return '{.nruns = ' + runs.length + ', .runs = (uint32_t[]) {' + runLits.map(function(run) { return hex(run[0] | (run[1] << 8) | (run[2] << 16), 24); }) + '}}';
+    return '{.nruns = ' + runs.length + ', .runs = (uint32_t[]) {' + runLits.map(function(run) { return '0x'+hex(run[0] | (run[1] << 8) | (run[2] << 16), 24); }) + '}}';
 }
 
 function genGeneratedWarning() {
@@ -909,7 +909,7 @@ function genHookDisassembler(includeNonJumps) {
         // functions that do MUL PC, PC or crap like that...  This takes care
         // of all load instructions (LLVM mashes both registers into one big
         // operand), plus ADD and MOV.
-        if(insn.name.match(/^PL/i))
+        if(insn.name.match(/^(PL|PRFM|LDNP|STNP)/i))
             return null;
         var isBranch = insn.isBranch;
         /*
@@ -936,10 +936,10 @@ function genHookDisassembler(includeNonJumps) {
             if(bit[0] == 'addr' ||
                bit[0] == 'offset' ||
                bit[0] == 'label' /* ARM64 */ ||
-               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
+               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || (!armv8 && bit[0] == 'Rd') || bit[0] == 'shift')) ||
                ((isStore || isLoad) && bit[0] == 'shift') ||
                (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
-               bit[0] == 'Rt' //(isInterestingLoad && bit[0] == 'Rt')
+               (bit[0] == 'Rt' && !armv8) //(isInterestingLoad && bit[0] == 'Rt')
             ) {
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
             }
