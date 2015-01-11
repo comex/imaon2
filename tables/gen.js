@@ -131,11 +131,25 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
     if(insns.length == 0)
         return data.failNode;
     if(insns.length == 1) {
-        return {
-            insn: insns[0],
-            knownMask: knownMask | insns[0].instKnownMask,
-            knownValue: knownValue | insns[0].instKnownValue
-        };
+        var insn = insns[0];
+        if ((insn.instKnownMask & ~knownMask) == 0) {
+            return {
+                insn: insn,
+                knownMask: knownMask,
+                knownValue: knownValue
+            };
+        } else {
+            return {
+                isBinary: 1,
+                buckets: [
+                    {insn: insn, knownMask: insn.instKnownMask, knownValue: insn.instKnownValue},
+                    data.failNode
+                ],
+                possibilities: insns,
+                knownMask: knownMask,
+                knownValue: knownValue
+            };
+        }
     }
 
     if(useCache) {
@@ -258,15 +272,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
                 return data.cache[cacheKey] = {
                     isBinary: 1,
                     buckets: [
-                        genDisassemblerRec(
-                            [insn],
-                            bitLength,
-                            knownMask,
-                            knownValue,
-                            false,
-                            depth + 1,
-                            data
-                        ),
+                        {insn: insn, knownMask: insn.instKnownMask, knownValue: insn.instKnownValue},
                         genDisassemblerRec(
                             newInsns,
                             bitLength,
@@ -413,10 +419,10 @@ function ppTable(node, indent, depth) {
     if(node.insn)
         return '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name;
     var s = '{' + depth + '} ';
-    if(typeof node.start !== 'undefined') {
+    if(!node.isBinary) {
         s += 'test ' + node.start + '..' + (node.start + node.length - 1);
     } else {
-        s += 'test for second insn';
+        s += 'test for first insn';
     }
     s += ' (' + node.possibilities.length + ' total insns - ';
     s += node.possibilities.map(function(i) { return i.name; }).join(',');
@@ -572,8 +578,10 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
         var test = 'if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
         if(unknown) {
             test += genConstraintTest(insn, unknown, indent + '    ', true);
+            test += ') { /* binary + constraints, yay */';
+        } else {
+            test += ') {';
         }
-        test += ') { /* binary + constraints, yay */';
         push(test);
         bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, prototypes, indent + indentStep, true));
         push('} else {');
