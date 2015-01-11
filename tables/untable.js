@@ -18,6 +18,7 @@ try {
 
 // Some pre-filtering
 var instructions = result.filter(function(defn) {
+    //console.log(defn.name);
     return (
         defn.supers.indexOf('Instruction') != -1 &&
         defn.props.AsmString &&
@@ -25,7 +26,7 @@ var instructions = result.filter(function(defn) {
         defn.props.Namespace != 'TargetOpcode' &&
         !defn.props.isPseudo &&
         !defn.props.isAsmParserOnly &&
-        !defn.props.isCodeGenOnly
+        !defn.props.isCodeGenOnly &&
     );
 }).map(function(defn) {
     var predicates = {};

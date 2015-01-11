@@ -630,14 +630,12 @@ function tableToSimpleC(node, pattern, extraArgs) {
     var prototypes = {};
     var ret = tableToSimpleCRec(node, pattern, extraArgs, prototypes, indentStep);
     var ps = '\n';
-    for(var proto in prototypes) {
-        ps += '/*\n';
-        for(var proto in prototypes) {
-            ps += proto + '\n';
-        }
-        ps += '*/\n';
-        break;
-    }
+    var protoNames = [];
+    for(var proto in prototypes)
+        protoNames.push(proto);
+    protoNames.sort();
+    if(protoNames)
+        ps += '/*\n' + protoNames.join('\n') + '\n*/\n';
     return ret + ps;
 }
 
@@ -866,7 +864,7 @@ if(typeof opt.options['namespace'] !== 'undefined') {
     insns = insns.filter(function(insn) { return dns.indexOf(insn.decoderNamespace) != -1; });
 }
 
-inputInsns.forEach(function(insn) { fixInstruction(insn, false); });
+insns.forEach(function(insn) { fixInstruction(insn, false); });
 
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
@@ -920,12 +918,15 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
+        var isStore = !!insn.name.match(/^[^A-Z]*ST/);
         var interestingVars = {}; // vn -> num bits
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
                 return;
             if(bit[0] == 'addr' ||
+               bit[0] == 'offset' ||
+               bit[0] == 'shift' ||
                bit[0] == 'label' /* ARM64 */ ||
                (isAdd && (bit[0] == 'Rm' || bit[0] == 'Rn')) ||
                (isMov && bit[0] == 'Rm') ||
@@ -973,6 +974,8 @@ function genHookDisassembler(includeNonJumps) {
                 return null;
             if(isBranch)
                 name += ',B';
+            if(isStore)
+                name += ',S';
             //name += '*' + opBitLocs;
             //console.log('representing', insn.name, 'as', name);
             return name;
