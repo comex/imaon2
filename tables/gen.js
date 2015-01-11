@@ -142,7 +142,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
             return {
                 isBinary: 1,
                 buckets: [
-                    {insn: insn, knownMask: insn.instKnownMask, knownValue: insn.instKnownValue},
+                    {insn: insn, knownMask: knownMask | insn.instKnownMask, knownValue: knownValue | insn.instKnownValue},
                     data.failNode
                 ],
                 possibilities: insns,
@@ -272,7 +272,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
                 return data.cache[cacheKey] = {
                     isBinary: 1,
                     buckets: [
-                        {insn: insn, knownMask: insn.instKnownMask, knownValue: insn.instKnownValue},
+                        {insn: insn, knownMask: knownMask | insn.instKnownMask, knownValue: knownValue | insn.instKnownValue},
                         genDisassemblerRec(
                             newInsns,
                             bitLength,
@@ -498,7 +498,8 @@ function opRunsToBitsliceLiteral(runs, reverse) {
     var runLits = runs.map(function(run) { 
         return '{' + run + '}';
     });
-    return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
+    //return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
+    return '{.nruns = ' + runs.length + ', .runs = (uint32_t[]) {' + runLits.map(function(run) { return hex(run[0] | (run[1] << 8) | (run[2] << 16), 24); }) + '}}';
 }
 
 function genGeneratedWarning() {
@@ -757,12 +758,18 @@ function coalesceInsnsWithMap(insns, func) {
         byPat.forEach(function(insns, inst) {
             insns.sort(); // get a consistent representative for the name
             // make a fake insn
+            var oinst = insns[0].inst.slice(0);
+            for(var i = 0; i < oinst.length; i++) {
+                if(!Array.isArray(oinst[i]))
+                    oinst[i] = inst[i];
+            }
             var insn = {
                 namespace: ns,
-                inst: insns[0].inst,
+                inst: oinst,
                 //name: 'coal' + (coalid++) + '_' + (origLength - newLength) + '*' + key,
                 name: 'coal_' + insns.length + '_' + insns[0].name,
                 groupName: groupName,
+                groupInsns: ginsns,
             };
             //console.log(insn.name + ' >>>' + ginsns.map(function(i) { return i.name; }));
             fixInstruction(insn, /*noFlip*/ true);
@@ -827,6 +834,7 @@ var getopt = require('node-getopt').create([
     ['',  'print-constrained-bits', 'Test constraints'],
     ['',  'dis-pattern=PATTERN', 'Pattern for function names from generated disassemblers, where XXX is replaced with our name'],
     ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
+    ['',  'print-insns', 'Just print them'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -918,6 +926,7 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
+        var isLoad = !!insn.name.match(/^[^A-Z]*LD/);
         var isStore = !!insn.name.match(/^[^A-Z]*ST/);
         var interestingVars = {}; // vn -> num bits
         insn.inst.forEach(function(bit, i) {
@@ -926,10 +935,9 @@ function genHookDisassembler(includeNonJumps) {
                 return;
             if(bit[0] == 'addr' ||
                bit[0] == 'offset' ||
-               bit[0] == 'shift' ||
                bit[0] == 'label' /* ARM64 */ ||
-               (isAdd && (bit[0] == 'Rm' || bit[0] == 'Rn')) ||
-               (isMov && bit[0] == 'Rm') ||
+               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
+               ((isStore || isLoad) && bit[0] == 'shift') ||
                (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
                bit[0] == 'Rt' //(isInterestingLoad && bit[0] == 'Rt')
             ) {
@@ -982,10 +990,18 @@ function genHookDisassembler(includeNonJumps) {
         }
         return null;
     });
+    //insns2.forEach(function(insn) { console.log(insn); });
     //console.log(insns2);
     var node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
+    var xseen = {};
+    insns2.forEach(function(insn) {
+        if(xseen[insn.groupName])
+            return;
+        xseen[insn.groupName] = true;
+        console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(function(insn2) { return insn2.name; }).join(', ') + ' */');
+    });
     console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
 }
 if(opt.options['gen-sema']) {
@@ -1005,5 +1021,10 @@ if(opt.options['print-constrained-bits']) {
             console.log(insn.name);
             console.log(insn.instConstrainedEqualBits);
         }
+    });
+}
+if(opt.options['print-insns']) {
+    insns.forEach(function(insn) {
+        console.log(insn);
     });
 }
