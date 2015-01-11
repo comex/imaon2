@@ -569,7 +569,7 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
         push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
         // be helpful
         if(prototypes) {
-            var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'unsigned ' + arg; }).join(', ') + ') {}';
+            var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'struct bitslice ' + arg; }).join(', ') + ') {}';
             prototypes[prototype] = null;
         }
     } else if(node.isBinary) {
@@ -905,12 +905,22 @@ function genHookDisassembler(includeNonJumps) {
         if(insn.name.match(/^PL/i))
             return null;
         var isBranch = insn.isBranch;
+        /*
+        if(includeNonJumps) {
+            if(isBranch)
+                ;
+            else if(isInterestingLoad) {
+                // force Rt to 15, xxx i'm not using this for now
+            } else
+                return null;
+        }
+        */
         if(!isBranch && !includeNonJumps)
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var nbits = 0;
-        var addrNames = {};
+        var interestingVars = {};
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
@@ -919,10 +929,11 @@ function genHookDisassembler(includeNonJumps) {
                bit[0] == 'label' /* ARM64 */ ||
                (isAdd && (bit[0] == 'Rm' || bit[0] == 'Rn')) ||
                (isMov && bit[0] == 'Rm') ||
-               (isBranch && bit[0] == 'target')
+               (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
+               bit[0] == 'Rt' //(isInterestingLoad && bit[0] == 'Rt')
             ) {
                 nbits++;
-                addrNames[bit[0]] = true;
+                interestingVars[bit[0]] = true;
             } else {
                 // redact
                 insn.inst[i] = '?';
@@ -937,18 +948,23 @@ function genHookDisassembler(includeNonJumps) {
             if((isAdd || isMov) && nbits < 4)
                 return null;
             var nameBits = [];
+            var seen = {};
             visitDag(insn.inOperandList, function(tuple) {
-                if(tuple[0] == ':' && tuple[2][0] == '$' && addrNames[tuple[2].substr(1)]) {
+                var vn;
+                if(tuple[0] == ':' && tuple[2][0] == '$' && interestingVars[vn = tuple[2].substr(1)]) {
+                    seen[vn] = true;
                     if(cantBePcModes[tuple[1]])
                         return null;
                     nameBits.push(tuple[1] + ':' + tuple[2]);
                 }
             });
-            var name = nameBits.join(',');
-            if(!name) {
-                //console.log('BAD', insn.name, hex(insn.instKnownValue,32));
-                name = 'welp[' + insn.inOperandList + ']';
+            for(var vn in interestingVars) {
+                if(!seen[vn])
+                    nameBits.push('unk' + ':' + vn);
             }
+            var name = nameBits.join(',');
+            if(!name)
+                return null;
             //name += '*' + opBitLocs;
             //console.log('representing', insn.name, 'as', name);
             return name;
