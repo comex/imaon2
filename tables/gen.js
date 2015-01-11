@@ -545,21 +545,22 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipConstraintTest) {
+function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipConstraintTest) {
     var bits = [];
+    var patternify = function(n) { return pattern.replace(/XXX/g, n); };
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
-        push('return ' + prefix + 'unidentified(' + extraArgs + ');');
+        push('return ' + patternify('unidentified') + '(' + extraArgs + ');');
     } else if(node.insn) {
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
             push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))', false);
-            push('    return ' + prefix + 'unidentified(' + extraArgs + ');');
+            push('    return ' + patternify('unidentified') + '(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
         var args = [extraArgs];
-        var funcName = prefix + (insn.groupName || insn.name);
+        var funcName = patternify(insn.groupName || insn.name);
         for(var op in runsByOp) {
             //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
             push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
@@ -583,9 +584,9 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
             test += ') {';
         }
         push(test);
-        bits.push(tableToSimpleCRec(node.buckets[0], prefix, extraArgs, prototypes, indent + indentStep, true));
+        bits.push(tableToSimpleCRec(node.buckets[0], pattern, extraArgs, prototypes, indent + indentStep, true));
         push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], prefix, extraArgs, prototypes, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[1], pattern, extraArgs, prototypes, indent + indentStep));
         push('}');
     } else {
         var buckets = node.buckets.slice(0);
@@ -601,7 +602,7 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
                     buckets[j] = null;
                 }
             }
-            var rec = tableToSimpleCRec(subnode, prefix, extraArgs, prototypes, indent + indentStep);
+            var rec = tableToSimpleCRec(subnode, pattern, extraArgs, prototypes, indent + indentStep);
             var is = setdefault(cases, rec, []);
             is.push.apply(is, myis);
         }
@@ -625,9 +626,9 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
     return bits.join('\n');
 }
 
-function tableToSimpleC(node, prefix, extraArgs) {
-    var prototypes = {}; 
-    var ret = tableToSimpleCRec(node, prefix, extraArgs, prototypes, indentStep);
+function tableToSimpleC(node, pattern, extraArgs) {
+    var prototypes = {};
+    var ret = tableToSimpleCRec(node, pattern, extraArgs, prototypes, indentStep);
     var ps = '\n';
     for(var proto in prototypes) {
         ps += '/*\n';
@@ -826,7 +827,7 @@ var getopt = require('node-getopt').create([
     ['',  'gen-hook-jump-disassembler', 'only jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
-    ['p', 'dis-prefix=PREFIX', 'Prefix for function calls from generated disassemblers'],
+    ['',  'dis-pattern=PATTERN', 'Pattern for function names from generated disassemblers, where XXX is replaced with our name'],
     ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
     ['h', 'help', 'help'],
 ]).bindHelp();
@@ -919,8 +920,7 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
-        var nbits = 0;
-        var interestingVars = {};
+        var interestingVars = {}; // vn -> num bits
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
@@ -932,29 +932,35 @@ function genHookDisassembler(includeNonJumps) {
                (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
                bit[0] == 'Rt' //(isInterestingLoad && bit[0] == 'Rt')
             ) {
-                nbits++;
-                interestingVars[bit[0]] = true;
-            } else {
-                // redact
-                insn.inst[i] = '?';
+                interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
             }
         });
-        if(nbits) {
+        // pointless special case - yay thumb
+        for(var vn in interestingVars) {
+            if(vn[0] == 'R' && interestingVars[vn] < 4)
+                delete interestingVars[vn];
+        }
+        visitDag(insn.inOperandList, function(tuple) {
+            if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
+                delete interestingVars[tuple[2].substr(1)];
+        });
+        insn.inst.forEach(function(bit, i) {
+            if(Array.isArray(bit) && !interestingVars[bit[0]])
+                insn.inst[i] = '?'; // redact
+        });
+
+        for(var haveAny in interestingVars) {
             /*
             happens sometimes
             if(nbits < opBitLocs.length)
                 console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
             */
-            if((isAdd || isMov) && nbits < 4)
-                return null;
             var nameBits = [];
             var seen = {};
             visitDag(insn.inOperandList, function(tuple) {
                 var vn;
                 if(tuple[0] == ':' && tuple[2][0] == '$' && interestingVars[vn = tuple[2].substr(1)]) {
                     seen[vn] = true;
-                    if(cantBePcModes[tuple[1]])
-                        return null;
                     nameBits.push(tuple[1] + ':' + tuple[2]);
                 }
             });
@@ -965,6 +971,8 @@ function genHookDisassembler(includeNonJumps) {
             var name = nameBits.join(',');
             if(!name)
                 return null;
+            if(isBranch)
+                name += ',B';
             //name += '*' + opBitLocs;
             //console.log('representing', insn.name, 'as', name);
             return name;
@@ -975,7 +983,7 @@ function genHookDisassembler(includeNonJumps) {
     var node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
-    console.log(tableToSimpleC(node, opt.options['dis-prefix'] || '', opt.options['dis-extra-args'] || 'ctx'));
+    console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);
