@@ -474,11 +474,8 @@ function instToOpRuns(inst, removeDupes) {
 function opRunsToExtractionFormula(runs, inExpr, reverse) {
     var parts = [];
     runs.forEach(function(run) {
+        // make a reverse function if necessary
         var inpos = run[0], outpos = run[1], len = run[2];
-        if(reverse) {
-            inpos = run[1];
-            outpos = run[0];
-        }
         var diff = inpos - outpos;
         var mask = ((1 << len) - 1) << inpos;
         var x = '(' + inExpr + ' & 0x' + hexnopad(mask) + ')';
@@ -489,6 +486,13 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
         parts.push(x);
     });
     return parts.join(' | ');
+}
+
+function opRunsToBitsliceLiteral(runs, reverse) {
+    var runLits = runs.map(function(run) { 
+        return '{' + run + '}';
+    });
+    return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
 }
 
 function genGeneratedWarning() {
@@ -548,14 +552,15 @@ function tableToSimpleCRec(node, prefix, extraArgs, prototypes, indent, skipCons
             push('    return ' + prefix + 'unidentified(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
-        var args = [];
+        var args = [extraArgs];
         var funcName = prefix + (insn.groupName || insn.name);
         for(var op in runsByOp) {
-            push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
+            //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
+            push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
             args.push(op);
         }
         var hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
-        push('return ' + funcName + '(' + [extraArgs].concat(args).join(', ') + '); /* ' + hexComment + ' */');
+        push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
         // be helpful
         if(prototypes) {
             var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'unsigned ' + arg; }).join(', ') + ') {}';
