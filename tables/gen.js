@@ -498,8 +498,7 @@ function opRunsToBitsliceLiteral(runs, reverse) {
     var runLits = runs.map(function(run) { 
         return '{' + run + '}';
     });
-    //return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
-    return '{.nruns = ' + runs.length + ', .runs = (uint32_t[]) {' + runLits.map(function(run) { return '0x'+hex(run[0] | (run[1] << 8) | (run[2] << 16), 24); }) + '}}';
+    return '{.nruns = ' + runs.length + ', .runs = {' + runLits.join(', ') + '}}';
 }
 
 function genGeneratedWarning() {
@@ -546,7 +545,7 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipConstraintTest) {
+function tableToSimplishCppRec(node, pattern, extraArgs, prototypes, indent, skipConstraintTest) {
     var bits = [];
     var patternify = function(n) { return pattern.replace(/XXX/g, n); };
     var push = function(x) { bits.push(indent + x); };
@@ -560,18 +559,20 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
             push('    return ' + patternify('unidentified') + '(' + extraArgs + ');');
         }
         var runsByOp = instToOpRuns(insn.inst);
-        var args = [extraArgs];
+        var args = [];
+        var argTypes = [];
         var funcName = patternify(insn.groupName || insn.name);
         for(var op in runsByOp) {
             //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
-            push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
-            args.push(op);
+            push('constexpr static struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
+            args.push('&' + op);
+            argTypes.push('BSP ' + op);
         }
         var hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
-        push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
+        push('return ' + funcName + '<' + args.join(', ') + '>(' + extraArgs + '); /* ' + hexComment + ' */');
         // be helpful
         if(prototypes) {
-            var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'struct bitslice ' + arg; }).join(', ') + ') {}';
+            var prototype = 'template<' + argTypes.join(', ') + '> static INLINE tdis_ret ' + funcName + '(' + extraArgs + ') {}';
             prototypes[prototype] = null;
         }
     } else if(node.isBinary) {
@@ -585,9 +586,9 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
             test += ') {';
         }
         push(test);
-        bits.push(tableToSimpleCRec(node.buckets[0], pattern, extraArgs, prototypes, indent + indentStep, true));
+        bits.push(tableToSimplishCppRec(node.buckets[0], pattern, extraArgs, prototypes, indent + indentStep, true));
         push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], pattern, extraArgs, prototypes, indent + indentStep));
+        bits.push(tableToSimplishCppRec(node.buckets[1], pattern, extraArgs, prototypes, indent + indentStep));
         push('}');
     } else {
         var buckets = node.buckets.slice(0);
@@ -603,7 +604,7 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
                     buckets[j] = null;
                 }
             }
-            var rec = tableToSimpleCRec(subnode, pattern, extraArgs, prototypes, indent + indentStep);
+            var rec = tableToSimplishCppRec(subnode, pattern, extraArgs, prototypes, indent + indentStep);
             var is = setdefault(cases, rec, []);
             is.push.apply(is, myis);
         }
@@ -627,9 +628,9 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
     return bits.join('\n');
 }
 
-function tableToSimpleC(node, pattern, extraArgs) {
+function tableToSimplishCpp(node, pattern, extraArgs) {
     var prototypes = {};
-    var ret = tableToSimpleCRec(node, pattern, extraArgs, prototypes, indentStep);
+    var ret = tableToSimplishCppRec(node, pattern, extraArgs, prototypes, indentStep);
     var ps = '\n';
     var protoNames = [];
     for(var proto in prototypes)
@@ -928,6 +929,7 @@ function genHookDisassembler(includeNonJumps) {
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var isLoad = !!insn.name.match(/^[^A-Z]*LD/);
         var isStore = !!insn.name.match(/^[^A-Z]*ST/);
+        var isArmv8 = insn.namespace == 'AArch64';
         var interestingVars = {}; // vn -> num bits
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
@@ -936,10 +938,10 @@ function genHookDisassembler(includeNonJumps) {
             if(bit[0] == 'addr' ||
                bit[0] == 'offset' ||
                bit[0] == 'label' /* ARM64 */ ||
-               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || (!armv8 && bit[0] == 'Rd') || bit[0] == 'shift')) ||
+               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || (!isArmv8 && bit[0] == 'Rd') || bit[0] == 'shift')) ||
                ((isStore || isLoad) && bit[0] == 'shift') ||
                (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
-               (bit[0] == 'Rt' && !armv8) //(isInterestingLoad && bit[0] == 'Rt')
+               (bit[0] == 'Rt' && !isArmv8) //(isInterestingLoad && bit[0] == 'Rt')
             ) {
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
             }
@@ -1002,7 +1004,7 @@ function genHookDisassembler(includeNonJumps) {
         xseen[insn.groupName] = true;
         console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(function(insn2) { return insn2.name; }).join(', ') + ' */');
     });
-    console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
+    console.log(tableToSimplishCpp(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);
