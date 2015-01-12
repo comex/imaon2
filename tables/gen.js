@@ -928,26 +928,40 @@ function genHookDisassembler(includeNonJumps) {
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var isLoad = !!insn.name.match(/^[^A-Z]*LD/);
         var isStore = !!insn.name.match(/^[^A-Z]*ST/);
+        var isArmv8 = insn.namespace == 'AArch64';
         var interestingVars = {}; // vn -> num bits
         insn.inst.forEach(function(bit, i) {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
                 return;
-            if(bit[0] == 'addr' ||
-               bit[0] == 'offset' ||
-               bit[0] == 'label' /* ARM64 */ ||
-               ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || (!armv8 && bit[0] == 'Rd') || bit[0] == 'shift')) ||
-               ((isStore || isLoad) && bit[0] == 'shift') ||
-               (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
-               (bit[0] == 'Rt' && !armv8) //(isInterestingLoad && bit[0] == 'Rt')
-            ) {
-                interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
+            var interesting;
+            switch(insn.namespace) {
+            case 'ARM':
+                interesting =
+                    bit[0] == 'addr' ||
+                    bit[0] == 'offset' ||
+                    bit[0] == 'label' ||
+                    ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
+                    ((isStore || isLoad) && bit[0] == 'shift') ||
+                    (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
+                    bit[0] == 'Rt';
+                break;
+            case 'AArch64':
+                // yay, highly restrictd use of PC
+                interesting = bit[0] == 'label' || bit[0] == 'addr' || (isBranch && bit[0] == 'target');
+                break;
+            default:
+                throw 'unknown namespace';
             }
+            if(interesting)
+                interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
         });
-        // pointless special case - yay thumb
-        for(var vn in interestingVars) {
-            if(vn[0] == 'R' && interestingVars[vn] < 4)
-                delete interestingVars[vn];
+        if(insn.namespace == 'ARM') {
+            // pointless special case - yay thumb
+            for(var vn in interestingVars) {
+                if(vn[0] == 'R' && interestingVars[vn] < 4)
+                    delete interestingVars[vn];
+            }
         }
         visitDag(insn.inOperandList, function(tuple) {
             if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
