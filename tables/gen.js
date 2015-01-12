@@ -606,6 +606,8 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
             var is = setdefault(cases, rec, []);
             is.push.apply(is, myis);
         }
+        if((1 << node.length) != buckets.length)
+            throw new Error('bad buckets length - ' + node.length + ' - ' + buckets.length);
         push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
         var ncases = 0;
         for(var rec in cases) {
@@ -908,8 +910,9 @@ function genHookDisassembler(includeNonJumps) {
         // functions that do MUL PC, PC or crap like that...  This takes care
         // of all load instructions (LLVM mashes both registers into one big
         // operand), plus ADD and MOV.
-        if(insn.name.match(/^(PL|PRFM|LDNP|STNP)/i))
+        if(insn.name.match(/^(t?2?PL|PRFM|LDNP|STNP)/i)) {
             return null;
+        }
         var isBranch = insn.isBranch;
         /*
         if(includeNonJumps) {
@@ -923,7 +926,7 @@ function genHookDisassembler(includeNonJumps) {
         */
         if(!isBranch && !includeNonJumps)
             return null;
-        var isAdd = !!insn.name.match(/^[^A-Z]*ADD/);
+        var isAdd = !!insn.name.match(/^[^A-Z]*AD[DR]/);
         var isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         var isLoad = !!insn.name.match(/^[^A-Z]*LD/);
         var isStore = !!insn.name.match(/^[^A-Z]*ST/);
@@ -940,14 +943,15 @@ function genHookDisassembler(includeNonJumps) {
                     bit[0] == 'addr' ||
                     bit[0] == 'offset' ||
                     bit[0] == 'label' ||
-                    ((isAdd || isMov) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
-                    ((isStore || isLoad) && bit[0] == 'shift') ||
+                    ((isAdd || isMov || isStore || isLoad) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
                     (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
+                    ((isStore || isLoad) && bit[0] == 'regs') ||
                     bit[0] == 'Rt';
                 break;
             case 'AArch64':
-                // yay, highly restrictd use of PC
-                interesting = bit[0] == 'label' || bit[0] == 'addr' || (isBranch && bit[0] == 'target');
+                // yay, highly restricted use of PC
+                interesting = bit[0] == 'label' || bit[0] == 'addr' || (isBranch && bit[0] == 'target') ||
+                    (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')); /* hack */
                 break;
             default:
                 throw 'unknown namespace';
@@ -955,17 +959,22 @@ function genHookDisassembler(includeNonJumps) {
             if(interesting)
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
         });
-        if(insn.namespace == 'ARM') {
-            // pointless special case - yay thumb
-            for(var vn in interestingVars) {
-                if(vn[0] == 'R' && interestingVars[vn] < 4)
-                    delete interestingVars[vn];
-            }
-        }
         visitDag(insn.inOperandList, function(tuple) {
             if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
                 delete interestingVars[tuple[2].substr(1)];
         });
+        if(insn.namespace == 'ARM') {
+            // pointless special case - yay thumb
+            var someCouldBePc = false;
+            for(var vn in interestingVars) {
+                if(!(vn[0] == 'R' && interestingVars[vn] < 4)) {
+                    someCouldBePc = true;
+                    break;
+                }
+            }
+            if(!someCouldBePc)
+                return null;
+        }
         insn.inst.forEach(function(bit, i) {
             if(Array.isArray(bit) && !interestingVars[bit[0]])
                 insn.inst[i] = '?'; // redact
