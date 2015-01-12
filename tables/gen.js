@@ -947,11 +947,13 @@ function genHookDisassembler(includeNonJumps) {
                     (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
                     ((isStore || isLoad) && bit[0] == 'regs') ||
                     bit[0] == 'Rt';
+                    // bit[0] == 'func'; /* get calls */
                 break;
             case 'AArch64':
                 // yay, highly restricted use of PC
                 interesting = bit[0] == 'label' || bit[0] == 'addr' || (isBranch && bit[0] == 'target') ||
-                    (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')); /* hack */
+                    (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
+                    (insn.name == 'RET' && bit[0] == 'Rn');
                 break;
             default:
                 throw 'unknown namespace';
