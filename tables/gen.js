@@ -498,8 +498,7 @@ function opRunsToBitsliceLiteral(runs, reverse) {
     var runLits = runs.map(function(run) { 
         return '{' + run + '}';
     });
-    //return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
-    return '{.nruns = ' + runs.length + ', .runs = (uint32_t[]) {' + runLits.map(function(run) { return '0x'+hex(run[0] | (run[1] << 8) | (run[2] << 16), 24); }) + '}}';
+    return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
 }
 
 function genGeneratedWarning() {
