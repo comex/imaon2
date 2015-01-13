@@ -567,13 +567,17 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             push('    return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
         }
         // ok, it's definitely this instruction
-        var label;
-        if(label = data.labels[insn.name]) {
-            push('goto ' + label);
+        var name = insn.groupName || insn.name;
+        var label = 'insn_' + name;
+        if(data.seen[label]) {
+            push('goto ' + label + ';');
+            data.seen[label]++;
         } else {
             var runsByOp = instToOpRuns(insn.inst);
             var args = [data.extraArgs];
-            var funcName = patternify(insn.groupName || insn.name);
+            var funcName = patternify(name);
+            push('LABEL ' + label + '');
+            data.seen[label] = 1;
             for(var op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
                 push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
@@ -589,7 +593,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
         }
     } else if(node.isBinary) {
         var insn = node.buckets[0].insn;
-        var unknown = insn.instDependsMask & ~node.knownMask;
+        var unknown = insn.instConstrainedMask & ~node.knownMask;
         var test = 'if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
         if(unknown) {
             test += genConstraintTest(insn, unknown, indent + '    ', true);
@@ -640,10 +644,18 @@ function tableToSimpleC(node, pattern, extraArgs) {
         pattern: pattern,
         extraArgs: extraArgs,
         prototypes: {},
-        labels: {},
+        seen: {},
         useGoto: true,
     };
     var ret = tableToSimpleCRec(node, data, indentStep);
+    ret = ret.replace(/\n[^\n]*LABEL ([^\n]+)/g, function(m) {
+        var bits = m.split('LABEL ');
+        var whitespace = bits[0], lbl = bits[1];
+        if(data.seen[lbl] > 1)
+            return whitespace + lbl + ':;';
+        else
+            return '';
+    });
     var ps = '\n';
     var protoNames = [];
     for(var proto in data.prototypes)
@@ -800,7 +812,7 @@ function fixInstruction(insn, noFlip) {
         }
         insn.instKnown.push(res);
     };
-    insn.instDependsMask = insn.instKnownMask;
+    insn.instConstrainedMask = 0;
     insn.instConstrainedEqualBits = {};
     insn.instHaveAnyConstrainedEqualBits = false;
     for(var k in bitEqualityConstraints) {
@@ -808,12 +820,13 @@ function fixInstruction(insn, noFlip) {
         if(bits.length > 1) {
             bits.forEach(function(bit) {
                 insn.instConstrainedEqualBits[bit] = bits.filter(function(bit2) { return bit2 != bit; });
-                insn.instDependsMask |= (1 << i);
+                insn.instConstrainedMask |= (1 << i);
                 insn.instHaveAnyConstrainedEqualBits = true;
             });
             //console.log('!', insn.name, insn.instConstrainedEqualBits);
         }
     }
+    insn.instDependsMask = insn.instKnownMask | insn.instConstrainedMask;
 }
 
 var getopt = require('node-getopt').create([
