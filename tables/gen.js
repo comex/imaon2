@@ -127,19 +127,38 @@ var choiceOverrides = {
 };
 
 function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, depth, data) {
-    //console.log(indent + insns.length);
+    //console.log(depth + ' ' + insns.length + ' $ ' + useCache);
     if(insns.length == 0)
         return data.failNode;
+
+    if(useCache) {
+        var names = [];
+        var m = 0;
+        insns.forEach(function(insn) {
+            names.push(insn.name);
+            m |= insn.instDependsMask;
+        });
+        names.push(knownMask &= m);
+        names.push(knownValue &= m);
+        var cacheKey = names.join(',');
+        //console.log(cacheKey);
+        var result = data.cache[cacheKey];
+        if(typeof result !== 'undefined') {
+            //console.log('cache hit');
+            return result;
+        }
+    }
+
     if(insns.length == 1) {
         var insn = insns[0];
         if ((insn.instKnownMask & ~knownMask) == 0) {
-            return {
+            return data.cache[cacheKey] = {
                 insn: insn,
                 knownMask: knownMask,
                 knownValue: knownValue
             };
         } else {
-            return {
+            return data.cache[cacheKey] = {
                 isBinary: 1,
                 buckets: [
                     {insn: insn, knownMask: knownMask | insn.instKnownMask, knownValue: knownValue | insn.instKnownValue},
@@ -152,22 +171,6 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
         }
     }
 
-    if(useCache) {
-        var names = [];
-        var m = 0;
-        insns.forEach(function(insn) {
-            names.push(insn.name);
-            m |= insn.instDependsMask;
-        });
-        names.push(knownMask & m);
-        names.push(knownValue & m);
-        var cacheKey = names.join(',');
-        var result = data.cache[cacheKey];
-        if(typeof result !== 'undefined') {
-            //console.log('cache hit');
-            return result;
-        }
-    }
     var bestBuckets, bestStart, bestLength, bestMax = 1000000;
     var maxLength = data.maxLength;
     var cacheCutoff = 4;
@@ -305,7 +308,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
         var bucket = bestBuckets[i];
         var bucketKnownMask = knownMask | (((1 << bestLength) - 1) << bestStart);
         var bucketKnownValue = knownValue | (i << bestStart);
-        var useCache = bestLength > cacheCutoff && depth > 0;
+        //var useCache = bestLength > cacheCutoff && depth > 0;
+        // ^ this makes no sense?
         resultBuckets.push(genDisassemblerRec(
             bucket,
             bitLength,
@@ -330,6 +334,25 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
         knownMask: knownMask,
         knownValue: knownValue
     };
+}
+
+function genDisassembler(insns, ns, options) {
+    options.maxLength = options.maxLength || 6;
+
+    var bitLength = insns[0].inst.length;
+    var uid = insns[0].namespace + '/' + ns;
+    options.uid = uid;
+    options.cache = {};
+    options.insnNodeCache = {};
+    options.failNode = {fail: true};
+    //console.log('genDisassembler:', uid, bitLength);
+    // find potential conflicts (by brute force)
+    addConflictGroups(insns);
+    //console.log(insns.length);
+    var node = genDisassemblerRec(insns, bitLength, 0, 0, true, 0, options);
+    checkTableMissingInsns(node, insns);
+    return node;
+    //console.log(stuff);
 }
 
 function addConflictGroups(insns) {
@@ -659,25 +682,6 @@ function checkTableMissingInsns(node, insns) {
 
 // there are instructions that put, say, addr{12} in multiple locations in Inst to assert that the value is the same.
 
-function genDisassembler(insns, ns, options) {
-    options.maxLength = options.maxLength || 6;
-
-    var bitLength = insns[0].inst.length;
-    var uid = insns[0].namespace + '/' + ns;
-    options.uid = uid;
-    options.cache = {};
-    options.insnNodeCache = {};
-    options.failNode = {fail: true};
-    //console.log('genDisassembler:', uid, bitLength);
-    // find potential conflicts (by brute force)
-    addConflictGroups(insns);
-    //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, 0, false, 0, options);
-    checkTableMissingInsns(node, insns);
-    return node;
-    //console.log(stuff);
-}
-
 function genSema(insns, ns) {
     var s = 'trait Sema' + ns + ' {\n';
 
@@ -790,7 +794,6 @@ function fixInstruction(insn, noFlip) {
     insn.instKnownMask = 0;
     insn.instKnownValue = 0;
     insn.instSpecificity = 0;
-    insn.instDependsMask = 0;
     insn.instKnown = [];
     var bitEqualityConstraints = {};
     for(var i = 0; i < insn.inst.length; i++) {
@@ -807,6 +810,7 @@ function fixInstruction(insn, noFlip) {
         }
         insn.instKnown.push(res);
     };
+    insn.instKnownMask = 0;
     insn.instConstrainedEqualBits = {};
     insn.instHaveAnyConstrainedEqualBits = false;
     for(var k in bitEqualityConstraints) {
@@ -943,7 +947,7 @@ function genHookDisassembler(includeNonJumps) {
                     bit[0] == 'addr' ||
                     bit[0] == 'offset' ||
                     bit[0] == 'label' ||
-                    ((isAdd || isMov || isStore || isLoad) && (bit[0] == 'Rm' || bit[0] == 'Rn' || bit[0] == 'Rd' || bit[0] == 'shift')) ||
+                    ((isAdd || isMov || isStore || isLoad) && (bit[0].match(/^Rd?[nm]?$/) || bit[0] == 'shift')) ||
                     (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
                     ((isStore || isLoad) && bit[0] == 'regs') ||
                     bit[0] == 'Rt';
@@ -967,14 +971,14 @@ function genHookDisassembler(includeNonJumps) {
         });
         if(insn.namespace == 'ARM') {
             // pointless special case - yay thumb
-            var someCouldBePc = false;
+            var haveAnyNonR3s = false;
             for(var vn in interestingVars) {
                 if(!(vn[0] == 'R' && interestingVars[vn] < 4)) {
-                    someCouldBePc = true;
+                    haveAnyNonR3s = true;
                     break;
                 }
             }
-            if(!someCouldBePc)
+            if(!haveAnyNonR3s)
                 return null;
         }
         insn.inst.forEach(function(bit, i) {
