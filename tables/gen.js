@@ -441,14 +441,6 @@ function ppTable(node, indent, depth) {
     return s;
 }
 
-function nodesDeeplyEqual(n1, n2) {
-    if(n1 === n2)
-        return true;
-    if(n1.insn && n1.insn === n2.insn)
-        return true;
-    return false;
-}
-
 function tableToRust(node) {
     function depth(n) {
         return n.insn ? 0 : (1 + Math.max.apply(Math, n.buckets.map(depth)));
@@ -621,7 +613,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             push('case ' + i + ':');
             ncases++;
             for(var j = i + 1; j < buckets.length; j++) {
-                if(buckets[j] && nodesDeeplyEqual(buckets[j], subnode)) {
+                if(buckets[j] === subnode) {
                     push('case ' + j + ':');
                     ncases++;
                     buckets[j] = null;
@@ -808,7 +800,7 @@ function fixInstruction(insn, noFlip) {
         }
         insn.instKnown.push(res);
     };
-    insn.instKnownMask = 0;
+    insn.instDependsMask = insn.instKnownMask;
     insn.instConstrainedEqualBits = {};
     insn.instHaveAnyConstrainedEqualBits = false;
     for(var k in bitEqualityConstraints) {
