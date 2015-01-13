@@ -126,7 +126,7 @@ var choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
 
-function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, depth, data) {
+function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data) {
     //console.log(depth + ' ' + insns.length + ' $ ' + useCache);
     if(insns.length == 0)
         return data.failNode;
@@ -161,7 +161,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
             return data.cache[cacheKey] = {
                 isBinary: 1,
                 buckets: [
-                    {insn: insn, knownMask: knownMask | insn.instKnownMask, knownValue: knownValue | insn.instKnownValue},
+                    genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
                     data.failNode
                 ],
                 possibilities: insns,
@@ -247,11 +247,11 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
 
     var override;
     // not currently used, but...
-    if(depth <= 3 && (override = choiceOverrides[data.uid + ':' + hex(knownMask, bitLength)])) {
+    if(depth <= 3 && (override = choiceOverrides[data.uid + ':' + hex(knownMask, data.bitLength)])) {
         tryFilter(override[0], override[1]);
     } else {
         for(var length = 0; length <= maxLength; length++) {
-            for(var start = 0; start <= (length == 0 ? 0 : bitLength - length); start++) {
+            for(var start = 0; start <= (length == 0 ? 0 : data.bitLength - length); start++) {
                 tryFilter(start, length);
             }
         }
@@ -275,16 +275,8 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
                 return data.cache[cacheKey] = {
                     isBinary: 1,
                     buckets: [
-                        {insn: insn, knownMask: knownMask | insn.instKnownMask, knownValue: knownValue | insn.instKnownValue},
-                        genDisassemblerRec(
-                            newInsns,
-                            bitLength,
-                            knownMask,
-                            knownValue,
-                            false,
-                            depth + 1,
-                            data
-                        )
+                        genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
+                        genDisassemblerRec(newInsns, knownMask, knownValue, false, depth + 1, data)
                     ],
                     possibilities: insns,
                     knownMask: knownMask,
@@ -298,7 +290,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
             console.log(pad(insn.name, 20), insn.instKnown.join(','));
         });
         console.log('');
-        console.log(pad('(known?)', 20), mask2bits(knownMask, bitLength).join(','));
+        console.log(pad('(known?)', 20), mask2bits(knownMask, data.bitLength).join(','));
         return data.cache[cacheKey] = data.failNode;
         throw '?';
     }
@@ -310,15 +302,7 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
         var bucketKnownValue = knownValue | (i << bestStart);
         //var useCache = bestLength > cacheCutoff && depth > 0;
         // ^ this makes no sense?
-        resultBuckets.push(genDisassemblerRec(
-            bucket,
-            bitLength,
-            bucketKnownMask,
-            bucketKnownValue,
-            useCache,
-            depth + 1,
-            data
-        ));
+        resultBuckets.push(genDisassemblerRec(bucket, bucketKnownMask, bucketKnownValue, useCache, depth + 1, data));
     }
 
     if(bestLength == 0) {
@@ -339,17 +323,18 @@ function genDisassemblerRec(insns, bitLength, knownMask, knownValue, useCache, d
 function genDisassembler(insns, ns, options) {
     options.maxLength = options.maxLength || 6;
 
-    var bitLength = insns[0].inst.length;
     var uid = insns[0].namespace + '/' + ns;
-    options.uid = uid;
-    options.cache = {};
-    options.insnNodeCache = {};
-    options.failNode = {fail: true};
+    var data = options;
+    data.uid = uid;
+    data.cache = {};
+    data.insnNodeCache = {};
+    data.failNode = {fail: true};
+    data.bitLength = insns[0].inst.length;
     //console.log('genDisassembler:', uid, bitLength);
     // find potential conflicts (by brute force)
     addConflictGroups(insns);
     //console.log(insns.length);
-    var node = genDisassemblerRec(insns, bitLength, 0, 0, true, 0, options);
+    var node = genDisassemblerRec(insns, 0, 0, true, 0, data);
     checkTableMissingInsns(node, insns);
     return node;
     //console.log(stuff);
@@ -454,6 +439,14 @@ function ppTable(node, indent, depth) {
         s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
     }
     return s;
+}
+
+function nodesDeeplyEqual(n1, n2) {
+    if(n1 === n2)
+        return true;
+    if(n1.insn && n1.insn === n2.insn)
+        return true;
+    return false;
 }
 
 function tableToRust(node) {
@@ -568,33 +561,39 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 }
 
 var indentStep = '    ';
-function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipConstraintTest) {
+function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
     var bits = [];
-    var patternify = function(n) { return pattern.replace(/XXX/g, n); };
+    var patternify = function(n) { return data.pattern.replace(/XXX/g, n); };
     var push = function(x) { bits.push(indent + x); };
     if(node.fail) {
-        push('return ' + patternify('unidentified') + '(' + extraArgs + ');');
+        push('return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
     } else if(node.insn) {
         var insn = node.insn;
         var unknown = insn.instDependsMask & ~node.knownMask;
         if(unknown && !skipConstraintTest) {
             push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))', false);
-            push('    return ' + patternify('unidentified') + '(' + extraArgs + ');');
+            push('    return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
         }
-        var runsByOp = instToOpRuns(insn.inst);
-        var args = [extraArgs];
-        var funcName = patternify(insn.groupName || insn.name);
-        for(var op in runsByOp) {
-            //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
-            push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
-            args.push(op);
-        }
-        var hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
-        push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
-        // be helpful
-        if(prototypes) {
-            var prototype = 'static inline xxx ' + funcName + '(' + args.map(function(arg) { return 'struct bitslice ' + arg; }).join(', ') + ') {}';
-            prototypes[prototype] = null;
+        // ok, it's definitely this instruction
+        var label;
+        if(label = data.labels[insn.name]) {
+            push('goto ' + label);
+        } else {
+            var runsByOp = instToOpRuns(insn.inst);
+            var args = [data.extraArgs];
+            var funcName = patternify(insn.groupName || insn.name);
+            for(var op in runsByOp) {
+                //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
+                push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
+                args.push(op);
+            }
+            var hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
+            push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
+            // be helpful
+            if(data.prototypes) {
+                var prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(function(arg) { return 'struct bitslice ' + arg; }).join(', ') + ') {}';
+                data.prototypes[prototype] = null;
+            }
         }
     } else if(node.isBinary) {
         var insn = node.buckets[0].insn;
@@ -607,37 +606,28 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
             test += ') {';
         }
         push(test);
-        bits.push(tableToSimpleCRec(node.buckets[0], pattern, extraArgs, prototypes, indent + indentStep, true));
+        bits.push(tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true));
         push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], pattern, extraArgs, prototypes, indent + indentStep));
+        bits.push(tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
         push('}');
     } else {
+        push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
         var buckets = node.buckets.slice(0);
-        var cases = {};
+        var ncases = 0;
         for(var i = 0; i < buckets.length; i++) {
             var subnode = buckets[i];
             if(subnode === null)
                 continue;
-            var myis = [i];
+            push('case ' + i + ':');
+            ncases++;
             for(var j = i + 1; j < buckets.length; j++) {
-                if(buckets[j] === subnode) {
-                    myis.push(j);
+                if(buckets[j] && nodesDeeplyEqual(buckets[j], subnode)) {
+                    push('case ' + j + ':');
+                    ncases++;
                     buckets[j] = null;
                 }
             }
-            var rec = tableToSimpleCRec(subnode, pattern, extraArgs, prototypes, indent + indentStep);
-            var is = setdefault(cases, rec, []);
-            is.push.apply(is, myis);
-        }
-        if((1 << node.length) != buckets.length)
-            throw new Error('bad buckets length - ' + node.length + ' - ' + buckets.length);
-        push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
-        var ncases = 0;
-        for(var rec in cases) {
-            var is = cases[rec];
-            is.forEach(function(i) {
-                push('case ' + i + ':');
-            });
+            var rec = tableToSimpleCRec(subnode, data, indent + indentStep);
             if(rec.indexOf('\n') !== -1) {
                 bits[bits.length - 1] += ' {';
                 bits.push(rec);
@@ -646,17 +636,25 @@ function tableToSimpleCRec(node, pattern, extraArgs, prototypes, indent, skipCon
                 bits.push(rec);
             }
         }
+        if((1 << node.length) != ncases)
+            throw new Error('bad buckets length'); // just to be sure
         push('}');
     }
     return bits.join('\n');
 }
 
 function tableToSimpleC(node, pattern, extraArgs) {
-    var prototypes = {};
-    var ret = tableToSimpleCRec(node, pattern, extraArgs, prototypes, indentStep);
+    var data = {
+        pattern: pattern,
+        extraArgs: extraArgs,
+        prototypes: {},
+        labels: {},
+        useGoto: true,
+    };
+    var ret = tableToSimpleCRec(node, data, indentStep);
     var ps = '\n';
     var protoNames = [];
-    for(var proto in prototypes)
+    for(var proto in data.prototypes)
         protoNames.push(proto);
     protoNames.sort();
     if(protoNames)
