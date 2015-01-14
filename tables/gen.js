@@ -399,7 +399,7 @@ function printHeads(insns) {
     seen = {};
     for(let insn of insns) {
         if(insn.pattern != '?' && insn.pattern.length) {
-            visitDag(insn.pattern, function(tuple) {
+            visitDag(insn.pattern, tuple => {
                 if(tuple[0].replace && tuple[0] !== ':')
                     seen[tuple[0]] = (seen[tuple[0]] || 0) + 1;
             });
@@ -428,7 +428,7 @@ function ppTable(node, indent, depth) {
         s += 'test for first insn';
     }
     s += ' (' + node.possibilities.length + ' total insns - ';
-    s += node.possibilities.map(function(i) { return i.name; }).join(',');
+    s += node.possibilities.map(i => i.name);
     s += '):\n';
     for(let i = 0; i < node.buckets.length; i++) {
         s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
@@ -498,15 +498,13 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
 }
 
 function opRunsToBitsliceLiteral(runs, reverse) {
-    let runLits = runs.map(function(run) { 
-        return '{' + run + '}';
-    });
+    let runLits = runs.map(run => '{'+run+'}');
     return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
 }
 
 function genGeneratedWarning() {
     let describe = child_process.execSync('git describe --abbrev=0 --dirty --always', {cwd: __dirname, encoding: 'utf-8'}).trim();
-    let cmdline = process.argv.slice(2).map(function(arg) {
+    let cmdline = process.argv.slice(2).map(arg => {
         arg = arg.replace(/^.*imaon2\//, '');
         if(arg.indexOf(' ') !== -1)
             arg = "'" + arg + "'";
@@ -551,8 +549,8 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 let indentStep = '    ';
 function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
     let bits = [];
-    let patternify = function(n) { return data.pattern.replace(/XXX/g, n); };
-    let push = function(x) { bits.push(indent + x); };
+    let patternify = n => data.pattern.replace(/XXX/g, n);
+    let push = x => bits.push(indent + x);
     if(node.fail) {
         push('return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
     } else if(node.insn) {
@@ -583,7 +581,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
             // be helpful
             if(data.prototypes) {
-                let prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(function(arg) { return 'struct bitslice ' + arg; }).join(', ') + ') {}';
+                let prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
                 data.prototypes[prototype] = null;
             }
         }
@@ -644,7 +642,7 @@ function tableToSimpleC(node, pattern, extraArgs) {
         useGoto: true,
     };
     let ret = tableToSimpleCRec(node, data, indentStep);
-    ret = ret.replace(/\n[^\n]*LABEL ([^\n]+)/g, function(m) {
+    ret = ret.replace(/\n[^\n]*LABEL ([^\n]+)/g, m => {
         let bits = m.split('LABEL ');
         let whitespace = bits[0], lbl = bits[1];
         if(data.seen[lbl] > 1)
@@ -691,7 +689,7 @@ function coalesceInsnsWithMap(insns, func) {
         let key = func(insn);
         if(key === null)
             continue;
-        let locs = '' + insn.inst.map(function(bit) { Array.isArray(bit) ? bit : '' });
+        let locs = '' + insn.inst.map(bit => Array.isArray(bit) ? bit : '');
         let realKey = [key, locs];
         let ginsns = setdefault_hashmap(byGroup, realKey, []);
         ginsns.push(insn);
@@ -773,7 +771,6 @@ function coalesceInsnsWithMap(insns, func) {
                 groupName: groupName,
                 groupInsns: ginsns,
             };
-            //console.log(insn.name + ' >>>' + ginsns.map(function(i) { return i.name; }));
             fixInstruction(insn, /*noFlip*/ true);
             out.push(insn);
         });
@@ -814,8 +811,8 @@ function fixInstruction(insn, noFlip) {
         let bits = bitEqualityConstraints[k];
         if(bits.length > 1) {
             for(let bit of bits) {
-                insn.instConstrainedEqualBits[bit] = bits.filter(function(bit2) { return bit2 != bit; });
-                insn.instConstrainedMask |= (1 << i);
+                insn.instConstrainedEqualBits[bit] = bits.filter(bit2 => bit2 != bit);
+                insn.instConstrainedMask |= (1 << bit);
                 insn.instHaveAnyConstrainedEqualBits = true;
             }
             //console.log('!', insn.name, insn.instConstrainedEqualBits);
@@ -853,7 +850,7 @@ if(opt.argv.length != 1) {
 let input = JSON.parse(fs.readFileSync(opt.argv[0], 'utf-8'));
 let inputInsns = input.instructions;
 
-let insns = inputInsns.filter(function(insn) { return insn.instKnownMask != 0; });
+let insns = inputInsns.filter(insn => insn.instKnownMask != 0);
 
 let ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
@@ -872,7 +869,7 @@ if(typeof opt.options['namespace'] !== 'undefined') {
     default:
         dns = ns.split('|');
     }
-    insns = insns.filter(function(insn) { return dns.indexOf(insn.decoderNamespace) != -1; });
+    insns = insns.filter(insn => dns.indexOf(insn.decoderNamespace) != -1);
 }
 
 for(let insn of insns)
@@ -908,7 +905,7 @@ function genHookDisassembler(includeNonJumps) {
         't_addrmode_sp': true,
 
     };
-    let insns2 = coalesceInsnsWithMap(insns, function(insn) {
+    let insns2 = coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
         // functions that do MUL PC, PC or crap like that...  This takes care
         // of all load instructions (LLVM mashes both registers into one big
@@ -964,7 +961,7 @@ function genHookDisassembler(includeNonJumps) {
             if(interesting)
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
         });
-        visitDag(insn.inOperandList, function(tuple) {
+        visitDag(insn.inOperandList, tuple => {
             if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
                 delete interestingVars[tuple[2].substr(1)];
         });
@@ -993,7 +990,7 @@ function genHookDisassembler(includeNonJumps) {
             */
             let nameBits = [];
             let seen = {};
-            visitDag(insn.inOperandList, function(tuple) {
+            visitDag(insn.inOperandList, tuple => {
                 let vn;
                 if(tuple[0] == ':' && tuple[2][0] == '$' && interestingVars[vn = tuple[2].substr(1)]) {
                     seen[vn] = true;
@@ -1017,8 +1014,6 @@ function genHookDisassembler(includeNonJumps) {
         }
         return null;
     });
-    console.log(insns2);
-    //insns2.forEach(function(insn) { console.log(insn); });
     //console.log(insns2);
     let node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
@@ -1028,7 +1023,7 @@ function genHookDisassembler(includeNonJumps) {
         if(xseen[insn.groupName])
             continue;
         xseen[insn.groupName] = true;
-        console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(function(insn2) { return insn2.name; }).join(', ') + ' */');
+        console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(insn2 => insn2.name).join(', ') + ' */');
     }
     console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
 }
