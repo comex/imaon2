@@ -136,10 +136,10 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
     if(useCache) {
         let names = [];
         let m = 0;
-        insns.forEach(function(insn) {
+        for(let insn of insns) {
             names.push(insn.name);
             m |= insn.instDependsMask;
-        });
+        }
         names.push(knownMask &= m);
         names.push(knownValue &= m);
         cacheKey = names.join(',');
@@ -215,30 +215,29 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                     continue;
                 let bucketKnownValue = knownValue | (i << start);
                 let cgs = {};
-                bucket.forEach(function(insn) {
+                for(let insn of bucket) {
                     if(insn.conflictGroup != -1) {
                         setdefault(cgs, insn.conflictGroup, []).push(insn);
                     }
-                });
+                }
                 for(let cg in cgs) {
                     let conflictingInsns = cgs[cg];
-                    conflictingInsns.forEach(function(insn) {
-                        conflictingInsns.forEach(function(insn2) {
+                    for(let insn of conflictingInsns) {
+                        for(let insn2 of conflictingInsns) {
                             if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
                                 conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
                                 bucket.splice(bucket.indexOf(insn2), 1);
                                 //console.log('Removing', insn.name, 'because of', insn2.name);
                             }
-                        });
-                    });
+                        }
+                    }
                 }
             }
         }
 
         let max = 0; // maximum size of any of the buckets
-        buckets.forEach(function(bucket) {
+        for(let bucket of buckets)
             if(bucket.length > max) max = bucket.length;
-        });
         if(max < bestMax || (max == bestMax && length < bestLength)) {
             bestMax = max;
             bestBuckets = buckets;
@@ -288,9 +287,8 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
             }
         }
         console.log('Found conflict (' + insns.length + ' insns):');
-        insns.forEach(function(insn) {
+        for(let insn of insns)
             console.log(pad(insn.name, 20), insn.instKnown.join(','));
-        });
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, data.bitLength).join(','));
         return data.cache[cacheKey] = data.failNode;
@@ -343,14 +341,13 @@ function genDisassembler(insns, ns, options) {
 }
 
 function addConflictGroups(insns) {
-    insns.forEach(function(insn) {
+    for(let insn of insns)
         insn.conflictGroup = -1;
-    });
     let nextConflictGroup = 0;
     let seen = [];
     let cgs = {};
-    insns.forEach(function(insn) {
-        seen.forEach(function(insn2) {
+    for(let insn of insns) {
+        for(let insn2 of seen) {
             let bothKnown = insn.instKnownMask & insn2.instKnownMask;
             if(insn != insn2 && (insn.instKnownValue & bothKnown) == (insn2.instKnownValue & bothKnown)) {
                 if(insn2.conflictGroup == -1) {
@@ -360,11 +357,10 @@ function addConflictGroups(insns) {
                 let cg1 = insn.conflictGroup, cg2 = insn2.conflictGroup;
                 //console.log(insn.name, insn2.name, cg1, cg2);
                 if(cg1 == cg2)
-                    return;
+                    continue;
                 if(cg1 != -1) {
-                    cgs[cg1].forEach(function(insn3) {
+                    for(let insn3 of cgs[cg1])
                         insn3.conflictGroup = insn2.conflictGroup;
-                    });
                     cgs[cg2] = cgs[cg2].concat(cgs[cg1]);
                     cgs[cg1] = 123;
                 } else {
@@ -372,24 +368,22 @@ function addConflictGroups(insns) {
                     cgs[cg2].push(insn);
                 }
             }
-        });
+        }
         seen.push(insn);
-    });
+    }
 }
 
 function printConflictGroups(insns) {
     console.log('Total insns: ' + insns.length);
     let cgs = {};
-    insns.forEach(function(insn) {
-        if(insn.conflictGroup != -1) {
+    for(let insn of insns) {
+        if(insn.conflictGroup != -1)
             setdefault(cgs, insn.conflictGroup, []).push(insn);
-        }
-    });
+    }
     for(let cg in cgs) {
         console.log(cg + ': (' + cgs[cg].length + ')');
-        cgs[cg].forEach(function(insn) {
+        for(let insn of cgs[cg])
             console.log('  ', pad(insn.name, 20), 'spec:' + pad(insn.instSpecificity, 2), insn.instKnown.join(','));
-        });
     }
 }
 
@@ -403,7 +397,7 @@ function visitDag(pat, visitor) {
 
 function printHeads(insns) {
     seen = {};
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         if(insn.pattern != '?' && insn.pattern.length) {
             visitDag(insn.pattern, function(tuple) {
                 if(tuple[0].replace && tuple[0] !== ':')
@@ -413,14 +407,13 @@ function printHeads(insns) {
         } else {
             console.log('nopat ' + insn.name);
         }
-    });
+    }
     let seen_l = [];
     for(let head in seen)
         seen_l.push([head, seen[head]]);
     seen_l.sort();
-    seen_l.forEach(function(l) {
+    for(let l of seen_l)
         console.log('head ' + l[0] + ' (' + l[1] + ')');
-    });
 }
 
 function ppTable(node, indent, depth) {
@@ -454,13 +447,13 @@ function tableToRust(node) {
 // [(pos1, pos2)] -> [(pos1, pos2, len)]
 function bitPairsToRuns(bits) {
     let mine = [];
-    bits.forEach(function(bit) {
+    for(let bit of bits) {
         let last = mine[mine.length - 1];
         if(last && last[0] + last[2] == bit[0] && last[1] + last[2] == bit[1])
             last[2]++;
         else
             mine.push([bit[0], bit[1], 1]);
-    });
+    }
     return mine;
 }
 
@@ -489,7 +482,7 @@ function instToOpRuns(inst, removeDupes) {
 
 function opRunsToExtractionFormula(runs, inExpr, reverse) {
     let parts = [];
-    runs.forEach(function(run) {
+    for(let run of runs) {
         // make a reverse function if necessary
         let inpos = run[0], outpos = run[1], len = run[2];
         let diff = inpos - outpos;
@@ -500,7 +493,7 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
         else if(outpos > inpos)
             x = '(' + x + ' << ' + (outpos - inpos) + ')';
         parts.push(x);
-    });
+    }
     return parts.join(' | ');
 }
 
@@ -537,21 +530,21 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
     let pairs = [];
     for(let lo in ceb) {
         lo = parseInt(lo);
-        ceb[lo].forEach(function(hi) {
+        for(let hi of ceb[lo]) {
             if(lo < hi)
                 pairs.push([lo, hi]);
-        });
+        }
     }
     let runs = bitPairsToRuns(pairs);
     let out = '';
-    runs.forEach(function(run) {
+    for(let run of runs) {
         let mask = (1 << run[2]) - 1;
         let part = '((op >> ' + run[0] + ') & 0x' + hexnopad(mask) + ') == ' +
                    '((op >> ' + run[1] + ') & 0x' + hexnopad(mask) + ')';
         if(out || andandFirstToo)
             out += ' &&\n' + indent;
         out += part;
-    });
+    }
     return out;
 }
 
@@ -678,11 +671,11 @@ function checkTableMissingInsns(node, insns) {
             node.buckets.map(collect);
     }
     collect(node);
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         if(!used[insn.name]) {
             console.log('** Table never decodes ' + insn.name);
         }
-    });
+    }
 }
 
 // there are instructions that put, say, addr{12} in multiple locations in Inst to assert that the value is the same.
@@ -694,15 +687,15 @@ function genSema(insns, ns) {
 
 function coalesceInsnsWithMap(insns, func) {
     let byGroup = new Map();
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         let key = func(insn);
         if(key === null)
-            return;
+            continue;
         let locs = '' + insn.inst.map(function(bit) { Array.isArray(bit) ? bit : '' });
         let realKey = [key, locs];
         let ginsns = setdefault_hashmap(byGroup, realKey, []);
         ginsns.push(insn);
-    });
+    }
     // for each group, continually coalesce instructions which are the same but for one bit, until we can do no more.  probably slooow
     // actually, not enough insns to be slow
     let out = [];
@@ -721,7 +714,7 @@ function coalesceInsnsWithMap(insns, func) {
             //console.log('pass');
             // merge combinations that together take up the whole space
             // this ignores constraints; we can do that manually if necessary
-            byPat.forEach(function(insns, inst) {
+            byPat.forEach((insns, inst) => {
                 for(let i = 0; i < inst.length; i++) {
                     let old = inst[i];
                     if(old == '?')
@@ -743,8 +736,8 @@ function coalesceInsnsWithMap(insns, func) {
 
             //console.log('MD');
             // merge dominators; could be optimized
-            byPat.forEach(function(insns, inst) {
-                byPat.forEach(function(insns2, inst2) {
+            byPat.forEach((insns, inst) => {
+                byPat.forEach((insns2, inst2) => {
                     if(inst2 === inst)
                         return;
                     for(let i = 0; i < inst.length; i++) {
@@ -764,7 +757,7 @@ function coalesceInsnsWithMap(insns, func) {
         let newLength = byPat.count();
         let groupName = key[0].replace(/[^a-zA-Z0-9_]+/g, '_') + '_' + + ginsns.length + '_' + ginsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
-        byPat.forEach(function(insns, inst) {
+        byPat.forEach((insns, inst) => {
             insns.sort(); // get a consistent representative for the name
             // make a fake insn
             let oinst = insns[0].inst.slice(0);
@@ -820,11 +813,11 @@ function fixInstruction(insn, noFlip) {
     for(let k in bitEqualityConstraints) {
         let bits = bitEqualityConstraints[k];
         if(bits.length > 1) {
-            bits.forEach(function(bit) {
+            for(let bit of bits) {
                 insn.instConstrainedEqualBits[bit] = bits.filter(function(bit2) { return bit2 != bit; });
                 insn.instConstrainedMask |= (1 << i);
                 insn.instHaveAnyConstrainedEqualBits = true;
-            });
+            }
             //console.log('!', insn.name, insn.instConstrainedEqualBits);
         }
     }
@@ -882,7 +875,8 @@ if(typeof opt.options['namespace'] !== 'undefined') {
     insns = insns.filter(function(insn) { return dns.indexOf(insn.decoderNamespace) != -1; });
 }
 
-insns.forEach(function(insn) { fixInstruction(insn, false); });
+for(let insn of insns)
+    fixInstruction(insn, false);
 
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
@@ -941,7 +935,7 @@ function genHookDisassembler(includeNonJumps) {
         let isStore = !!insn.name.match(/^[^A-Z]*ST/);
         let isArmv8 = insn.namespace == 'AArch64';
         let interestingVars = {}; // vn -> num bits
-        insn.inst.forEach(function(bit, i) {
+        insn.inst.forEach((bit, i) => {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
                 return;
@@ -986,7 +980,7 @@ function genHookDisassembler(includeNonJumps) {
             if(!haveAnyNonR3s)
                 return null;
         }
-        insn.inst.forEach(function(bit, i) {
+        insn.inst.forEach((bit, i) => {
             if(Array.isArray(bit) && !interestingVars[bit[0]])
                 insn.inst[i] = '?'; // redact
         });
@@ -1023,41 +1017,42 @@ function genHookDisassembler(includeNonJumps) {
         }
         return null;
     });
+    console.log(insns2);
     //insns2.forEach(function(insn) { console.log(insn); });
     //console.log(insns2);
     let node = genDisassembler(insns2, ns, {maxLength: 5});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
     let xseen = {};
-    insns2.forEach(function(insn) {
+    for(let insn of insns2) {
         if(xseen[insn.groupName])
-            return;
+            continue;
         xseen[insn.groupName] = true;
         console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(function(insn2) { return insn2.name; }).join(', ') + ' */');
-    });
+    }
     console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);
 }
 if(opt.options['extraction-formulas']) {
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         console.log(insn.name);
         let runsByOp = instToOpRuns(insn.inst);
         for(let op in runsByOp)
             console.log('   ' + op + ': ' + opRunsToExtractionFormula(runsByOp[op], 'x', false));
-    });
+    }
 }
 if(opt.options['print-constrained-bits']) {
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         if(insn.instHaveAnyConstrainedEqualBits) {
             console.log(insn.name);
             console.log(insn.instConstrainedEqualBits);
         }
-    });
+    }
 }
 if(opt.options['print-insns']) {
-    insns.forEach(function(insn) {
+    for(let insn of insns) {
         console.log(insn);
-    });
+    }
 }
