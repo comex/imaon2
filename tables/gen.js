@@ -684,7 +684,7 @@ function genSema(insns, ns) {
 }
 
 function coalesceInsnsWithMap(insns, func) {
-    let byGroup = new Map();
+    let byGroup = new HashMap();
     for(let insn of insns) {
         let key = func(insn);
         if(key === null)
@@ -720,9 +720,9 @@ function coalesceInsnsWithMap(insns, func) {
                     inst[i] = old == '1' ? '0' : '1';
                     let insns2;
                     if(insns2 = byPat.get(inst)) {
-                        byPat.delete(inst);
+                        byPat.remove(inst);
                         inst[i] = old;
-                        byPat.delete(inst);
+                        byPat.remove(inst);
                         inst[i] = '?';
                         byPat.set(inst, insns.concat(insns2));
                         didSomething = true;
