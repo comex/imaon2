@@ -852,6 +852,20 @@ let inputInsns = input.instructions;
 
 let insns = inputInsns.filter(insn => insn.instKnownMask != 0);
 
+var specialCases = {
+    t2IT: (insn) => {
+        // For some dumb reason this is marked as 32-bit despite being 16-bit.
+        insn.inst = insn.inst.slice(16);
+        insn.decoderNamespace = 'Thumb';
+
+    }
+}
+for(let insn of insns) {
+    var sc;
+    if(sc = specialCases[insn.name])
+        sc(insn);
+}
+
 let ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
     ns = opt.options['namespace'];
@@ -872,8 +886,9 @@ if(typeof opt.options['namespace'] !== 'undefined') {
     insns = insns.filter(insn => dns.indexOf(insn.decoderNamespace) != -1);
 }
 
-for(let insn of insns)
+for(let insn of insns) {
     fixInstruction(insn, false);
+}
 
 addConflictGroups(insns);
 if(opt.options['print-conflict-groups']) {
@@ -928,8 +943,8 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         let isAdd = !!insn.name.match(/^[^A-Z]*AD[DR]/);
         let isMov = !!insn.name.match(/^[^A-Z]*MOV/);
-        let isLoad = !!insn.name.match(/^[^A-Z]*LD/);
-        let isStore = !!insn.name.match(/^[^A-Z]*ST/);
+        let isLoad = !!insn.name.match(/^[^A-Z]*(LD|POP)/);
+        let isStore = !!insn.name.match(/^[^A-Z]*(ST|PUSH)/);
         let isArmv8 = insn.namespace == 'AArch64';
         let interestingVars = {}; // vn -> num bits
         insn.inst.forEach((bit, i) => {
@@ -944,9 +959,10 @@ function genHookDisassembler(includeNonJumps) {
                     bit[0] == 'offset' ||
                     bit[0] == 'label' ||
                     ((isAdd || isMov || isStore || isLoad) && (bit[0].match(/^Rd?[nm]?$/) || bit[0] == 'shift')) ||
-                    (isBranch && (bit[0] == 'target' || bit[0] == 'Rm')) ||
+                    (isBranch && (bit[0] == 'target' || bit[0] == 'Rm' || bit[0] == 'dst')) ||
                     ((isStore || isLoad) && bit[0] == 'regs') ||
-                    bit[0] == 'Rt';
+                    bit[0] == 'Rt' ||
+                    insn.name == 't2IT';
                     // bit[0] == 'func'; /* get calls */
                 break;
             case 'AArch64':
