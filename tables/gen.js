@@ -563,8 +563,9 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
         // ok, it's definitely this instruction
         let name = insn.groupName || insn.name;
         let label = 'insn_' + name;
+        let hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
         if(data.seen[label]) {
-            push('goto ' + label + ';');
+            push('goto ' + label + '; /* ' + hexComment + ' */');
             data.seen[label]++;
         } else {
             let runsByOp = instToOpRuns(insn.inst);
@@ -577,7 +578,6 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
                 push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
                 args.push(op);
             }
-            let hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
             push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
             // be helpful
             if(data.prototypes) {
