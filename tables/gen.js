@@ -683,6 +683,19 @@ function genSema(insns, ns) {
 
 }
 
+function printOpPositions(insns, name) {
+    let set = new HashMap();
+    for(let insn of insns) {
+        let i = 0;
+        let pos = insn.inst.map(op => [i++, op]).filter(eop => Array.isArray(eop[1]) && eop[1][0] == name).map(eop => eop[0]+':'+eop[1][1]);
+        if(pos.length)
+            set.set(pos, null);
+    }
+    set.forEach((_, pos) => {
+        console.log(pos+'');
+    });
+}
+
 function coalesceInsnsWithMap(insns, func) {
     let byGroup = new HashMap();
     for(let insn of insns) {
@@ -832,6 +845,7 @@ let getopt = require('node-getopt').create([
     ['',  'gen-hook-jump-disassembler', 'only jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
+    ['',  'print-op-positions=OP', 'Print all positions this op appears in'],
     ['',  'dis-pattern=PATTERN', 'Pattern for function names from generated disassemblers, where XXX is replaced with our name'],
     ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
     ['',  'print-insns', 'Just print them'],
@@ -962,12 +976,14 @@ function genHookDisassembler(includeNonJumps) {
                     (isBranch && (bit[0] == 'target' || bit[0] == 'Rm' || bit[0] == 'dst')) ||
                     ((isStore || isLoad) && bit[0] == 'regs') ||
                     bit[0] == 'Rt' ||
-                    insn.name == 't2IT';
+                    insn.name == 't2IT' ||
+                    (bit[0] == 'p' && insn.name.match(/Bcc/));
                     // bit[0] == 'func'; /* get calls */
                 break;
             case 'AArch64':
                 // yay, highly restricted use of PC
-                interesting = bit[0] == 'label' || bit[0] == 'addr' || (isBranch && bit[0] == 'target') ||
+                interesting = bit[0] == 'label' || bit[0] == 'addr' ||
+                    (isBranch && (bit[0] == 'target' || bit[0] == 'cond')) ||
                     (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
                     (insn.name == 'RET' && bit[0] == 'Rn');
                 break;
@@ -1061,6 +1077,10 @@ if(opt.options['print-constrained-bits']) {
             console.log(insn.instConstrainedEqualBits);
         }
     }
+}
+let name = opt.options['print-op-positions'];
+if(name) {
+    printOpPositions(insns, name);
 }
 if(opt.options['print-insns']) {
     for(let insn of insns) {
