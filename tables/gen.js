@@ -834,6 +834,33 @@ function fixInstruction(insn, noFlip) {
     insn.instDependsMask = insn.instKnownMask | insn.instConstrainedMask;
 }
 
+function checkLengths(insns) {
+    let bad = false;
+    for(let insn of insns) {
+        let good;
+        switch(insn.decoderNamespace) {
+        case 'Thumb':
+        case 'ThumbSBit':
+            good = insn.inst.length == 32 &&
+                   insn.inst.slice(0, 16).every(x => x === '0');
+            break;
+        case 'Thumb2':
+        case 'ARM':
+        case 'VFP':
+            good = insn.inst.length = 32;
+        default:
+            continue;
+        }
+
+        if (!good) {
+            console.log('checkLengths: Strange instruction ' + insn.name + '(' + insn.inst.length + ';' + insn.decoderNamespace + ')');
+            bad = true;
+        }
+    }
+    if (bad)
+        throw 'bad';
+}
+
 let getopt = require('node-getopt').create([
     ['n', 'namespace=ARG', 'Decoder namespace of instructions to use.'],
     ['',  'print-conflict-groups', 'Print potentially conflicting instructions.'],
@@ -869,16 +896,19 @@ let insns = inputInsns.filter(insn => insn.instKnownMask != 0);
 var specialCases = {
     t2IT: (insn) => {
         // For some dumb reason this is marked as 32-bit despite being 16-bit.
-        insn.inst = insn.inst.slice(16);
         insn.decoderNamespace = 'Thumb';
-
-    }
+    },
+    // vice versa
+    tBL: (insn) => insn.decoderNamespace = 'Thumb2',
+    tBLXi: (insn) => insn.decoderNamespace = 'Thumb2',
 }
 for(let insn of insns) {
     var sc;
     if(sc = specialCases[insn.name])
         sc(insn);
 }
+
+checkLengths(insns);
 
 let ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
@@ -977,15 +1007,15 @@ function genHookDisassembler(includeNonJumps) {
                     ((isStore || isLoad) && bit[0] == 'regs') ||
                     bit[0] == 'Rt' ||
                     insn.name == 't2IT' ||
-                    (bit[0] == 'p' && insn.name.match(/Bcc/));
-                    // bit[0] == 'func'; /* get calls */
+                    (bit[0] == 'p' && insn.name.match(/Bcc/)) ||
+                    bit[0] == 'func'; /* get calls */
                 break;
             case 'AArch64':
                 // yay, highly restricted use of PC
                 interesting = bit[0] == 'label' || bit[0] == 'addr' ||
                     (isBranch && (bit[0] == 'target' || bit[0] == 'cond')) ||
                     (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
-                    (insn.name == 'RET' && bit[0] == 'Rn');
+                    (insn.name.match(/^(RET|BLR)$/) && bit[0] == 'Rn');
                 break;
             default:
                 throw 'unknown namespace';
