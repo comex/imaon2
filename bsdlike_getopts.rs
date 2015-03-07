@@ -93,6 +93,7 @@
        html_playground_url = "http://play.rust-lang.org/")]
 
 #![deny(missing_docs)]
+#![feature(core)]
 #![feature(collections)]
 #![feature(int_uint)]
 #![feature(staged_api)]

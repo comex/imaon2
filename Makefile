@@ -3,7 +3,7 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -C rpath --out-dir $(OUT) -Ltarget/deps --extern regex=`echo target/deps/libregex*.rlib` -L. -L$(OUT)
+RUSTC := rustc --out-dir $(OUT) -Ltarget/deps --extern regex=`echo target/deps/libregex*.rlib` -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
@@ -64,14 +64,21 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-cargo-build:
+cargo-build: Cargo.toml
+	cargo update
 	cargo build
 	touch $@ # xxx
+
+externals/rust-bindgen/bindgen: cargo-build
+	dir=~/.cargo/git/checkouts; \
+	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
+	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L/Library/Developer/CommandLineTools/usr/lib/
 
 $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
 	rm -rf $@
 	mkdir $@
 	cp -a $< $@/bindgen
+	install_name_tool -add_rpath /Library/Developer/CommandLineTools/usr/lib/ $@/bindgen # XXX
 	mod=1; \
 	while [ "$$mod" = "1" ]; do \
 		mod=0; \
@@ -80,7 +87,7 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
 			mod=1; \
 			for dylib in `otool -L $$exe | fgrep /stage | awk '{print $$1}'`; do \
 				d=$$(basename $$dylib); \
-				cp -n /usr/local/lib/$$d $$dylib) $@/; \
+				cp -n /usr/local/lib/$$d $@/; \
 				install_name_tool -id $$d $@/$$d; \
 				install_name_tool -change $$dylib $$(echo $$dylib | sed 's!.*lib/!@loader_path/!') $$exe; \
 			done; \

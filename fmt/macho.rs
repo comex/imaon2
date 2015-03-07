@@ -1,5 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
+#![feature(collections, libc)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -8,13 +9,12 @@ extern crate "bsdlike_getopts" as getopts;
 extern crate collections;
 extern crate libc;
 use std::default::Default;
-//use collections::HashMap;
 use std::vec::Vec;
 use std::mem::replace;
 use std::mem::size_of;
 use std::str::FromStr;
 use std::borrow::IntoCow;
-use util::{ToUi, VecStrExt, MCRef, Swap, zeroed_t};
+use util::{ToUi, VecStrExt, MCRef, Swap};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
 
@@ -45,9 +45,9 @@ pub struct x_nlist_64 {
 }
 );
 
-#[derive(Default, Show, Copy)]
+#[derive(Default, Debug, Copy)]
 pub struct SymSubset(usize, usize);
-#[derive(Default, Show, Copy)]
+#[derive(Default, Debug, Copy)]
 pub struct RelSubset(usize, usize);
 
 #[derive(Default)]
@@ -151,7 +151,7 @@ impl MachO {
         {
             let buf = mc.get();
             if buf.len() < lc_off { return exec::err(exec::ErrorKind::BadData, "truncated"); }
-            let magic: u32 = util::copy_from_slice(buf.slice_to(4), util::BigEndian);
+            let magic: u32 = util::copy_from_slice(&buf[..4], util::BigEndian);
             let is64; let end;
             match magic {
                 0xfeedface => { end = util::BigEndian; is64 = false; }
@@ -162,7 +162,7 @@ impl MachO {
             }
             me.eb.endian = end;
             me.is64 = is64;
-            me.mh = util::copy_from_slice(buf.slice_to(lc_off), end);
+            me.mh = util::copy_from_slice(&buf[..lc_off], end);
             // useless 'reserved' field
             if is64 { lc_off += 4; }
         }
@@ -216,12 +216,12 @@ impl MachO {
         let end = self.eb.endian;
         let buf = self.eb.buf.get();
         //let buf_len = buf.len();
-        let mut segi = 0us;
-        for _ in range(0, self.mh.ncmds - 1) {
-            let lc: load_command = util::copy_from_slice(buf.slice(lc_off, lc_off + 8), end);
-            let lc_buf = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
+        let mut segi: usize = 0;
+        for _ in 0..self.mh.ncmds {
+            let lc: load_command = util::copy_from_slice(&buf[lc_off..lc_off + 8], end);
+            let lc_buf = &buf[lc_off..lc_off + lc.cmdsize.to_ui()];
             let this_lc_off = lc_off;
-            let mut do_segment = |&mut: is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
+            let mut do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if is64 == true {
                     type segment_command_x = segment_command_64;
                     type section_x = section_64;
@@ -230,7 +230,7 @@ impl MachO {
                     type section_x = section;
                 } then {
                     let mut off = size_of::<segment_command_x>();
-                    let sc: segment_command_x = util::copy_from_slice(lc_buf.slice_to(off), end);
+                    let sc: segment_command_x = util::copy_from_slice(&lc_buf[..off], end);
                     let ip = sc.initprot as u32;
                     let segprot = exec::Prot {
                         r: (ip & VM_PROT_READ) != 0,
@@ -246,8 +246,8 @@ impl MachO {
                         prot: segprot,
                         private: this_lc_off,
                     });
-                    for _ in range(0, sc.nsects) {
-                        let s: section_x = util::copy_from_slice(lc_buf.slice(off, off + size_of::<section_x>()), end);
+                    for _ in 0..sc.nsects {
+                        let s: section_x = util::copy_from_slice(&lc_buf[off..off + size_of::<section_x>()], end);
                         sects.push(exec::Segment {
                             vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
@@ -266,7 +266,7 @@ impl MachO {
                 LC_SEGMENT => do_segment(false, &mut self.eb.segments, &mut self.eb.sections),
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY => {
-                    let di: dyld_info_command = util::copy_from_slice(lc_buf.slice_to(size_of::<dyld_info_command>()), end);
+                    let di: dyld_info_command = util::copy_from_slice(&lc_buf[..size_of::<dyld_info_command>()], end);
                     self.dyld_rebase = self.file_array("dyld rebase info", di.rebase_off, di.rebase_size, 1);
                     self.dyld_bind = self.file_array("dyld bind info", di.bind_off, di.bind_size, 1);
                     self.dyld_weak_bind = self.file_array("dyld weak bind info", di.weak_bind_off, di.weak_bind_size, 1);
@@ -275,7 +275,7 @@ impl MachO {
 
                 },
                 LC_SYMTAB => {
-                    let sy: symtab_command = util::copy_from_slice(lc_buf.slice_to(size_of::<symtab_command>()), end);
+                    let sy: symtab_command = util::copy_from_slice(&lc_buf[..size_of::<symtab_command>()], end);
                     self.symtab = self.file_array("symbol table", sy.symoff, sy.nsyms, self.nlist_size);
                     self.strtab = self.file_array("string table", sy.stroff, sy.strsize, 1);
                     //if sy.std::usize::MAX / nlist_size
@@ -283,7 +283,7 @@ impl MachO {
 
                 },
                 LC_DYSYMTAB => {
-                    let ds: dysymtab_command = util::copy_from_slice(lc_buf.slice_to(size_of::<dysymtab_command>()), end);
+                    let ds: dysymtab_command = util::copy_from_slice(&lc_buf[..size_of::<dysymtab_command>()], end);
                     self.localsym = SymSubset(ds.ilocalsym.to_ui(), ds.nlocalsym.to_ui());
                     self.extdefsym = SymSubset(ds.iextdefsym.to_ui(), ds.nextdefsym.to_ui());
                     self.undefsym = SymSubset(ds.iundefsym.to_ui(), ds.nundefsym.to_ui());
@@ -321,8 +321,8 @@ impl MachO {
         let data = self.symtab.get();
         let strtab = self.strtab.get();
         let mut off = start * self.nlist_size;
-        for _ in range(start, start + count) {
-            let slice = data.slice(off, off + self.nlist_size);
+        for _ in start..start+count {
+            let slice = &data[off..off + self.nlist_size];
             branch!(if self.is64 == true {
                 type nlist_x = x_nlist_64;
             } else {
@@ -336,7 +336,7 @@ impl MachO {
                 let n_type = n_type_field & N_TYPE;
                 let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
                 let public = (n_type_field & N_EXT) != 0;
-                let name = util::trim_to_null(strtab.slice_from(nl.n_strx.to_ui()));
+                let name = util::trim_to_null(&strtab[nl.n_strx.to_ui()..]);
                 let vma = VMA(nl.n_value as u64);
                 let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
                 let val =
@@ -346,7 +346,7 @@ impl MachO {
                         SymbolValue::Undefined
                     } else if n_type == N_INDR {
                         assert!(nl.n_value <= 0xfffffffe);
-                        let indr_name = util::trim_to_null(strtab.slice_from(nl.n_value as usize));
+                        let indr_name = util::trim_to_null(&strtab[nl.n_value as usize..]);
                         SymbolValue::ReExport(indr_name)
 
                     } else {
@@ -401,7 +401,7 @@ impl FatMachOProber {
     fn probe_cb(&self, mc: &MCRef, cb: &mut FnMut(u64, fat_arch)) -> bool {
         let buf = mc.get();
         if buf.len() < 8 { return false }
-        let fh: fat_header = util::copy_from_slice(buf.slice_to(8), util::BigEndian);
+        let fh: fat_header = util::copy_from_slice(&buf[..8], util::BigEndian);
         if fh.magic != FAT_MAGIC as u32 { return false }
         let nfat = fh.nfat_arch as u64;
         let mut off: usize = 8;
@@ -409,8 +409,8 @@ impl FatMachOProber {
             util::errln(format!("fatmacho: no room for {} fat archs", nfat));
             return false
         }
-        for i in range(0, nfat) {
-            let fa: fat_arch = util::copy_from_slice(buf.slice(off, off + size_of::<fat_arch>()), util::BigEndian);
+        for i in 0..nfat {
+            let fa: fat_arch = util::copy_from_slice(&buf[off..off + size_of::<fat_arch>()], util::BigEndian);
             if (fa.offset as u64) + (fa.size as u64) > (buf.len() as u64) {
                 util::errln(format!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
                               fa.cputype, fa.cpusubtype, fa.offset, fa.size));

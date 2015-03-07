@@ -28,11 +28,12 @@ macro_rules! deriving_swap {
                 )+
             }
         }
+        /* no longer needed1
         impl Default for $name {
             fn default() -> $name {
                 unsafe { zeroed_t() }
             }
-        }
+        } */
         $($etc)*
     )
 }

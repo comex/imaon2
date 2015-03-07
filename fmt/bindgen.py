@@ -13,11 +13,11 @@ while i < len(all_args):
         i += 1
 
 print open('fmt/bind_defs.rs').read()
-bg = subprocess.check_output(['externals/rust-bindgen/bindgen', '-allow-bitfields', infile] + all_args)
+bg = subprocess.check_output(['bindgen', '-allow-bitfields', infile] + all_args)
 bg = bg.replace('Struct_', '').replace('use libc::*;', '')
 
 # temporary hack until bindgen updates to latest rust
-bg = re.sub(r'\b(u?)int\b', r'\1size', re.sub(', \.\.([0-9]+)u', r'; \1', bg)).replace('(C)]\n', '(C)]\n#[derive(Copy)]\n')
+bg = re.sub(r'\b(u?)int\b', r'\1size', re.sub(', \.\.([0-9]+)u', r'; \1', bg))#.replace('(C)]\n', '(C)]\n#[derive(Copy)]\n')
 
 bg = re.sub(re.compile('(#\[repr\(C\)\]\n#\[derive\(Copy\)\]\npub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n);', bg)
 

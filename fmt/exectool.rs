@@ -1,4 +1,5 @@
 #![allow(non_camel_case_types)]
+#![feature(path, fs)]
 
 extern crate util;
 extern crate "bsdlike_getopts" as getopts;
@@ -6,12 +7,13 @@ extern crate exec;
 extern crate macho;
 
 use exec::SymbolValue;
-use std::io;
+use std::fs;
+use std::path::Path;
 mod execall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
-    let mut entry = |&mut: mc: &util::MCRef, name| {
+    let entry = |mc: &util::MCRef, name| {
         match mc.offset_in(&mo.eb.buf) {
             None => (),
             Some(offset) => {
@@ -85,13 +87,13 @@ fn main() {
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
     );
-    let mut args = std::os::args();
+    let mut args: Vec<String> = std::env::args().collect();
     args.remove(0);
     if args[0].starts_with("-") {
         util::usage(top, &mut optgrps);
     }
     let filename = args.remove(0);
-    let mut fp = io::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
+    let mut fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
         util::errln(format!("open {} failed: {}", filename, e));
         util::exit();
     });

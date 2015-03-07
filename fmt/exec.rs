@@ -26,7 +26,7 @@ pub enum ErrorKind {
 #[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
-    message: std::string::CowString<'static>,
+    message: std::borrow::Cow<'static, str>,
 }
 pub type ExecResult<T> = Result<T, Error>;
 pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
@@ -166,7 +166,7 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>)
 
 fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     // TODO: error conversion
-    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::uint::MAX, &mut vec![
+    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::usize::MAX, &mut vec![
         getopts::optopt("", "arch", "Architecture bias", "arch"),
     ]);
     let mut results = probe_all(eps, buf.clone());

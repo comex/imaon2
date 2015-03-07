@@ -11,7 +11,7 @@ extern crate macros;
 extern crate collections;
 
 use std::mem::{size_of, uninitialized, transmute};
-use std::ptr::{copy_memory, zero_memory};
+use std::ptr::copy;
 use std::sync::Arc;
 use std::intrinsics;
 use std::default::Default;
@@ -26,7 +26,7 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninitialized();
-        copy_memory(&mut t, transmute(slice.as_ptr()), 1);
+        copy(&mut t, transmute(slice.as_ptr()), 1);
         t.bswap_from(end);
         t
     }
@@ -98,12 +98,6 @@ impl_for_array!(4);
 impl_for_array!(16);
 impl<T> Swap for Option<T> {
     fn bswap(&mut self) {}
-}
-
-pub unsafe fn zeroed_t<T>() -> T {
-    let mut me : T = uninitialized();
-    zero_memory(&mut me, 1);
-    me
 }
 
 // TODO remove this

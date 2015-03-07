@@ -58,7 +58,7 @@ impl exec::ExecProber for RawProber {
         })
     }
     fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: util::MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "raw ...", 0, std::uint::MAX, &mut vec!(
+        let m = util::do_getopts_or_panic(&*args, "raw ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ));
         Ok((Box::new(RawBinary::new(buf, args)) as Box<exec::Exec>, m.free))
