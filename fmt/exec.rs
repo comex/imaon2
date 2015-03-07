@@ -38,8 +38,7 @@ pub struct VMA(pub u64);
 
 impl fmt::Debug for VMA {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(fmt, "0x"));
-        fmt::Display::fmt(&self.0, fmt)
+        write!(fmt, "0x{:x}", self.0)
     }
 }
 display_as_debug!(VMA);

@@ -147,7 +147,7 @@ impl MCRef {
     }
     pub fn get<'a>(&'a self) -> &'a [u8] {
         unsafe { std::slice::from_raw_parts::<u8>(
-            transmute(&(self.mm.as_ref().unwrap().data().offset(self.off as isize) as *const u8)),
+            transmute(self.mm.as_ref().unwrap().data().offset(self.off as isize) as *const u8),
             self.len
         ) }
     }
