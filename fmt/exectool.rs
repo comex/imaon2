@@ -14,12 +14,9 @@ mod execall;
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
     let entry = |mc: &util::MCRef, name| {
-        match mc.offset_in(&mo.eb.buf) {
-            None => (),
-            Some(offset) => {
-                println!("{:<16}: offset {:<#8x}, length {:<#8x}",
-                    name, offset, mc.len());
-            }
+        if let Some(offset) = mc.offset_in(&mo.eb.buf) {
+            println!("{:<16}: offset {:<#8x}, length {:<#8x}",
+                name, offset, mc.len());
         }
     };
     entry(&mo.symtab,         "symtab");
