@@ -16,10 +16,10 @@ RUSTC := $(RUSTC) -O
 RUSTCFLAGS_bin := -C lto
 else
 LIB := dylib
-RUSTC := $(RUSTC) -C codegen-units=4 -C prefer-dynamic 
+RUSTC := $(RUSTC) -C codegen-units=1 -C prefer-dynamic
 endif
 
-RUSTC := $(RUSTC) -A unstable -Z no-landing-pads
+RUSTC := $(RUSTC) -Z no-landing-pads
 
 all:
 

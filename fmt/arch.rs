@@ -2,7 +2,7 @@ use std::default::Default;
 use std::str::FromStr;
 pub use self::Arch::*;
 
-#[derive(PartialEq, Eq, Show, Copy)]
+#[derive(PartialEq, Eq, Debug, Copy)]
 pub enum Arch {
     X86,
     X86_64,
@@ -19,24 +19,25 @@ impl Default for Arch {
 }
 
 impl FromStr for Arch {
-    fn from_str(s: &str) -> Option<Arch> {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Arch, ()> {
         let s: String = s.replace("-", "_").chars().map(|c| c.to_lowercase()).collect();
         if s == "x86" || s == "i386" {
-            Some(X86)
+            Ok(X86)
         } else if s == "x86_64" || s == "amd64" {
-            Some(X86_64)
+            Ok(X86_64)
         } else if s == "arm" {
-            Some(ARM)
+            Ok(ARM)
         } else if s == "arm64" || s == "aarch64" {
-            Some(AArch64)
+            Ok(AArch64)
         } else if s == "sparc" {
-            Some(Sparc)
+            Ok(Sparc)
         } else if s == "mips" {
-            Some(Mips)
+            Ok(Mips)
         } else if s == "ppc" || s == "powerpc" {
-            Some(PowerPC)
+            Ok(PowerPC)
         } else {
-            None
+            Err(())
         }
     }
 }

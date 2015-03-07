@@ -1,11 +1,11 @@
 #![feature(plugin)]
+#![plugin(regex_macros)]
+#![feature(libc, core, os, io, std_misc, old_io, collections, fs)]
 
 extern crate libc;
 extern crate "bsdlike_getopts" as getopts;
 
 extern crate regex;
-#[plugin] #[no_link]
-extern crate regex_macros;
 #[macro_use]
 extern crate macros;
 extern crate collections;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::intrinsics;
 use std::default::Default;
 use std::os::MemoryMap;
-use std::io;
+use std::io::{SeekFrom, Seek};
 use std::os::unix::AsRawFd;
 
 pub use Endian::*;
@@ -45,7 +45,7 @@ pub fn bswap16(x: u16) -> u16 {
     unsafe { intrinsics::bswap16(x) }
 }
 
-#[derive(Show, PartialEq, Eq, Copy)]
+#[derive(Debug, PartialEq, Eq, Copy)]
 pub enum Endian {
     BigEndian,
     LittleEndian,
@@ -117,7 +117,7 @@ impl ToUi for u16 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for i8 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for u8 { fn to_ui(&self) -> usize { *self as usize } }
 
-pub trait X8 {}
+pub trait X8 : std::marker::MarkerTrait {}
 impl X8 for u8 {}
 impl X8 for i8 {}
 
@@ -125,7 +125,7 @@ pub fn trim_to_null<T: X8>(chs_: &[T]) -> &[u8] {
     let chs: &[u8] = unsafe { transmute(chs_) };
     match chs.iter().position(|c| *c == 0) {
         None => chs,
-        Some(i) => chs.slice_to(i)
+        Some(i) => &chs[..i],
     }
 }
 
@@ -152,7 +152,7 @@ impl MCRef {
         MCRef { mm: self.mm.clone(), off: self.off + from, len: len }
     }
     pub fn get<'a>(&'a self) -> &'a [u8] {
-        unsafe { std::slice::from_raw_buf::<u8>(
+        unsafe { std::slice::from_raw_parts::<u8>(
             transmute(&(self.mm.as_ref().unwrap().data().offset(self.off as isize) as *const u8)),
             self.len
         ) }
@@ -173,11 +173,10 @@ impl MCRef {
     }
 }
 
-pub fn safe_mmap(fil: &mut std::io::File) -> MCRef {
-    let oldpos = fil.tell().unwrap();
-    fil.seek(0, io::SeekStyle::SeekEnd).unwrap();
-    let size = fil.tell().unwrap();
-    fil.seek(oldpos as i64, io::SeekStyle::SeekSet).unwrap();
+pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
+    let oldpos = fil.seek(SeekFrom::Current(0)).unwrap();
+    let size = fil.seek(SeekFrom::End(0)).unwrap();
+    fil.seek(SeekFrom::Start(oldpos)).unwrap();
     let rounded = std::cmp::max(size, 0x1000);
     let rsize = rounded as usize;
     if rsize as u64 != rounded {
@@ -205,7 +204,7 @@ pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: 
 }
 
 pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
-    do_getopts(args, min_expected_free, max_expected_free, optgrps).unwrap_or_else(|:| { usage(top, optgrps); panic!(); })
+    do_getopts(args, min_expected_free, max_expected_free, optgrps).unwrap_or_else(|| { usage(top, optgrps); panic!(); })
 }
 
 pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) {
@@ -219,7 +218,7 @@ pub fn exit() -> ! {
 
 pub fn errlnb(s: &str) {
     // who needs speed
-    std::io::stdio::stderr().write_line(s).unwrap();
+    std::old_io::stdio::stderr().write_line(s).unwrap();
 }
 
 pub fn errln(s: String) {
@@ -283,11 +282,11 @@ fn test_branch() {
             // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
             type A = isize;
             type B = isize;
-            let (b, c) = (7us, 8)
+            let (b, c) = (7usize, 8)
         } else {
             type A = usize;
             type B = usize;
-            let (b, c) = (8us, 9)
+            let (b, c) = (8usize, 9)
         } then {
             println!("{}", (b + c) as A);
         })

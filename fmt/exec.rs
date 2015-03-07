@@ -1,6 +1,7 @@
 #![feature(unboxed_closures)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
+#![feature(collections, unicode)]
 
 #[macro_use]
 extern crate macros;
@@ -16,32 +17,32 @@ use std::str::FromStr;
 
 pub mod arch;
 
-#[derive(Clone, Copy, Show)]
+#[derive(Clone, Copy, Debug)]
 pub enum ErrorKind {
     BadData,
     Other
 }
 
-#[derive(Clone, Show)]
+#[derive(Clone, Debug)]
 pub struct Error {
     kind: ErrorKind,
     message: std::string::CowString<'static>,
 }
 pub type ExecResult<T> = Result<T, Error>;
-pub fn err<T, S: std::borrow::IntoCow<'static, String, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
+pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
     Err(Error { kind: kind, message: s.into_cow() })
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VMA(pub u64);
 
-impl fmt::Show for VMA {
+impl fmt::Debug for VMA {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         try!(write!(fmt, "0x"));
-        fmt::String::fmt(&self.0, fmt)
+        fmt::Display::fmt(&self.0, fmt)
     }
 }
-string_as_show!(VMA);
+display_as_debug!(VMA);
 
 delegate_arith!(VMA, Sub, sub, u64);
 delegate_arith!(VMA, Add, add, u64);
@@ -49,14 +50,14 @@ delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
 delegate_arith!(VMA, BitXor, bitxor, u64);
 
-#[derive(Default, Copy, Clone, PartialEq, Eq, Show)]
+#[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Prot {
     pub r: bool,
     pub w: bool,
     pub x: bool,
 }
 
-impl fmt::String for Prot {
+impl fmt::Display for Prot {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "{}{}{}",
             if self.r { 'r' } else { '-' },
@@ -71,7 +72,7 @@ pub static prot_all : Prot = Prot { r: true, w: true, x: true };
 // formats often have redundant fields.  (e.g. ELF sections have protection
 // and alignment, Mach-O segments have names)
 
-#[derive(Default, Show, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Segment {
     pub vmaddr: VMA,
     pub vmsize: u64,
@@ -91,7 +92,7 @@ pub struct ExecBase {
     pub buf: util::MCRef,
 }
 
-#[derive(Show, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SymbolValue<'a> {
     Addr(VMA),
     Undefined,
@@ -99,7 +100,7 @@ pub enum SymbolValue<'a> {
     ReExport(&'a [u8]),
 }
 
-#[derive(Show, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Symbol<'a> {
     pub name: &'a [u8],
     pub is_public: bool,
@@ -108,7 +109,7 @@ pub struct Symbol<'a> {
     pub private: usize,
 }
 
-#[derive(Show, PartialEq, Eq, Copy)]
+#[derive(Debug, PartialEq, Eq, Copy)]
 pub enum SymbolSource {
     All,
     Imported,
