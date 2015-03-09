@@ -1,5 +1,5 @@
 #![allow(non_camel_case_types)]
-#![feature(path, fs)]
+#![feature(path)]
 
 extern crate util;
 extern crate "bsdlike_getopts" as getopts;

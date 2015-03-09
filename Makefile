@@ -3,7 +3,7 @@
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc --out-dir $(OUT) -Ltarget/deps --extern regex=`echo target/deps/libregex*.rlib` -L. -L$(OUT)
+RUSTC := rustc --out-dir $(OUT) -Ltarget/debug/deps --extern regex=`echo target/debug/deps/libregex*.rlib` -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
@@ -94,12 +94,12 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
 		done; \
 	done
 
-$(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* externals/rust-bindgen/bindgen fmt/bindgen.py
+$(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,$(LIB),macho,fmt/macho.rs $(OUT)/macho_bind.rs,exec util)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
-$(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile externals/rust-bindgen/bindgen fmt/bindgen.py
+$(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
 
@@ -109,4 +109,4 @@ clean:
 	rm -rf out cargo-build
 
 extraclean: clean
-	rm -f tables/llvm-tblgen Cargo.lock target
+	rm -rf tables/llvm-tblgen Cargo.lock target

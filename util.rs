@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, core, os, io, std_misc, old_io, collections, fs)]
+#![feature(libc, core, os, io, std_misc, old_io, collections)]
 
 extern crate libc;
 extern crate "bsdlike_getopts" as getopts;
