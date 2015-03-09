@@ -119,7 +119,9 @@ pub trait Exec : 'static {
     fn get_exec_base(&self) -> &ExecBase;
 
     // Todo: add a monomorphizable iterator version of this
-    fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol>;
+    fn get_symbol_list(&self, _source: SymbolSource) -> Vec<Symbol> {
+        vec!()
+    }
 
     fn as_any(&self) -> &std::any::Any;// { self as &std::any::Any }
 }

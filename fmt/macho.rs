@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(collections, libc)]
+#![allow(non_snake_case)]
+#![feature(collections, libc, core)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -20,6 +21,8 @@ use exec::{arch, VMA, SymbolValue};
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
+
+pub mod dyldcache;
 
 // dont bother with the unions
 deriving_swap!(
@@ -44,6 +47,15 @@ pub struct x_nlist_64 {
     pub n_value: uint64_t,
 }
 );
+
+pub fn u32_to_prot(ip: u32) -> exec::Prot {
+    exec::Prot {
+        r: (ip & VM_PROT_READ) != 0,
+        w: (ip & VM_PROT_WRITE) != 0,
+        x: (ip & VM_PROT_EXECUTE) != 0,
+    }
+}
+
 
 #[derive(Default, Debug, Copy)]
 pub struct SymSubset(usize, usize);
@@ -231,12 +243,7 @@ impl MachO {
                 } then {
                     let mut off = size_of::<segment_command_x>();
                     let sc: segment_command_x = util::copy_from_slice(&lc_buf[..off], end);
-                    let ip = sc.initprot as u32;
-                    let segprot = exec::Prot {
-                        r: (ip & VM_PROT_READ) != 0,
-                        w: (ip & VM_PROT_WRITE) != 0,
-                        x: (ip & VM_PROT_EXECUTE) != 0,
-                    };
+                    let segprot = u32_to_prot(sc.initprot as u32);
                     segs.push(exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,

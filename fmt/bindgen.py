@@ -1,19 +1,26 @@
 import sys, subprocess, re, tempfile
-infile = sys.argv[1]
-all_args = sys.argv[2:]
+all_args = sys.argv[1:]
 matches = []
-args = []
+clang_args = []
+hfile = None
 i = 0
 while i < len(all_args):
     if all_args[i] == '-match':
         matches.append(all_args[i+1])
         i += 2
-    else:
-        args.append(all_args[i])
+    elif all_args[i] == '-include':
+        clang_args.append(all_args[i])
+        clang_args.append(all_args[i+1])
+        i += 2
+    elif all_args[i].endswith('.h'):
+        hfile = all_args[i]
         i += 1
-
+    else:
+        clang_args.append(all_args[i])
+        i += 1
+assert hfile
 print open('fmt/bind_defs.rs').read()
-bg = subprocess.check_output(['bindgen', '-allow-bitfields', infile] + all_args)
+bg = subprocess.check_output(['bindgen', '-allow-bitfields'] + all_args)
 bg = bg.replace('Struct_', '').replace('use libc::*;', '')
 
 # temporary hack until bindgen updates to latest rust
@@ -24,7 +31,7 @@ bg = re.sub(re.compile('(#\[repr\(C\)\]\n#\[derive\(Copy\)\]\npub struct.*?\n})'
 print bg
 print '// start of macros'
 
-clang = subprocess.check_output(['clang', '-dD', '-E', infile] + args)
+clang = subprocess.check_output(['clang', '-dD', '-E', hfile] + clang_args)
 
 to_compile = ''
 
@@ -49,7 +56,7 @@ for line in clang.split('\n'):
         continue
 
 # one more run through
-final, stde = subprocess.Popen(['clang', '-E', '-include', infile, '-x', 'c', '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE).communicate(to_compile)
+final, stde = subprocess.Popen(['clang', '-E', '-include', hfile, '-x', 'c', '-'] + clang_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE).communicate(to_compile)
 if stde:
     print >> sys.stderr, stde
     assert 0

@@ -28,7 +28,7 @@ macro_rules! deriving_swap {
                 )+
             }
         }
-        /* no longer needed1
+        /* no longer needed!
         impl Default for $name {
             fn default() -> $name {
                 unsafe { zeroed_t() }
@@ -68,4 +68,9 @@ macro_rules! display_as_debug{($ty:ty) => (
             ::std::fmt::Debug::fmt(self, fmt)
         }
     }
+)}
+
+#[macro_export]
+macro_rules! offset_of{($ty:ty, $field:ident) => (
+    unsafe { (&(*(0 as *const $ty)).$field) as *const _ as usize }
 )}

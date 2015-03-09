@@ -10,9 +10,6 @@ impl exec::Exec for RawBinary {
     fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
         &self.eb
     }
-    fn get_symbol_list(&self, _: exec::SymbolSource) -> Vec<exec::Symbol> {
-        vec!()
-    }
 
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 }
