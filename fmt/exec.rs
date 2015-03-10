@@ -25,8 +25,8 @@ pub enum ErrorKind {
 
 #[derive(Clone, Debug)]
 pub struct Error {
-    kind: ErrorKind,
-    message: std::borrow::Cow<'static, str>,
+    pub kind: ErrorKind,
+    pub message: std::borrow::Cow<'static, str>,
 }
 pub type ExecResult<T> = Result<T, Error>;
 pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {

@@ -56,11 +56,31 @@ pub fn u32_to_prot(ip: u32) -> exec::Prot {
     }
 }
 
+fn file_array(buf: &MCRef, name: &str, off: u32, count: u32, elm_size: usize) -> exec::ExecResult<MCRef> {
+    file_array_64(buf, name, off as u64, count as u64, elm_size)
+}
+fn file_array_64(buf: &MCRef, name: &str, off: u64, count: u64, elm_size: usize) -> exec::ExecResult<MCRef> {
+    let elm_size = elm_size as u64;
+    let buf_len = buf.len() as u64;
+    if off >= buf_len || count > (buf_len - off) / elm_size {
+        exec::err(exec::ErrorKind::BadData, format!("{} ({}, {} * {}-sized elements) out of bounds", name, off, count, elm_size))
+    } else {
+        Ok(buf.slice(off as usize, (off + count * elm_size) as usize))
+    }
+}
+
 
 #[derive(Default, Debug, Copy)]
 pub struct SymSubset(usize, usize);
 #[derive(Default, Debug, Copy)]
 pub struct RelSubset(usize, usize);
+
+pub struct DscTabs {
+    pub symtab: MCRef,
+    pub strtab: MCRef,
+    pub start: u32,
+    pub count: u32,
+}
 
 #[derive(Default)]
 pub struct MachO {
@@ -71,6 +91,7 @@ pub struct MachO {
     pub nlist_size: usize,
     pub symtab: MCRef,
     pub strtab: MCRef,
+    pub dsc_tabs: Option<DscTabs>,
     pub localsym: SymSubset,
     pub extdefsym: SymSubset,
     pub undefsym: SymSubset,
@@ -95,7 +116,14 @@ impl exec::Exec for MachO {
 
     fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
         if source == exec::SymbolSource::All {
-            self.nlist_symbols(0, self.symtab.len() / self.nlist_size)
+            let mut out = Vec::new();
+            let mut skip_redacted = false;
+            if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
+                self.push_nlist_symbols(symtab.get(), strtab.get(), start as usize, count as usize, skip_redacted, &mut out);
+                skip_redacted = true;
+            }
+            self.push_nlist_symbols(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size, skip_redacted, &mut out);
+            out
         } else {
             unimplemented!()
         }
@@ -312,25 +340,17 @@ impl MachO {
     }
 
     fn file_array(&self, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
-        let off_ = off.to_ui();
-        let count_ = count.to_ui();
-        let buf_len = self.eb.buf.len();
-        if off_ >= buf_len || count_ > (buf_len - off_) / elm_size {
-            util::errln(format!("{} ({}, {} * {}-sized elements) out of bounds", name, off_, count_, elm_size));
+        file_array(&self.eb.buf, name, off, count, elm_size).unwrap_or_else(|err| {
+            util::errlnb(&err.message[..]);
             Default::default()
-        } else {
-            self.eb.buf.slice(off_, off_ + count_ * elm_size)
-        }
+        })
     }
 
 
-    fn nlist_symbols(&self, start: usize, count: usize) -> Vec<exec::Symbol> {
-        let mut result = vec!();
-        let data = self.symtab.get();
-        let strtab = self.strtab.get();
+    fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<exec::Symbol<'a>>) {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
-            let slice = &data[off..off + self.nlist_size];
+            let slice = &symtab[off..off + self.nlist_size];
             branch!(if self.is64 == true {
                 type nlist_x = x_nlist_64;
             } else {
@@ -360,7 +380,8 @@ impl MachO {
                     } else {
                         SymbolValue::Addr(vma)
                     };
-                result.push(exec::Symbol {
+                if skip_redacted && name == b"<redacted>" { continue; }
+                out.push(exec::Symbol {
                     name: name,
                     is_public: public,
                     is_weak: weak,
@@ -370,7 +391,6 @@ impl MachO {
             });
             off += self.nlist_size;
         }
-        result
     }
 }
 

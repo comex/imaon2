@@ -17,13 +17,20 @@ pub struct ImageInfo {
     pub path: String,
 }
 
+pub struct LocalSymbols {
+    entries: MCRef,
+    symtab: MCRef,
+    strtab: MCRef,
+    nlist_count: u32,
+}
+
 pub struct DyldCache {
     pub eb: exec::ExecBase,
     pub image_info: Vec<ImageInfo>,
     pub uuid: Option<[u8; 16]>,
     pub slide_info_blob: Option<MCRef>,
     pub cs_blob: Option<MCRef>,
-    ls_info: Option<(dyld_cache_local_symbols_info, MCRef)>,
+    local_symbols: Option<LocalSymbols>,
 }
 
 trait RangeCast {
@@ -71,43 +78,40 @@ impl DyldCache {
             Some(mc.slice(hdr.slideInfoOffset as usize, (hdr.slideInfoOffset+hdr.slideInfoSize) as usize))
         } else { None };
         // TODO these checks should become bypassable
-        let ls_info = if min_low_offset >= offset_of!(dyld_cache_header, localSymbolsSize) {
-            let ls_blob = mc.slice(hdr.slideInfoOffset as usize, (hdr.slideInfoOffset+hdr.slideInfoSize) as usize);
+        let local_symbols = if min_low_offset >= offset_of!(dyld_cache_header, localSymbolsSize) {
+            let ls_mc = try!(::file_array_64(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1));
             let so = size_of::<dyld_cache_local_symbols_info>() as u64;
-            if hdr.slideInfoSize < so {
+            if hdr.localSymbolsSize < so {
                 return exec::err(BadData, "local symbols blob too small for header");
             }
-            let lshdr: dyld_cache_local_symbols_info = util::copy_from_slice(&ls_blob.get()[..so as usize], end);
+            let ls_hdr: dyld_cache_local_symbols_info = util::copy_from_slice(&ls_mc.get()[..so as usize], end);
             let nlist_size = if is64 {
                 size_of::<macho_bind::nlist_64>()
             } else {
                 size_of::<macho_bind::nlist>()
-            } as u64;
-            if lshdr.nlistOffset as u64 >= hdr.slideInfoSize || (hdr.slideInfoSize - lshdr.nlistOffset as u64) / nlist_size < lshdr.nlistCount as u64 {
-                return exec::err(BadData, "bad nlist offset/count");
-            }
-            let entry_size = size_of::<dyld_cache_local_symbols_entry>() as u64;
-            if lshdr.entriesOffset as u64 >= hdr.slideInfoSize || (hdr.slideInfoSize - lshdr.entriesOffset as u64) / entry_size < lshdr.entriesCount as u64 {
-                return exec::err(BadData, "bad LS entry offset/count");
-            }
-            Some((lshdr, ls_blob))
+            } as usize;
+            let symtab = try!(::file_array(&ls_mc, "dyld cache local symbols - nlist", ls_hdr.nlistOffset, ls_hdr.nlistCount, nlist_size));
+            let strtab = try!(::file_array(&ls_mc, "dyld cache local symbols - strtab", ls_hdr.stringsOffset, ls_hdr.stringsSize, 1));
+            let entry_size = size_of::<dyld_cache_local_symbols_entry>();
+            let entries = try!(::file_array(&ls_mc, "dyld cache local symbols - entries", ls_hdr.entriesOffset, ls_hdr.entriesCount, entry_size));
+            Some(LocalSymbols {
+                entries: entries,
+                symtab: symtab,
+                strtab: strtab,
+                nlist_count: ls_hdr.nlistCount,
+            })
         } else { None };
         let uuid = if min_low_offset >= size_of::<dyld_cache_header>() {
             Some(hdr.uuid)
         } else { None };
 
         let image_info = {
-            let so = size_of::<dyld_cache_image_info>() as u64;
-            let len = mc.len() as u64;
-            let images_offset = hdr.imagesOffset as u64;
-            let images_count = hdr.imagesCount as u64;
-            if images_offset as u64 >= len || (len - images_offset as u64) / so < hdr.imagesCount as u64 {
-                return exec::err(BadData, "bad image offset/count");
-            }
+            let so = size_of::<dyld_cache_image_info>();
+            let hdrmc = try!(::file_array(&mc, "images info", hdr.imagesOffset, hdr.imagesCount, so));
+            let hdrbuf = hdrmc.get();
             let buf = mc.get();
-            let hdrbuf = &buf[(images_offset..images_offset + images_count * so).range_cast()];
-            (0..images_count).map(|i| {
-                let ii: dyld_cache_image_info = util::copy_from_slice(&hdrbuf[(i * so..(i + 1) * so).range_cast()], end);
+            hdrbuf.chunks(so).map(|ii_buf| {
+                let ii: dyld_cache_image_info = util::copy_from_slice(ii_buf, end);
                 ImageInfo {
                     address: ii.address,
                     mod_time: ii.modTime,
@@ -117,16 +121,11 @@ impl DyldCache {
             }).collect()
         };
         let segments = {
-            let so = size_of::<dyld_cache_mapping_info>() as u64;
+            let so = size_of::<dyld_cache_mapping_info>();
+            let mapping_mc = try!(::file_array(&mc, "mapping info", hdr.mappingOffset, hdr.mappingCount, so));
             let len = mc.len() as u64;
-            let mapping_offset = hdr.mappingOffset as u64;
-            let mapping_count = hdr.mappingCount as u64;
-            if mapping_offset as u64 >= len || (len - mapping_offset as u64) / so < mapping_count {
-                return exec::err(BadData, "bad mapping offset/count");
-            }
-            let buf = &(mc.get()[(mapping_offset..mapping_offset + mapping_count * so).range_cast()]);
-            let r: Result<Vec<_>, _> = (0..mapping_count).map(|i| {
-                let mi: dyld_cache_mapping_info = util::copy_from_slice(&buf[(i * so..(i + 1) * so).range_cast()], end);
+            let r: Result<Vec<_>, _> = mapping_mc.get().chunks(so).enumerate().map(|(i, mi_buf)| {
+                let mi: dyld_cache_mapping_info = util::copy_from_slice(mi_buf, end);
                 if mi.fileOffset >= len || mi.size > len - mi.fileOffset {
                     return exec::err(BadData, "dyld cache too big (maybe improve this?)");
                 }
@@ -138,7 +137,7 @@ impl DyldCache {
                     filesize: mi.size,
                     name: None,
                     prot: ::u32_to_prot(mi.initProt),
-                    private: (mapping_offset + i * so) as usize,
+                    private: hdr.mappingOffset as usize + i * so,
                 })
             }).collect();
             try!(r)
@@ -156,8 +155,26 @@ impl DyldCache {
             uuid: uuid,
             slide_info_blob: slide_info,
             cs_blob: cs_blob,
-            ls_info: ls_info,
+            local_symbols: local_symbols,
         })
+    }
+    pub fn get_ls_entry_for_offset(self, off: u64) -> Option<::DscTabs> {
+        let entry_size = size_of::<dyld_cache_local_symbols_entry>();
+        if let Some(ref ls) = self.local_symbols {
+            let entries = ls.entries.get();
+            for entry_slice in entries.chunks(entry_size) {
+                let entry: dyld_cache_local_symbols_entry = util::copy_from_slice(entry_slice, self.eb.endian);
+                if entry.dylibOffset as u64 == off {
+                    if entry.nlistStartIndex > ls.nlist_count || entry.nlistCount > ls.nlist_count - entry.nlistStartIndex {
+                        util::errlnb("shared cache local symbols entry out of range");
+                        return None;
+                    } else {
+                        return Some(::DscTabs { symtab: ls.symtab.clone(), strtab: ls.strtab.clone(), start: entry.nlistStartIndex, count: entry.nlistCount });
+                    }
+                }
+            }
+            None
+        } else { None }
     }
 }
 
@@ -244,10 +261,12 @@ impl exec::ExecProber for DyldSingleProber {
             });
             if let Some(i) = o { i } else { return exec::err(exec::ErrorKind::Other, "no such file in shared cache") }
         };
-        let ii = &c.image_info[idx];
-        let off = if let Some(o) = exec::addr_to_off(&c.eb.segments, exec::VMA(ii.address), 0) { o } else { return exec::err(exec::ErrorKind::BadData, "shared cache image said to be at an unmapped offset") };
-
-        let mo = try!(::MachO::new(buf, true, off as usize));
+        let off = {
+            let ii = &c.image_info[idx];
+            if let Some(o) = exec::addr_to_off(&c.eb.segments, exec::VMA(ii.address), 0) { o } else { return exec::err(exec::ErrorKind::BadData, "shared cache image said to be at an unmapped offset") }
+        };
+        let mut mo = try!(::MachO::new(buf, true, off as usize));
+        mo.dsc_tabs = c.get_ls_entry_for_offset(off);
         Ok((Box::new(mo) as Box<exec::Exec>, free))
     }
 }
