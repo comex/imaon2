@@ -11,6 +11,7 @@ pub fn all_probers() -> Vec<exec::ExecProberRef> {
     unsafe {
         return vec!(
             mem::transmute(&self::macho::MachOProber    as &ExecProber),
+            mem::transmute(&dyldcache::DyldWholeProber  as &ExecProber),
             mem::transmute(&dyldcache::DyldSingleProber as &ExecProber),
             mem::transmute(&self::macho::FatMachOProber as &ExecProber),
             mem::transmute(&self::raw_binary::RawProber as &ExecProber),

@@ -229,7 +229,7 @@ pub fn shell_quote(args: &[String]) -> String {
     for arg_ in args.iter() {
         let arg = arg_.as_slice();
         if sb.len() != 0 { sb.push(' ') }
-        if regex!(r"^[a-zA-Z0-9_-]+$").is_match(arg) {
+        if regex!(r"^[a-zA-Z0-9_\.@/-]+$").is_match(arg) {
             sb.push_str(arg);
         } else {
             sb.push('"');

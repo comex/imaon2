@@ -7,6 +7,7 @@ use exec::arch;
 use std::mem::{size_of};
 use std::cmp::min;
 use std::ops::Range;
+use std::collections::HashSet;
 use std;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry};
 pub struct ImageInfo {
@@ -124,9 +125,13 @@ impl DyldCache {
                 return exec::err(BadData, "bad mapping offset/count");
             }
             let buf = &(mc.get()[(mapping_offset..mapping_offset + mapping_count * so).range_cast()]);
-            (0..mapping_count).map(|i| {
+            let r: Result<Vec<_>, _> = (0..mapping_count).map(|i| {
                 let mi: dyld_cache_mapping_info = util::copy_from_slice(&buf[(i * so..(i + 1) * so).range_cast()], end);
-                exec::Segment {
+                if mi.fileOffset >= len || mi.size > len - mi.fileOffset {
+                    return exec::err(BadData, "dyld cache too big (maybe improve this?)");
+                }
+
+                Ok(exec::Segment {
                     vmaddr: exec::VMA(mi.address),
                     vmsize: mi.size,
                     fileoff: mi.fileOffset,
@@ -134,8 +139,9 @@ impl DyldCache {
                     name: None,
                     prot: ::u32_to_prot(mi.initProt),
                     private: (mapping_offset + i * so) as usize,
-                }
-            }).collect()
+                })
+            }).collect();
+            try!(r)
         };
 
         Ok(DyldCache {
@@ -165,6 +171,35 @@ impl exec::Exec for DyldCache {
 
 
 #[derive(Copy)]
+pub struct DyldWholeProber;
+impl exec::ExecProber for DyldWholeProber {
+    fn name(&self) -> &str {
+        "dyld-whole"
+    }
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
+        if let Ok(c) = DyldCache::new(buf) {
+            vec![exec::ProbeResult {
+                desc: "whole dyld cache".to_string(),
+                arch: c.eb.arch,
+                likely: true,
+                cmd: vec!["dyld-whole".to_string()],
+            }]
+        } else {
+            vec!()
+        }
+    }
+   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+        let m = util::do_getopts_or_panic(&*args, "dyld-whole", 0, std::usize::MAX, &mut vec!());
+        let c = try!(DyldCache::new(buf));
+        Ok((Box::new(c) as Box<exec::Exec>, m.free))
+    }
+}
+
+fn get_basename(ii: &ImageInfo) -> &str {
+    if let Some(pos) = ii.path.rfind('/') { &ii.path[pos+1..] } else { &ii.path[..] }
+}
+
+#[derive(Copy)]
 pub struct DyldSingleProber;
 impl exec::ExecProber for DyldSingleProber {
     fn name(&self) -> &str {
@@ -172,12 +207,18 @@ impl exec::ExecProber for DyldSingleProber {
     }
     fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
         if let Ok(c) = DyldCache::new(buf) {
-            c.image_info.iter().map(|ii| {
-                let basename = if let Some(pos) = ii.path.find('/') { &ii.path[pos+1..] } else { &ii.path[..] }.to_string();
-                let cmd = vec!["dyld-single".to_string(), basename.clone()];
+            let mut seen_basenames = HashSet::new();
+            c.image_info.iter().enumerate().map(|(i, ii)| {
+                let cmd0 = "dyld-single".to_string();
+                let basename = get_basename(ii);
+                let cmd = if seen_basenames.insert(basename.to_string()) {
+                    vec![cmd0, basename.to_string()]
+                } else {
+                    vec![cmd0, "-i".to_string(), format!("{}", i)]
+                };
                 exec::ProbeResult {
-                    desc: basename,
-                    arch: exec::arch::UnknownArch,
+                    desc: ii.path.clone(),
+                    arch: c.eb.arch,
                     likely: true,
                     cmd: cmd,
                 }
@@ -187,8 +228,26 @@ impl exec::ExecProber for DyldSingleProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "dyldcache", 0, std::usize::MAX, &mut vec!());
-        let c = try!(DyldCache::new(buf));
-        Ok((Box::new(c) as Box<exec::Exec>, m.free))
+        let m = util::do_getopts_or_panic(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
+            ::getopts::optflag("i", "idx", "choose by idx"),
+        ]);
+        let c = try!(DyldCache::new(buf.clone()));
+        let mut free = m.free.clone();
+        let path = &free.remove(0)[..];
+        let idx = if m.opt_present("i") {
+            let r: Result<usize, _> = path.parse();
+            if let Ok(i) = r { i } else { return exec::err(exec::ErrorKind::Other, "--idx arg not a number") }
+        } else {
+            let is_basename = path.find('/') == None;
+            let o = c.image_info.iter().position(|ii| {
+                path == if is_basename { get_basename(ii) } else { &ii.path[..] }
+            });
+            if let Some(i) = o { i } else { return exec::err(exec::ErrorKind::Other, "no such file in shared cache") }
+        };
+        let ii = &c.image_info[idx];
+        let off = if let Some(o) = exec::addr_to_off(&c.eb.segments, exec::VMA(ii.address), 0) { o } else { return exec::err(exec::ErrorKind::BadData, "shared cache image said to be at an unmapped offset") };
+
+        let mo = try!(::MachO::new(buf, true, off as usize));
+        Ok((Box::new(mo) as Box<exec::Exec>, free))
     }
 }

@@ -1,7 +1,7 @@
 #![feature(unboxed_closures)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(collections, unicode)]
+#![feature(collections, unicode, core)]
 
 #[macro_use]
 extern crate macros;
@@ -113,6 +113,17 @@ pub enum SymbolSource {
     All,
     Imported,
     Exported,
+}
+
+pub fn addr_to_off(segs: &Vec<Segment>, VMA(goal): VMA, size: u64) -> Option<u64> {
+    for seg in segs.iter() {
+        let vma = seg.vmaddr.0;
+        let seg_off = goal.wrapping_sub(vma);
+        if vma <= goal && seg_off <= seg.vmsize && seg.vmsize - seg_off >= size {
+            return Some(seg.fileoff + seg_off);
+        }
+    }
+    None
 }
 
 pub trait Exec : 'static {

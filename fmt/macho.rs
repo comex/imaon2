@@ -157,13 +157,14 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
 }
 
 impl MachO {
-    pub fn new(mc: MCRef, do_lcs: bool) -> exec::ExecResult<MachO> {
+    pub fn new(mc: MCRef, do_lcs: bool, hdr_offset: usize) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
-        let mut lc_off = size_of::<mach_header>();
+        if hdr_offset >= std::usize::MAX - size_of::<mach_header>() { return exec::err(exec::ErrorKind::BadData, "truncated"); }
+        let mut lc_off = hdr_offset + size_of::<mach_header>();
         {
             let buf = mc.get();
             if buf.len() < lc_off { return exec::err(exec::ErrorKind::BadData, "truncated"); }
-            let magic: u32 = util::copy_from_slice(&buf[..4], util::BigEndian);
+            let magic: u32 = util::copy_from_slice(&buf[hdr_offset..hdr_offset+4], util::BigEndian);
             let is64; let end;
             match magic {
                 0xfeedface => { end = util::BigEndian; is64 = false; }
@@ -174,7 +175,7 @@ impl MachO {
             }
             me.eb.endian = end;
             me.is64 = is64;
-            me.mh = util::copy_from_slice(&buf[..lc_off], end);
+            me.mh = util::copy_from_slice(&buf[hdr_offset..lc_off], end);
             // useless 'reserved' field
             if is64 { lc_off += 4; }
         }
@@ -381,7 +382,7 @@ impl exec::ExecProber for MachOProber {
         "macho"
     }
     fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
-        if let Ok(m) = MachO::new(buf, false) {
+        if let Ok(m) = MachO::new(buf, false, 0) {
             vec!(exec::ProbeResult {
                 desc: m.desc(),
                 arch: m.eb.arch,
@@ -396,7 +397,7 @@ impl exec::ExecProber for MachOProber {
         let m = util::do_getopts_or_panic(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ));
-        let mo: MachO = try!(MachO::new(buf, true));
+        let mo: MachO = try!(MachO::new(buf, true, 0));
         Ok((Box::new(mo) as Box<exec::Exec>, m.free))
     }
 }
