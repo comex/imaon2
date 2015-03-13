@@ -65,7 +65,7 @@ $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))
 all: out-td
 
 cargo-build: Cargo.toml
-	cargo update
+	test -a Cargo.lock && cargo update || true
 	cargo build
 	touch $@ # xxx
 
@@ -106,7 +106,7 @@ $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
 $(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 
 clean:
-	rm -rf out cargo-build
+	rm -rf out cargo-build Cargo.lock target
 
 extraclean: clean
-	rm -rf tables/llvm-tblgen Cargo.lock target
+	rm -rf tables/llvm-tblgen

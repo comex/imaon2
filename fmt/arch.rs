@@ -21,7 +21,7 @@ impl Default for Arch {
 impl FromStr for Arch {
     type Err = ();
     fn from_str(s: &str) -> Result<Arch, ()> {
-        let s: String = s.replace("-", "_").chars().map(|c| c.to_lowercase()).collect();
+        let s = s.replace("-", "_").to_lowercase();
         if s == "x86" || s == "i386" {
             Ok(X86)
         } else if s == "x86_64" || s == "amd64" {
