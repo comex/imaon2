@@ -10,6 +10,8 @@ extern crate macros;
 use exec::SymbolValue;
 use std::fs;
 use std::path::Path;
+use std::io::Write;
+use std::cmp::min;
 mod execall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
@@ -88,7 +90,33 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
             println!("-");
         }
     }
-    // TODO dump
+    if let Some(dump_spec) = m.opt_str("dump") {
+        let z;
+        let is_addr_end: bool;
+        if let Some(z_) = dump_spec.find('+') {
+            z = z_; is_addr_end = false;
+        } else if let Some(z_) = dump_spec.find('-') {
+            z = z_; is_addr_end = true;
+        } else {
+            panic!();
+        }
+        let addr: u64 = util::stoi(&dump_spec[..z]).unwrap();
+        let mut size: u64 = util::stoi(&dump_spec[z+1..]).unwrap();
+        if is_addr_end { size -= addr; }
+
+        let (mut addr, mut size) = (exec::VMA(addr), size);
+        let buf = eb.buf.get();
+        while size != 0 {
+            if let Some((off, mut osize)) = exec::addr_to_off_range(&eb.segments, addr) {
+                osize = min(osize, size);
+                std::io::stdout().write(&buf[off as usize..(off+osize) as usize]).unwrap();
+                addr = addr + osize;
+                size -= osize;
+            } else {
+                panic!("unmapped: {}", addr);
+            }
+        }
+    }
 }
 
 fn main() {
