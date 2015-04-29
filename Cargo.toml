@@ -11,4 +11,6 @@ regex = "0.1.9"
 regex_macros = "0.1.4"
 #[dependencies.rust-bindgen]
 #git = "https://github.com/crabtw/rust-bindgen.git"
+[dependencies.autollvm]
+path = "../autollvm"
 

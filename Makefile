@@ -5,7 +5,6 @@ $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
 RUSTC := rustc --out-dir $(OUT) -Ltarget/debug/deps --extern regex=`echo target/debug/deps/libregex*.rlib` -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
-ANOTHER_LLVM := /usr/local/opt/llvm/
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
@@ -102,6 +101,7 @@ $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
+$(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,util,)
 
 $(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 
