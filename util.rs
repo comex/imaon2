@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
+use std::num::ParseIntError;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -47,22 +48,38 @@ pub trait Swap {
     }
 }
 
-macro_rules! impl_swap {
-    ($ty:ty) => (
-        impl Swap for $ty {
-            fn bswap(&mut self) {
-                *self = self.swap_bytes();
-            }
+macro_rules! impl_swap {($ty:ident) => {
+    impl Swap for $ty {
+        fn bswap(&mut self) {
+            *self = self.swap_bytes();
         }
-    )
-}
+    }
+    impl IntStuff for $ty {
+        fn from_str_radix(src: &str, radix: u32) -> Result<$ty, ParseIntError> {
+            $ty::from_str_radix(src, radix)
+        }
+    }
+}}
 
-impl_swap!(u64);
-impl_swap!(i64);
-impl_swap!(u32);
-impl_swap!(i32);
-impl_swap!(u16);
-impl_swap!(i16);
+macro_rules! impl_signed {($ty:ident) => {
+    impl_swap!($ty);
+    impl IntStuffSU for $ty {
+        fn neg_if_possible(self) -> Option<Self> { Some(-self) }
+    }
+}}
+macro_rules! impl_unsigned {($ty:ident) => {
+    impl_swap!($ty);
+    impl IntStuffSU for $ty {
+        fn neg_if_possible(self) -> Option<Self> { None }
+    }
+}}
+
+impl_unsigned!(u64);
+impl_signed!(i64);
+impl_unsigned!(u32);
+impl_signed!(i32);
+impl_unsigned!(u16);
+impl_signed!(i16);
 
 impl Swap for u8 {
     fn bswap(&mut self) {}
@@ -275,6 +292,39 @@ pub trait VecStrExt {
 }
 impl<T: std::string::ToString> VecStrExt for Vec<T> {
     fn strings(&self) -> Vec<String> { self.iter().map(|x| x.to_string()).collect() }
+}
+
+pub trait IntStuffSU {
+    fn neg_if_possible(self) -> Option<Self>;
+}
+
+pub trait IntStuff : IntStuffSU {
+    fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError>;
+}
+
+
+pub fn stoi<T: IntStuff>(mut s: &str) -> Option<T> {
+    if s == "" { return None; }
+    let neg = &s[..1] == "-";
+    if neg { s = &s[1..]; }
+    let mut base = 10;
+    if s.len() > 2 && &s[2..3] != "-" {
+        let prefix = &s[..2];
+        if prefix == "0x" {
+            base = 16;
+            s = &s[2..];
+        } else if prefix == "0b" {
+            base = 2;
+            s = &s[2..];
+        } else if prefix == "0o" {
+            base = 8;
+            s = &s[2..];
+        }
+    }
+    let result = IntStuff::from_str_radix(s, base);
+    let mut result = result.ok();
+    if neg { result = result.and_then(|x: T| x.neg_if_possible()); }
+    result
 }
 
 #[test]

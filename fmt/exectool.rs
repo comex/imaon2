@@ -72,6 +72,23 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     if m.opt_present("macho-filedata-info") {
         macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
     }
+    if let Some(off_str) = m.opt_str("o2a") {
+        let off: u64 = util::stoi(&off_str).unwrap();
+        if let Some(exec::VMA(vma)) = exec::off_to_addr(&eb.segments, off, 0) {
+            println!("0x{:x}", vma);
+        } else {
+            println!("-");
+        }
+    }
+    if let Some(addr_str) = m.opt_str("a2o") {
+        let addr: u64 = util::stoi(&addr_str).unwrap();
+        if let Some(off) = exec::addr_to_off(&eb.segments, exec::VMA(addr), 0) {
+            println!("0x{:x}", off);
+        } else {
+            println!("-");
+        }
+    }
+    // TODO dump
 }
 
 fn main() {
@@ -82,6 +99,9 @@ fn main() {
         getopts::optflag("",  "segs",  "List segments"),
         getopts::optflag("",  "sects", "List sections"),
         getopts::optflag("",  "syms",  "List symbols"),
+        getopts::optopt( "",  "o2a",   "Offset to address", "off"),
+        getopts::optopt( "",  "a2o",   "Address to offset", "addr"),
+        getopts::optopt( "",  "dump",  "Dump address range", "addr+len"),
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
     );
