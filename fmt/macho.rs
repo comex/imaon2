@@ -19,6 +19,7 @@ use std::borrow::IntoCow;
 use util::{ToUi, VecStrExt, MCRef, Swap};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
+use std::{u64, u32};
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
@@ -189,6 +190,27 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
     })
 }
 
+fn fixup_segment_overflow(seg: &mut exec::Segment, sixtyfour: bool) {
+    if sixtyfour {
+        if seg.vmsize > exec::VMA(u64::MAX) - seg.vmaddr {
+            errln!("warning: vmaddr+vmsize overflow: {}+0x{:x}; truncating", seg.vmaddr, seg.vmsize);
+            seg.vmsize = exec::VMA(u64::MAX) - seg.vmaddr;
+        }
+        if seg.filesize > u64::MAX - seg.fileoff {
+            errln!("warning: fileoff+filesize overflow: 0x{:x}+0x{:x}; truncating", seg.fileoff, seg.filesize);
+            seg.filesize = u64::MAX - seg.fileoff;
+        }
+    } else {
+        if seg.vmsize > exec::VMA(u32::MAX as u64) - seg.vmaddr {
+            errln!("warning: vmaddr+vmsize 32-bit overflow: {}+0x{:x}; we're ok though", seg.vmaddr, seg.vmsize);
+        }
+        if seg.filesize > u32::MAX as u64 - seg.fileoff {
+            errln!("warning: fileoff+filesize 32-bit overflow: 0x{:x}+0x{:x}; we're ok though", seg.fileoff, seg.filesize);
+        }
+
+    }
+}
+
 impl MachO {
     pub fn new(mc: MCRef, do_lcs: bool, hdr_offset: usize) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
@@ -278,7 +300,7 @@ impl MachO {
                     let mut off = size_of::<segment_command_x>();
                     let sc: segment_command_x = util::copy_from_slice(&lc_buf[..off], end);
                     let segprot = u32_to_prot(sc.initprot as u32);
-                    segs.push(exec::Segment {
+                    let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
                         fileoff: sc.fileoff as u64,
@@ -286,10 +308,12 @@ impl MachO {
                         name: Some(util::from_cstr(&sc.segname)),
                         prot: segprot,
                         private: this_lc_off,
-                    });
+                    };
+                    fixup_segment_overflow(&mut seg, is64);
+                    segs.push(seg);
                     for _ in 0..sc.nsects {
                         let s: section_x = util::copy_from_slice(&lc_buf[off..off + size_of::<section_x>()], end);
-                        sects.push(exec::Segment {
+                        let mut seg = exec::Segment {
                             vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
@@ -297,7 +321,9 @@ impl MachO {
                             name: Some(util::from_cstr(&s.sectname)),
                             prot: segprot,
                             private: this_lc_off + off,
-                        });
+                        };
+                        fixup_segment_overflow(&mut seg, is64);
+                        sects.push(seg);
                         off += size_of::<section_x>();
                     }
                 });

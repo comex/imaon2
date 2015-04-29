@@ -39,6 +39,7 @@ macro_rules! deriving_swap {
     )
 }
 
+// TODO bug report?
 #[macro_export]
 macro_rules! branch {
     (if $cond:expr { $($a:stmt)* } else { $($b:stmt)* } then $c:expr) => (
@@ -57,6 +58,12 @@ macro_rules! delegate_arith{($stru:ident, $traitname:ident, $methname:ident, $ot
         fn $methname(self, rhs: $oty) -> $stru {
             let $stru(a) = self;
             $stru(a.$methname(rhs))
+        }
+    }
+    impl std::ops::$traitname<$stru> for $oty {
+        type Output = $stru;
+        fn $methname(self, $stru(rhs): $stru) -> $stru {
+            $stru(self.$methname(rhs))
         }
     }
 )}

@@ -47,7 +47,15 @@ delegate_arith!(VMA, Sub, sub, u64);
 delegate_arith!(VMA, Add, add, u64);
 delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
-delegate_arith!(VMA, BitXor, bitxor, u64);
+
+// TODO - should this be signed or something?
+impl std::ops::Sub<VMA> for VMA {
+    type Output = u64;
+    fn sub(self, VMA(rhs): VMA) -> u64 {
+        let lhs = self.0;
+        lhs - rhs
+    }
+}
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Prot {
@@ -113,17 +121,6 @@ pub enum SymbolSource {
     All,
     Imported,
     Exported,
-}
-
-pub fn addr_to_off(segs: &Vec<Segment>, VMA(goal): VMA, size: u64) -> Option<u64> {
-    for seg in segs.iter() {
-        let vma = seg.vmaddr.0;
-        let seg_off = goal.wrapping_sub(vma);
-        if vma <= goal && seg_off <= seg.vmsize && seg.vmsize - seg_off >= size {
-            return Some(seg.fileoff + seg_off);
-        }
-    }
-    None
 }
 
 pub trait Exec : 'static {
@@ -200,4 +197,22 @@ fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) ->
     }
     panic!("create_auto: no formats, not even raw_binary??");
 
+}
+
+pub fn addr_to_off(segs: &[Segment], addr: VMA, len: u64) -> Option<u64> {
+    for seg in segs {
+        if addr >= seg.vmaddr && addr - seg.vmaddr < seg.vmsize && seg.vmsize - (addr - seg.vmaddr) >= len {
+            return Some(seg.fileoff + (addr - seg.vmaddr));
+        }
+    }
+    None
+}
+
+pub fn off_to_addr(segs: &[Segment], off: u64, len: u64) -> Option<VMA> {
+    for seg in segs {
+        if off >= seg.fileoff && off - seg.fileoff < seg.filesize && seg.filesize - (off - seg.fileoff) >= len {
+            return Some(seg.vmaddr + (off - seg.fileoff));
+        }
+    }
+    None
 }
