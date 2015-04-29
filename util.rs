@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, core, collections)]
+#![feature(libc, collections)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -13,7 +13,6 @@ extern crate collections;
 use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy, null_mut};
 use std::sync::Arc;
-use std::intrinsics;
 use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
@@ -29,19 +28,6 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
         t.bswap_from(end);
         t
     }
-}
-
-#[inline]
-pub fn bswap64(x: u64) -> u64 {
-    unsafe { intrinsics::bswap64(x) }
-}
-#[inline]
-pub fn bswap32(x: u32) -> u32 {
-    unsafe { intrinsics::bswap32(x) }
-}
-#[inline]
-pub fn bswap16(x: u16) -> u16 {
-    unsafe { intrinsics::bswap16(x) }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -62,21 +48,21 @@ pub trait Swap {
 }
 
 macro_rules! impl_swap {
-    ($ty:ty, $bsty:ty, $bsfun:ident) => (
+    ($ty:ty) => (
         impl Swap for $ty {
             fn bswap(&mut self) {
-                *self = $bsfun(*self as $bsty) as $ty;
+                *self = self.swap_bytes();
             }
         }
     )
 }
 
-impl_swap!(u64, u64, bswap64);
-impl_swap!(i64, u64, bswap64);
-impl_swap!(u32, u32, bswap32);
-impl_swap!(i32, u32, bswap32);
-impl_swap!(u16, u16, bswap16);
-impl_swap!(i16, u16, bswap16);
+impl_swap!(u64);
+impl_swap!(i64);
+impl_swap!(u32);
+impl_swap!(i32);
+impl_swap!(u16);
+impl_swap!(i16);
 
 impl Swap for u8 {
     fn bswap(&mut self) {}
