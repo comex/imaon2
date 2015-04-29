@@ -72,34 +72,36 @@ impl DyldCache {
         };
         let min_low_offset = min(min(hdr.mappingOffset, hdr.imagesOffset) as u64, hdr.slideInfoOffset) as usize;
         let cs_blob = if min_low_offset >= offset_of!(dyld_cache_header, codeSignatureSize) {
-            Some(mc.slice(hdr.codeSignatureOffset as usize, (hdr.codeSignatureOffset+hdr.codeSignatureSize) as usize))
+            Some(::file_array_64(&mc, "code signature", hdr.codeSignatureOffset, hdr.codeSignatureSize, 1))
         } else { None };
         let slide_info = if min_low_offset >= offset_of!(dyld_cache_header, slideInfoSize) {
-            Some(mc.slice(hdr.slideInfoOffset as usize, (hdr.slideInfoOffset+hdr.slideInfoSize) as usize))
+            Some(::file_array_64(&mc, "slide info", hdr.slideInfoOffset, hdr.slideInfoSize, 1))
         } else { None };
         // TODO these checks should become bypassable
         let local_symbols = if min_low_offset >= offset_of!(dyld_cache_header, localSymbolsSize) {
-            let ls_mc = try!(::file_array_64(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1));
+            let ls_mc = ::file_array_64(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1);
             let so = size_of::<dyld_cache_local_symbols_info>() as u64;
             if hdr.localSymbolsSize < so {
-                return exec::err(BadData, "local symbols blob too small for header");
-            }
-            let ls_hdr: dyld_cache_local_symbols_info = util::copy_from_slice(&ls_mc.get()[..so as usize], end);
-            let nlist_size = if is64 {
-                size_of::<macho_bind::nlist_64>()
+                errln!("local symbols blob too small for header");
+                None
             } else {
-                size_of::<macho_bind::nlist>()
-            } as usize;
-            let symtab = try!(::file_array(&ls_mc, "dyld cache local symbols - nlist", ls_hdr.nlistOffset, ls_hdr.nlistCount, nlist_size));
-            let strtab = try!(::file_array(&ls_mc, "dyld cache local symbols - strtab", ls_hdr.stringsOffset, ls_hdr.stringsSize, 1));
-            let entry_size = size_of::<dyld_cache_local_symbols_entry>();
-            let entries = try!(::file_array(&ls_mc, "dyld cache local symbols - entries", ls_hdr.entriesOffset, ls_hdr.entriesCount, entry_size));
-            Some(LocalSymbols {
-                entries: entries,
-                symtab: symtab,
-                strtab: strtab,
-                nlist_count: ls_hdr.nlistCount,
-            })
+                let ls_hdr: dyld_cache_local_symbols_info = util::copy_from_slice(&ls_mc.get()[..so as usize], end);
+                let nlist_size = if is64 {
+                    size_of::<macho_bind::nlist_64>()
+                } else {
+                    size_of::<macho_bind::nlist>()
+                } as usize;
+                let symtab = ::file_array(&ls_mc, "dyld cache local symbols - nlist", ls_hdr.nlistOffset, ls_hdr.nlistCount, nlist_size);
+                let strtab = ::file_array(&ls_mc, "dyld cache local symbols - strtab", ls_hdr.stringsOffset, ls_hdr.stringsSize, 1);
+                let entry_size = size_of::<dyld_cache_local_symbols_entry>();
+                let entries = ::file_array(&ls_mc, "dyld cache local symbols - entries", ls_hdr.entriesOffset, ls_hdr.entriesCount, entry_size);
+                Some(LocalSymbols {
+                    entries: entries,
+                    symtab: symtab,
+                    strtab: strtab,
+                    nlist_count: ls_hdr.nlistCount,
+                })
+            }
         } else { None };
         let uuid = if min_low_offset >= size_of::<dyld_cache_header>() {
             Some(hdr.uuid)
@@ -107,7 +109,7 @@ impl DyldCache {
 
         let image_info = {
             let so = size_of::<dyld_cache_image_info>();
-            let hdrmc = try!(::file_array(&mc, "images info", hdr.imagesOffset, hdr.imagesCount, so));
+            let hdrmc = ::file_array(&mc, "images info", hdr.imagesOffset, hdr.imagesCount, so);
             let hdrbuf = hdrmc.get();
             let buf = mc.get();
             hdrbuf.chunks(so).map(|ii_buf| {
@@ -120,17 +122,22 @@ impl DyldCache {
                 }
             }).collect()
         };
-        let segments = {
+        let segments: Vec<_> = {
             let so = size_of::<dyld_cache_mapping_info>();
-            let mapping_mc = try!(::file_array(&mc, "mapping info", hdr.mappingOffset, hdr.mappingCount, so));
+            let mapping_mc = ::file_array(&mc, "mapping info", hdr.mappingOffset, hdr.mappingCount, so);
             let len = mc.len() as u64;
-            let r: Result<Vec<_>, _> = mapping_mc.get().chunks(so).enumerate().map(|(i, mi_buf)| {
-                let mi: dyld_cache_mapping_info = util::copy_from_slice(mi_buf, end);
-                if mi.fileOffset >= len || mi.size > len - mi.fileOffset {
-                    return exec::err(BadData, "dyld cache too big (maybe improve this?)");
+            mapping_mc.get().chunks(so).enumerate().map(|(i, mi_buf)| {
+                let mut mi: dyld_cache_mapping_info = util::copy_from_slice(mi_buf, end);
+                if mi.fileOffset >= len {
+                    errln!("warning: mapping_info {} in shared cache offset ({}) past end of file ({})", i, mi.fileOffset, len);
+                    mi.size = 0;
+                    mi.fileOffset = 0;
+                } else if mi.size > len - mi.fileOffset {
+                    errln!("warning: mapping_info {} in shared cache bounds ({}+{}) extend past end of file ({}); truncating", i, mi.fileOffset, mi.size, len);
+                    mi.size = len - mi.fileOffset;
                 }
 
-                Ok(exec::Segment {
+                exec::Segment {
                     vmaddr: exec::VMA(mi.address),
                     vmsize: mi.size,
                     fileoff: mi.fileOffset,
@@ -138,9 +145,8 @@ impl DyldCache {
                     name: None,
                     prot: ::u32_to_prot(mi.initProt),
                     private: hdr.mappingOffset as usize + i * so,
-                })
-            }).collect();
-            try!(r)
+                }
+            }).collect()
         };
 
         Ok(DyldCache {
@@ -166,7 +172,7 @@ impl DyldCache {
                 let entry: dyld_cache_local_symbols_entry = util::copy_from_slice(entry_slice, self.eb.endian);
                 if entry.dylibOffset as u64 == off {
                     if entry.nlistStartIndex > ls.nlist_count || entry.nlistCount > ls.nlist_count - entry.nlistStartIndex {
-                        util::errlnb("shared cache local symbols entry out of range");
+                        errln!("warning: shared cache local symbols entry out of range");
                         return None;
                     } else {
                         return Some(::DscTabs { symtab: ls.symtab.clone(), strtab: ls.strtab.clone(), start: entry.nlistStartIndex, count: entry.nlistCount });
@@ -187,7 +193,7 @@ impl exec::Exec for DyldCache {
 }
 
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct DyldWholeProber;
 impl exec::ExecProber for DyldWholeProber {
     fn name(&self) -> &str {
@@ -216,7 +222,7 @@ fn get_basename(ii: &ImageInfo) -> &str {
     if let Some(pos) = ii.path.rfind('/') { &ii.path[pos+1..] } else { &ii.path[..] }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct DyldSingleProber;
 impl exec::ExecProber for DyldSingleProber {
     fn name(&self) -> &str {

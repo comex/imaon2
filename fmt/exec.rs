@@ -1,13 +1,13 @@
 #![feature(unboxed_closures)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(collections, unicode, core)]
+#![feature(collections, into_cow)]
 
 #[macro_use]
 extern crate macros;
 extern crate util;
 extern crate collections;
-extern crate "bsdlike_getopts" as getopts;
+extern crate bsdlike_getopts as getopts;
 use arch::Arch;
 //use collections::hashmap::HashMap;
 use std::vec::Vec;
@@ -17,7 +17,7 @@ use std::str::FromStr;
 
 pub mod arch;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Copy, Debug, Clone)]
 pub enum ErrorKind {
     BadData,
     Other
@@ -108,7 +108,7 @@ pub struct Symbol<'a> {
     pub private: usize,
 }
 
-#[derive(Debug, PartialEq, Eq, Copy)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum SymbolSource {
     All,
     Imported,

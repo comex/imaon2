@@ -7,8 +7,6 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//
-// ignore-lexer-test FIXME #15677
 
 // XXX Note: This is a simple modification to libgetopts that ignores all
 // options after a free argument.  Although this could potentially allow for a
@@ -53,7 +51,7 @@
 //!
 //! fn print_usage(program: &str, opts: &[OptGroup]) {
 //!     let brief = format!("Usage: {} [options]", program);
-//!     print!("{}", usage(brief.as_slice(), opts));
+//!     print!("{}", usage(brief, opts));
 //! }
 //!
 //! fn main() {
@@ -70,20 +68,23 @@
 //!         Err(f) => { panic!(f.to_string()) }
 //!     };
 //!     if matches.opt_present("h") {
-//!         print_usage(program.as_slice(), opts);
+//!         print_usage(program, opts);
 //!         return;
 //!     }
 //!     let output = matches.opt_str("o");
 //!     let input = if !matches.free.is_empty() {
 //!         matches.free[0].clone()
 //!     } else {
-//!         print_usage(program.as_slice(), opts);
+//!         print_usage(program, opts);
 //!         return;
 //!     };
-//!     do_work(input.as_slice(), output);
+//!     do_work(input, output);
 //! }
 //! ```
 
+
+// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
+#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "bsdlike_getopts"]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
@@ -93,11 +94,8 @@
        html_playground_url = "http://play.rust-lang.org/")]
 
 #![deny(missing_docs)]
-#![feature(core)]
-#![feature(collections)]
-#![feature(int_uint)]
 #![feature(staged_api)]
-#![feature(str_words)]
+#![feature(str_char)]
 #![cfg_attr(test, feature(rustc_private))]
 
 #[cfg(test)] #[macro_use] extern crate log;
@@ -216,7 +214,7 @@ pub enum Fail {
 }
 
 /// The type of failure that occurred.
-#[derive(Copy, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[allow(missing_docs)]
 pub enum FailType {
     ArgumentMissing_,
@@ -313,7 +311,7 @@ impl Matches {
     }
 
     /// Returns the number of times an option was matched.
-    pub fn opt_count(&self, nm: &str) -> uint {
+    pub fn opt_count(&self, nm: &str) -> usize {
         self.opt_vals(nm).len()
     }
 
@@ -391,7 +389,7 @@ fn is_arg(arg: &str) -> bool {
     arg.len() > 1 && arg.as_bytes()[0] == b'-'
 }
 
-fn find_opt(opts: &[Opt], nm: Name) -> Option<uint> {
+fn find_opt(opts: &[Opt], nm: Name) -> Option<usize> {
     // Search main options.
     let pos = opts.iter().position(|opt| opt.name == nm);
     if pos.is_some() {
@@ -545,16 +543,6 @@ pub fn opt(short_name: &str,
     }
 }
 
-impl Fail {
-    /// Convert a `Fail` enum into an error string.
-    #[unstable(feature = "rustc_private")]
-    #[deprecated(since = "1.0.0",
-                 reason = "use `fmt::Display` (`{}` format specifier)")]
-    pub fn to_err_msg(self) -> String {
-        self.to_string()
-    }
-}
-
 impl fmt::Display for Fail {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -589,7 +577,7 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
     let opts: Vec<Opt> = optgrps.iter().map(|x| x.long_to_short()).collect();
     let n_opts = opts.len();
 
-    fn f(_x: uint) -> Vec<Optval> { return Vec::new(); }
+    fn f(_x: usize) -> Vec<Optval> { return Vec::new(); }
 
     let mut vals: Vec<_> = (0..n_opts).map(f).collect();
     let mut free: Vec<String> = Vec::new();
@@ -624,8 +612,8 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
                 let mut j = 1;
                 names = Vec::new();
                 while j < curlen {
-                    let range = cur.char_range_at(j);
-                    let opt = Short(range.ch);
+                    let ch = cur.char_at(j);
+                    let opt = Short(ch);
 
                     /* In a series of potential options (eg. -aheJ), if we
                        see one which takes an argument, we assume all
@@ -646,12 +634,13 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
                         No => false
                     };
 
-                    if arg_follows && range.next < curlen {
-                        i_arg = Some((&cur[range.next..curlen]).to_string());
+                    let next = j + ch.len_utf8();
+                    if arg_follows && next < curlen {
+                        i_arg = Some((&cur[next..curlen]).to_string());
                         break;
                     }
 
-                    j = range.next;
+                    j = next;
                 }
             }
             let mut name_pos = 0;
@@ -778,10 +767,13 @@ pub fn usage(brief: &str, opts: &[OptGroup]) -> String {
 
         // Normalize desc to contain words separated by one space character
         let mut desc_normalized_whitespace = String::new();
-        for word in desc.words() {
+        /*
+        XXX put back when I'm off the plane!
+        for word in desc.split_whitespace() {
             desc_normalized_whitespace.push_str(word);
             desc_normalized_whitespace.push(' ');
         }
+        */
 
         // FIXME: #5516 should be graphemes not codepoints
         let mut desc_rows = Vec::new();
@@ -809,7 +801,7 @@ fn format_option(opt: &OptGroup) -> String {
     }
 
     // Use short_name is possible, but fallback to long_name.
-    if opt.short_name.len() > 0 {
+    if !opt.short_name.is_empty() {
         line.push('-');
         line.push_str(&opt.short_name[..]);
     } else {
@@ -848,18 +840,18 @@ pub fn short_usage(program_name: &str, opts: &[OptGroup]) -> String {
     line
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum SplitWithinState {
     A,  // leading whitespace, initial state
     B,  // words
     C,  // internal and trailing whitespace
 }
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum Whitespace {
     Ws, // current char is whitespace
     Cr  // current char is not whitespace
 }
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 enum LengthLimit {
     UnderLim, // current char makes current substring still fit in limit
     OverLim   // current char makes current substring no longer fit in limit
@@ -877,7 +869,7 @@ enum LengthLimit {
 ///
 /// Panics during iteration if the string contains a non-whitespace
 /// sequence longer than the limit.
-fn each_split_within<F>(ss: &str, lim: uint, mut it: F) -> bool where
+fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool where
     F: FnMut(&str) -> bool
 {
     // Just for fun, let's write this as a state machine:
@@ -896,7 +888,7 @@ fn each_split_within<F>(ss: &str, lim: uint, mut it: F) -> bool where
         lim = fake_i;
     }
 
-    let mut machine = |cont: &mut bool, (i, c): (uint, char)| -> bool {
+    let mut machine = |cont: &mut bool, (i, c): (usize, char)| -> bool {
         let whitespace = if c.is_whitespace() { Ws }       else { Cr };
         let limit      = if (i - slice_start + 1) <= lim  { UnderLim } else { OverLim };
 
@@ -958,7 +950,7 @@ fn each_split_within<F>(ss: &str, lim: uint, mut it: F) -> bool where
 
 #[test]
 fn test_split_within() {
-    fn t(s: &str, i: uint, u: &[String]) {
+    fn t(s: &str, i: usize, u: &[String]) {
         let mut v = Vec::new();
         each_split_within(s, i, |s| { v.push(s.to_string()); true });
         assert!(v.iter().zip(u.iter()).all(|(a,b)| a == b));
@@ -971,7 +963,7 @@ fn test_split_within() {
         "little lamb".to_string(),
         "Little lamb".to_string()
     ]);
-    t("\nMary had a little lamb\nLittle lamb\n", ::std::uint::MAX,
+    t("\nMary had a little lamb\nLittle lamb\n", ::std::usize::MAX,
         &["Mary had a little lamb\nLittle lamb".to_string()]);
 }
 

@@ -1,6 +1,7 @@
 // The usage could be prettier as an attribute / syntax extension, but this is drastically less ugly.
 // TODO: Servo has similar ugliness with GC visits.  Use their solution.
 #[macro_export]
+
 macro_rules! deriving_swap {
     (
         $(twin $twin:ident)*
@@ -15,7 +16,7 @@ macro_rules! deriving_swap {
         $($etc:item)*
     ) => (
         #[repr(C)]
-        #[derive(Copy)]
+        #[derive(Copy, Clone)]
         pub struct $name {
             $(
                 pub $field: $typ
@@ -74,3 +75,9 @@ macro_rules! display_as_debug{($ty:ty) => (
 macro_rules! offset_of{($ty:ty, $field:ident) => (
     unsafe { (&(*(0 as *const $ty)).$field) as *const _ as usize }
 )}
+
+#[macro_export]
+macro_rules! errln {($($a:tt)*) => {{
+    use ::std::io::Write;
+    writeln!(::std::io::stderr(), $($a)*).unwrap();
+}}}

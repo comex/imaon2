@@ -1,9 +1,9 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, core, os, io, std_misc, old_io, collections)]
+#![feature(libc, core, collections)]
 
 extern crate libc;
-extern crate "bsdlike_getopts" as getopts;
+extern crate bsdlike_getopts as getopts;
 
 extern crate regex;
 #[macro_use]
@@ -11,13 +11,12 @@ extern crate macros;
 extern crate collections;
 
 use std::mem::{size_of, uninitialized, transmute};
-use std::ptr::copy;
+use std::ptr::{copy, null_mut};
 use std::sync::Arc;
 use std::intrinsics;
 use std::default::Default;
-use std::os::MemoryMap;
 use std::io::{SeekFrom, Seek};
-use std::os::unix::AsRawFd;
+use std::os::unix::prelude::AsRawFd;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -26,7 +25,7 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninitialized();
-        copy(&mut t, transmute(slice.as_ptr()), 1);
+        copy(transmute(slice.as_ptr()), &mut t, 1);
         t.bswap_from(end);
         t
     }
@@ -45,7 +44,7 @@ pub fn bswap16(x: u16) -> u16 {
     unsafe { intrinsics::bswap16(x) }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Endian {
     BigEndian,
     LittleEndian,
@@ -111,7 +110,7 @@ impl ToUi for u16 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for i8 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for u8 { fn to_ui(&self) -> usize { *self as usize } }
 
-pub trait X8 : std::marker::MarkerTrait {}
+pub trait X8 {} //: std::marker::MarkerTrait {}
 impl X8 for u8 {}
 impl X8 for i8 {}
 
@@ -134,6 +133,34 @@ pub struct MCRef {
     off: usize,
     len: usize
 }
+
+// XXX using my own MemoryMap for now
+struct MemoryMap {
+    ptr: *mut u8,
+    size: usize
+}
+
+impl MemoryMap {
+    fn new(fd: libc::c_int, size: usize) -> MemoryMap {
+        unsafe {
+            let ptr = libc::mmap(0 as *mut libc::c_void, size as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE, fd, 0);
+            if ptr == null_mut() {
+                panic!("mmap failed");
+            }
+            MemoryMap { ptr: transmute(ptr), size: size }
+        }
+    }
+    fn data(&self) -> *mut u8 { self.ptr }
+    fn len(&self) -> usize { self.size }
+}
+impl Drop for MemoryMap {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr as *mut libc::c_void, self.size as libc::size_t);
+        }
+    }
+}
+
 
 unsafe impl Send for MCRef {}
 
@@ -177,18 +204,22 @@ pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
         panic!("safe_mmap: file too big");
     }
     let fd = fil.as_raw_fd();
+    /*
+    XXX put back when MemoryMap is back
     let mm = MemoryMap::new(rsize, &[
         std::os::MapOption::MapReadable,
         std::os::MapOption::MapWritable,
         std::os::MapOption::MapFd(fd),
     ]).unwrap();
+    */
+    let mm = MemoryMap::new(fd, rsize);
     assert!(mm.len() >= size as usize);
     MCRef { mm: Some(Arc::new(mm)), off: 0, len: size as usize }
 }
 
 
 pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
-    if let Ok(m) = getopts::getopts(args, optgrps.as_slice()) {
+    if let Ok(m) = getopts::getopts(args, &optgrps) {
         if m.free.len() >= min_expected_free &&
             m.free.len() <= max_expected_free {
             return Some(m);
@@ -203,20 +234,11 @@ pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: usize,
 
 pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) {
     optgrps.push(getopts::optflag("h", "help", "This help"));
-    println!("{}", getopts::usage(top, optgrps.as_slice()));
+    println!("{}", getopts::usage(top, &optgrps));
 }
 
 pub fn exit() -> ! {
     unsafe { libc::exit(1) }
-}
-
-pub fn errlnb(s: &str) {
-    // who needs speed
-    std::old_io::stdio::stderr().write_line(s).unwrap();
-}
-
-pub fn errln(s: String) {
-    errlnb(s.as_slice())
 }
 
 fn isprint(c: char) -> bool {
@@ -227,7 +249,7 @@ fn isprint(c: char) -> bool {
 pub fn shell_quote(args: &[String]) -> String {
     let mut sb = std::string::String::new();
     for arg_ in args.iter() {
-        let arg = arg_.as_slice();
+        let arg = &arg_[..];
         if sb.len() != 0 { sb.push(' ') }
         if regex!(r"^[a-zA-Z0-9_\.@/-]+$").is_match(arg) {
             sb.push_str(arg);
@@ -243,7 +265,7 @@ pub fn shell_quote(args: &[String]) -> String {
                         sb.push(ch);
                     }
                 } else if !isprint(ch) {
-                    sb.push_str(format!("\\\\x{:02x}", *ch_).as_slice());
+                    sb.push_str(&format!("\\\\x{:02x}", *ch_));
                 } else {
                     sb.push(ch);
                 }

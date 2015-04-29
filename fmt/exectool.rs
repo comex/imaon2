@@ -1,10 +1,11 @@
 #![allow(non_camel_case_types)]
-#![feature(path)]
 
 extern crate util;
-extern crate "bsdlike_getopts" as getopts;
+extern crate bsdlike_getopts as getopts;
 extern crate exec;
 extern crate macho;
+#[macro_use]
+extern crate macros;
 
 use exec::SymbolValue;
 use std::fs;
@@ -91,7 +92,7 @@ fn main() {
     }
     let filename = args.remove(0);
     let mut fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
-        util::errln(format!("open {} failed: {}", filename, e));
+        errln!("open {} failed: {}", filename, e);
         util::exit();
     });
     let mm = util::safe_mmap(&mut fp);

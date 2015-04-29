@@ -39,7 +39,7 @@ impl RawBinary {
     }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct RawProber;
 
 impl exec::ExecProber for RawProber {

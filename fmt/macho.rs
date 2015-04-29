@@ -1,12 +1,13 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, core)]
+#![feature(collections, libc, into_cow)]
+#![feature(negate_unsigned)]
 #[macro_use]
 extern crate macros;
 extern crate util;
 extern crate exec;
-extern crate "bsdlike_getopts" as getopts;
+extern crate bsdlike_getopts as getopts;
 extern crate collections;
 extern crate libc;
 use std::default::Default;
@@ -56,23 +57,27 @@ pub fn u32_to_prot(ip: u32) -> exec::Prot {
     }
 }
 
-fn file_array(buf: &MCRef, name: &str, off: u32, count: u32, elm_size: usize) -> exec::ExecResult<MCRef> {
+fn file_array(buf: &MCRef, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
     file_array_64(buf, name, off as u64, count as u64, elm_size)
 }
-fn file_array_64(buf: &MCRef, name: &str, off: u64, count: u64, elm_size: usize) -> exec::ExecResult<MCRef> {
+fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size: usize) -> MCRef {
     let elm_size = elm_size as u64;
     let buf_len = buf.len() as u64;
-    if off >= buf_len || count > (buf_len - off) / elm_size {
-        exec::err(exec::ErrorKind::BadData, format!("{} ({}, {} * {}-sized elements) out of bounds", name, off, count, elm_size))
-    } else {
-        Ok(buf.slice(off as usize, (off + count * elm_size) as usize))
+    if off > buf_len {
+        errln!("warning: {} (offset {}, {} * {}b-sized elements) starts past end of file ({}))", name, off, count, elm_size, buf_len);
+        off = 0;
+        count = 0;
+    } else if count > (buf_len - off) / elm_size {
+        errln!("warning: {} (offset {}, {} * {}b-sized elements) extends past end of file ({})); truncating", name, off, count, elm_size, buf_len);
+        count = (buf_len - off) / elm_size;
     }
+    buf.slice(off as usize, (off + count * elm_size) as usize)
 }
 
 
-#[derive(Default, Debug, Copy)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct SymSubset(usize, usize);
-#[derive(Default, Debug, Copy)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct RelSubset(usize, usize);
 
 pub struct DscTabs {
@@ -340,10 +345,7 @@ impl MachO {
     }
 
     fn file_array(&self, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
-        file_array(&self.eb.buf, name, off, count, elm_size).unwrap_or_else(|err| {
-            util::errlnb(&err.message[..]);
-            Default::default()
-        })
+        file_array(&self.eb.buf, name, off, count, elm_size)
     }
 
 
@@ -394,7 +396,7 @@ impl MachO {
     }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct MachOProber;
 
 impl exec::ExecProber for MachOProber {
@@ -422,7 +424,7 @@ impl exec::ExecProber for MachOProber {
     }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct FatMachOProber;
 
 impl FatMachOProber {
@@ -434,14 +436,14 @@ impl FatMachOProber {
         let nfat = fh.nfat_arch as u64;
         let mut off: usize = 8;
         if (buf.len() as u64) < (off as u64) + (nfat * size_of::<fat_arch>() as u64) {
-            util::errln(format!("fatmacho: no room for {} fat archs", nfat));
-            return false
+            errln!("fatmacho: no room for {} fat archs", nfat);
+            return false;
         }
         for i in 0..nfat {
             let fa: fat_arch = util::copy_from_slice(&buf[off..off + size_of::<fat_arch>()], util::BigEndian);
             if (fa.offset as u64) + (fa.size as u64) > (buf.len() as u64) {
-                util::errln(format!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
-                              fa.cputype, fa.cpusubtype, fa.offset, fa.size));
+                errln!("fatmacho: bad arch cputype={},{} offset={} size={} (truncated?)",
+                       fa.cputype, fa.cpusubtype, fa.offset, fa.size);
             } else {
                 cb(i, fa);
             }
