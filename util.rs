@@ -31,6 +31,34 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     }
 }
 
+pub fn copy_to_slice<T: Copy + Swap>(slice: &mut [u8], t: &T, end: Endian) {
+    assert_eq!(slice.len(), size_of::<T>());
+    unsafe {
+        let stp: *mut T = transmute(slice.as_ptr());
+        copy(t, stp, 1);
+        (*stp).bswap_from(end);
+    }
+}
+
+pub fn copy_to_vec<T: Copy + Swap>(vec: &mut Vec<u8>, t: &T, end: Endian) {
+    let size = size_of::<T>();
+    let off = vec.len();
+    assert_eq!(slice.len(), size);
+    assert!(off <= usize::MAX - size);
+    unsafe {
+        vec.set_len(off + size);
+        let stp: *mut T = transmute(vec.as_mut_ptr().advance(off));
+        copy(t, stp, 1);
+        (*stp).bswap_from(end);
+    }
+}
+
+pub fn copy_to_new_vec<T: Copy + Swap>(t: &T, end: Endian) -> Vec<u8> {
+    let mut res: Vec<u8> = Vec::new();
+    copy_to_vec(&mut res, t, end);
+    res
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Endian {
     BigEndian,

@@ -87,6 +87,7 @@ pub struct Segment {
     pub filesize: u64,
     pub name: Option<String>,
     pub prot: Prot,
+    pub seg_idx: Option<usize>, // for sections
     pub private: usize,
 }
 

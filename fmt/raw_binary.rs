@@ -25,6 +25,7 @@ impl RawBinary {
             filesize: len as u64,
             name: None,
             prot: exec::prot_all,
+            seg_idx: None,
             private: 0,
         };
         RawBinary {
