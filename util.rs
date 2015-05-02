@@ -43,20 +43,22 @@ pub fn copy_to_slice<T: Copy + Swap>(slice: &mut [u8], t: &T, end: Endian) {
 pub fn copy_to_vec<T: Copy + Swap>(vec: &mut Vec<u8>, t: &T, end: Endian) {
     let size = size_of::<T>();
     let off = vec.len();
-    assert_eq!(slice.len(), size);
-    assert!(off <= usize::MAX - size);
+    assert!(off <= !0usize - size);
     unsafe {
         vec.set_len(off + size);
-        let stp: *mut T = transmute(vec.as_mut_ptr().advance(off));
+        let stp: *mut T = transmute(vec.as_mut_ptr().offset(off as isize));
         copy(t, stp, 1);
         (*stp).bswap_from(end);
     }
 }
 
 pub fn copy_to_new_vec<T: Copy + Swap>(t: &T, end: Endian) -> Vec<u8> {
-    let mut res: Vec<u8> = Vec::new();
-    copy_to_vec(&mut res, t, end);
-    res
+    unsafe {
+        let mut res: Vec<u8> = Vec::from_raw_buf(transmute(t), size_of::<T>());
+        let newt: *mut T = transmute(res.as_mut_ptr());
+        (*newt).bswap_from(end);
+        res
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]

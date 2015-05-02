@@ -144,6 +144,7 @@ impl DyldCache {
                     filesize: mi.size,
                     name: None,
                     prot: ::u32_to_prot(mi.initProt),
+                    seg_idx: None,
                     private: hdr.mappingOffset as usize + i * so,
                 }
             }).collect()

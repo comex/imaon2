@@ -767,13 +767,10 @@ pub fn usage(brief: &str, opts: &[OptGroup]) -> String {
 
         // Normalize desc to contain words separated by one space character
         let mut desc_normalized_whitespace = String::new();
-        /*
-        XXX put back when I'm off the plane!
         for word in desc.split_whitespace() {
             desc_normalized_whitespace.push_str(word);
             desc_normalized_whitespace.push(' ');
         }
-        */
 
         // FIXME: #5516 should be graphemes not codepoints
         let mut desc_rows = Vec::new();
