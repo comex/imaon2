@@ -59,7 +59,9 @@ impl DyldCache {
             } else if padded_arch == b"  x86_64\0" {
                 (arch::X86_64, true)
             } else if padded_arch == b"   armv7\0" ||
-                      padded_arch == b"   armv6\0" {
+                      padded_arch == b"   armv6\0" ||
+                      padded_arch == b"  armv7s\0" ||
+                      padded_arch == b"  armv7k\0" {
                 (arch::ARM, false)
             } else if padded_arch == b"   arm64\0" {
                 (arch::AArch64, true)
