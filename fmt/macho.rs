@@ -169,7 +169,7 @@ impl exec::Exec for MachO {
             let mut out = Vec::new();
             let mut skip_redacted = false;
             if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
-                self.push_nlist_symbols(symtab.get(), strtab.get(), start as usize, count as usize, skip_redacted, &mut out);
+                self.push_nlist_symbols(symtab.get(), strtab.get(), start as usize, count as usize, false, &mut out);
                 skip_redacted = true;
             }
             self.push_nlist_symbols(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size, skip_redacted, &mut out);
@@ -396,7 +396,7 @@ impl MachO {
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB => {
                     for fb in &self.file_bits {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
-                            let mut mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
+                            let mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
                             let off: u32 = util::copy_from_slice(&lc_buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], end);
                             let count: u32 = util::copy_from_slice(&lc_buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], end);
                             unsafe { *mcrefp = file_array(&self.eb.buf, fb.name, off, count, fb.elm_size); }
@@ -446,14 +446,15 @@ impl MachO {
                     } else {
                         SymbolValue::Addr(vma)
                     };
-                if skip_redacted && name == b"<redacted>" { continue; }
-                out.push(exec::Symbol {
-                    name: name,
-                    is_public: public,
-                    is_weak: weak,
-                    val: val,
-                    private: off,
-                })
+                if !(skip_redacted && name == b"<redacted>") {
+                    out.push(exec::Symbol {
+                        name: name,
+                        is_public: public,
+                        is_weak: weak,
+                        val: val,
+                        private: off,
+                    })
+                }
             });
             off += self.nlist_size;
         }
