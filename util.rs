@@ -1,6 +1,7 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, collections)]
+#![feature(libc, collections, core)]
+#![allow(raw_pointer_derive)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -17,6 +18,8 @@ use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
 use std::num::ParseIntError;
+use std::cmp::max;
+use std::slice::bytes;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -160,12 +163,6 @@ pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
     String::from_utf8_lossy(truncated).to_string()
 }
 
-#[derive(Clone, Default)]
-pub struct MCRef {
-    mm: Option<Arc<MemoryMap>>,
-    off: usize,
-    len: usize
-}
 
 // XXX using my own MemoryMap for now
 struct MemoryMap {
@@ -174,9 +171,10 @@ struct MemoryMap {
 }
 
 impl MemoryMap {
-    fn new(fd: libc::c_int, size: usize) -> MemoryMap {
+    fn new(fd: Option<libc::c_int>, size: usize) -> MemoryMap {
         unsafe {
-            let ptr = libc::mmap(0 as *mut libc::c_void, size as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE, fd, 0);
+            let anon = if fd.is_some() { 0 } else { libc::MAP_ANON };
+            let ptr = libc::mmap(0 as *mut libc::c_void, size as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | anon, fd.unwrap_or(0), 0);
             if ptr == null_mut() {
                 panic!("mmap failed");
             }
@@ -194,33 +192,75 @@ impl Drop for MemoryMap {
     }
 }
 
+// this interface should probably have a safe way to mutate, to avoid copying...
+
+#[derive(Clone)]
+pub struct MCRef {
+    mm: Option<Arc<MemoryMap>>,
+    ptr: *mut u8,
+    len: usize
+}
 
 unsafe impl Send for MCRef {}
 
+impl std::default::Default for MCRef {
+    fn default() -> MCRef {
+        MCRef { mm: None, ptr: 0 as *mut u8, len: 0 }
+    }
+}
+
+impl std::fmt::Debug for MCRef {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "MCRef({:?}, {})", self.ptr, self.len)
+    }
+}
+
 impl MCRef {
+    pub fn with_data(data: &[u8]) -> MCRef {
+        unsafe {
+            let me = MCRef::with_fd_size(None, data.len());
+            bytes::copy_memory(data, me.get_mut_unsafe());
+            me
+        }
+    }
+
+    fn with_fd_size(fd: Option<libc::c_int>, size: usize) -> MCRef {
+        if size > std::usize::MAX - 0x1000 {
+            panic!("MCRef::with_fd_size: size {} too big", size);
+        }
+        let size = max(size, 1);
+        let mm = MemoryMap::new(fd, size);
+        assert!(mm.len() >= size);
+        let ptr = mm.data();
+        MCRef {
+            mm: Some(Arc::new(mm)),
+            ptr: ptr,
+            len: size
+        }
+    }
+
     pub fn slice(&self, from: usize, to: usize) -> MCRef {
         let len = to - from;
         if from > self.len || len > self.len - from {
             panic!("MCRef::slice: bad slice");
         }
-        MCRef { mm: self.mm.clone(), off: self.off + from, len: len }
+        unsafe {
+            MCRef { mm: self.mm.clone(), ptr: self.ptr.offset(from as isize), len: len }
+        }
     }
-    pub fn get<'a>(&'a self) -> &'a [u8] {
-        unsafe { std::slice::from_raw_parts::<u8>(
-            transmute(self.mm.as_ref().unwrap().data().offset(self.off as isize) as *const u8),
-            self.len
-        ) }
+
+    pub fn get(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts::<u8>(self.ptr, self.len) }
+    }
+    unsafe fn get_mut_unsafe(&self) -> &mut [u8] {
+        std::slice::from_raw_parts_mut::<u8>(self.ptr, self.len)
     }
     pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
-        match (&self.mm, &other.mm) {
-            (&Some(ref mm1), &Some(ref mm2)) => {
-                if (&**mm1 as *const MemoryMap) == (&**mm2 as *const MemoryMap) &&
-                   other.off <= self.off && self.off <= other.off + other.len {
-                    Some(self.off - other.off)
-                } else { None }
-            }
-            _ => None
-        }
+        let mine = self.ptr as usize;
+        let theirs = other.ptr as usize;
+        if theirs >= mine && theirs < mine + self.len {
+            Some(theirs - mine)
+        } else { None }
     }
     pub fn len(&self) -> usize {
         self.len
@@ -231,11 +271,6 @@ pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
     let oldpos = fil.seek(SeekFrom::Current(0)).unwrap();
     let size = fil.seek(SeekFrom::End(0)).unwrap();
     fil.seek(SeekFrom::Start(oldpos)).unwrap();
-    let rounded = std::cmp::max(size, 0x1000);
-    let rsize = rounded as usize;
-    if rsize as u64 != rounded {
-        panic!("safe_mmap: file too big");
-    }
     let fd = fil.as_raw_fd();
     /*
     XXX put back when MemoryMap is back
@@ -245,9 +280,10 @@ pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
         std::os::MapOption::MapFd(fd),
     ]).unwrap();
     */
-    let mm = MemoryMap::new(fd, rsize);
-    assert!(mm.len() >= size as usize);
-    MCRef { mm: Some(Arc::new(mm)), off: 0, len: size as usize }
+    if size > std::usize::MAX as u64 {
+        panic!("safe_mmap: size {} too big", size);
+    }
+    MCRef::with_fd_size(Some(fd), size as usize)
 }
 
 
@@ -315,6 +351,22 @@ pub trait OptionExt<T> {
 }
 impl<T> OptionExt<T> for Option<T> {
     fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
+}
+
+pub trait VecCopyExt<T> {
+    fn extend_slice(&mut self, other: &[T]);
+}
+
+impl<T: Copy> VecCopyExt<T> for Vec<T> {
+    fn extend_slice(&mut self, other: &[T]) {
+        unsafe {
+            let ol = other.len();
+            let sl = self.len();
+            self.reserve(ol);
+            self.set_len(sl + ol);
+            copy(other.as_ptr(), self.as_mut_ptr().offset(sl as isize), ol);
+        }
+    }
 }
 
 pub trait VecStrExt {

@@ -146,6 +146,7 @@ impl DyldCache {
                     filesize: mi.size,
                     name: None,
                     prot: ::u32_to_prot(mi.initProt),
+                    data: Some(mc.slice(mi.fileOffset as usize, (mi.fileOffset + mi.size) as usize)),
                     seg_idx: None,
                     private: hdr.mappingOffset as usize + i * so,
                 }
@@ -158,7 +159,7 @@ impl DyldCache {
                 endian: end,
                 segments: segments,
                 sections: vec!(),
-                buf: mc,
+                whole_buf: Some(mc),
             },
             image_info: image_info,
             uuid: uuid,

@@ -14,10 +14,12 @@ use std::io::Write;
 use std::cmp::min;
 mod execall;
 
-fn macho_filedata_info(mo: &macho::MachO) {
+fn macho_filedata_info(_mo: &macho::MachO) {
+    panic!();
+    /* XXX
     println!("File data:");
     let entry = |mc: &util::MCRef, name| {
-        if let Some(offset) = mc.offset_in(&mo.eb.buf) {
+        if let Some(offset) = mc.offset_in(&mo.eb.whole_buf.unwrap()) {
             println!("{:<16}: offset {:<#8x}, length {:<#8x}",
                 name, offset, mc.len());
         }
@@ -33,6 +35,7 @@ fn macho_filedata_info(mo: &macho::MachO) {
     entry(&mo.dyld_weak_bind, "dyld weak_bind");
     entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
     entry(&mo.dyld_export,    "dyld export");
+    */
 }
 
 fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
@@ -105,10 +108,10 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
         if is_addr_end { size -= addr; }
 
         let (mut addr, mut size) = (exec::VMA(addr), size);
-        let buf = eb.buf.get();
         while size != 0 {
-            if let Some((off, mut osize)) = exec::addr_to_off_range(&eb.segments, addr) {
+            if let Some((seg, off, mut osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
                 osize = min(osize, size);
+                let buf = seg.data.as_ref().unwrap().get();
                 std::io::stdout().write(&buf[off as usize..(off+osize) as usize]).unwrap();
                 addr = addr + osize;
                 size -= osize;

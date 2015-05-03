@@ -87,8 +87,15 @@ pub struct Segment {
     pub filesize: u64,
     pub name: Option<String>,
     pub prot: Prot,
+    pub data: Option<util::MCRef>,
     pub seg_idx: Option<usize>, // for sections
     pub private: usize,
+}
+
+impl Segment {
+    pub fn pretty_name(&self) -> &str {
+        self.name.as_ref().map_or("unnamed", |a| a)
+    }
 }
 
 #[derive(Default)]
@@ -97,7 +104,7 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
-    pub buf: util::MCRef,
+    pub whole_buf: Option<util::MCRef>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -218,10 +225,10 @@ pub fn off_to_addr(segs: &[Segment], off: u64, len: u64) -> Option<VMA> {
     None
 }
 
-pub fn addr_to_off_range(segs: &[Segment], addr: VMA) -> Option<(u64, u64)> {
+pub fn addr_to_seg_off_range(segs: &[Segment], addr: VMA) -> Option<(&Segment, u64, u64)> {
     for seg in segs {
         if addr >= seg.vmaddr && addr - seg.vmaddr < seg.vmsize {
-            return Some((seg.fileoff + (addr - seg.vmaddr), seg.vmsize - (addr - seg.vmaddr)));
+            return Some((seg, addr - seg.vmaddr, seg.vmsize - (addr - seg.vmaddr)));
         }
     }
     None

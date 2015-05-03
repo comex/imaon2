@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(collections, libc, into_cow)]
-#![feature(negate_unsigned)]
+#![feature(negate_unsigned, core, std_misc)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -15,10 +15,13 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::borrow::IntoCow;
-use util::{ToUi, VecStrExt, MCRef, Swap};
+use std::cmp::max;
+use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
-use std::{u64, u32};
+use std::{u64, u32, usize};
+use std::slice::bytes;
+use std::collections::HashMap;
 
 #[path="../out/macho_bind.rs"]
 mod macho_bind;
@@ -75,9 +78,6 @@ fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size
 }
 
 
-#[derive(Default, Debug, Copy, Clone)]
-pub struct SymSubset { off: usize, count: usize }
-
 pub struct DscTabs {
     pub symtab: MCRef,
     pub strtab: MCRef,
@@ -94,11 +94,11 @@ pub struct MachO {
     // old-style symbol table:
     pub nlist_size: usize,
     pub symtab: MCRef,
+    pub localsym: MCRef,
+    pub extdefsym: MCRef,
+    pub undefsym: MCRef,
     pub strtab: MCRef,
     pub dsc_tabs: Option<DscTabs>,
-    pub localsym: SymSubset,
-    pub extdefsym: SymSubset,
-    pub undefsym: SymSubset,
     pub toc: MCRef,
     pub modtab: MCRef,
     pub extrefsym: MCRef,
@@ -113,10 +113,10 @@ pub struct MachO {
     pub dyld_lazy_bind: MCRef,
     pub dyld_export: MCRef,
     // this should be *static* but :rust:
-    file_bits: Vec<FileBit>,
+    linkedit_bits: Vec<LinkeditBit>,
 }
 
-struct FileBit {
+struct LinkeditBit {
     name: &'static str,
     self_field_off: usize,
     cmd_id: u32,
@@ -125,9 +125,9 @@ struct FileBit {
     elm_size: usize,
 }
 
-macro_rules! fbit{($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => {
+macro_rules! lbit{($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => {
     {
-        FileBit {
+        LinkeditBit {
             name: stringify!($self_field),
             self_field_off: offset_of!(MachO, $self_field),
             cmd_id: $cmd_id,
@@ -138,24 +138,24 @@ macro_rules! fbit{($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:id
     }
 }}
 
-fn make_file_bits(is64: bool) -> Vec<FileBit> {
+fn make_linkedit_bits(is64: bool) -> Vec<LinkeditBit> {
     vec![
-        fbit!(dyld_rebase, LC_DYLD_INFO, dyld_info_command, rebase_off, rebase_size, 1),
-        fbit!(dyld_bind, LC_DYLD_INFO, dyld_info_command, bind_off, bind_size, 1),
-        fbit!(dyld_weak_bind, LC_DYLD_INFO, dyld_info_command, weak_bind_off, weak_bind_size, 1),
-        fbit!(dyld_lazy_bind, LC_DYLD_INFO, dyld_info_command, lazy_bind_off, lazy_bind_size, 1),
-        fbit!(dyld_export, LC_DYLD_INFO, dyld_info_command, export_off, export_size, 1),
+        lbit!(dyld_rebase, LC_DYLD_INFO, dyld_info_command, rebase_off, rebase_size, 1),
+        lbit!(dyld_bind, LC_DYLD_INFO, dyld_info_command, bind_off, bind_size, 1),
+        lbit!(dyld_weak_bind, LC_DYLD_INFO, dyld_info_command, weak_bind_off, weak_bind_size, 1),
+        lbit!(dyld_lazy_bind, LC_DYLD_INFO, dyld_info_command, lazy_bind_off, lazy_bind_size, 1),
+        lbit!(dyld_export, LC_DYLD_INFO, dyld_info_command, export_off, export_size, 1),
 
-        fbit!(modtab, LC_DYSYMTAB, dysymtab_command, modtaboff, nmodtab,
+        lbit!(modtab, LC_DYSYMTAB, dysymtab_command, modtaboff, nmodtab,
               if is64 { size_of::<dylib_module_64>() } else { size_of::<dylib_module>() }),
-        fbit!(toc, LC_DYSYMTAB, dysymtab_command, tocoff, ntoc, size_of::<dylib_table_of_contents>()),
-        fbit!(extrefsym, LC_DYSYMTAB, dysymtab_command, extrefsymoff, nextrefsyms, size_of::<dylib_reference>()),
-        fbit!(indirectsym, LC_DYSYMTAB, dysymtab_command, indirectsymoff, nindirectsyms, 4),
-        fbit!(extrel, LC_DYSYMTAB, dysymtab_command, extreloff, nextrel, size_of::<relocation_info>()),
-        fbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
+        lbit!(toc, LC_DYSYMTAB, dysymtab_command, tocoff, ntoc, size_of::<dylib_table_of_contents>()),
+        lbit!(extrefsym, LC_DYSYMTAB, dysymtab_command, extrefsymoff, nextrefsyms, size_of::<dylib_reference>()),
+        lbit!(indirectsym, LC_DYSYMTAB, dysymtab_command, indirectsymoff, nindirectsyms, 4),
+        lbit!(extrel, LC_DYSYMTAB, dysymtab_command, extreloff, nextrel, size_of::<relocation_info>()),
+        lbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
 
-        fbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() }),
-        fbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
+        lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() }),
+        lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
     ]
 }
 
@@ -289,12 +289,12 @@ impl MachO {
             // useless 'reserved' field
             if is64 { lc_off += 4; }
         }
-        me.file_bits = make_file_bits(me.is64);
-        me.eb.buf = mc;
+        me.linkedit_bits = make_linkedit_bits(me.is64);
         me.parse_header();
         if do_lcs {
-            me.parse_load_commands(lc_off);
+            me.parse_load_commands(lc_off, &mc);
         }
+        me.eb.whole_buf = Some(mc);
         Ok(me)
     }
 
@@ -335,18 +335,15 @@ impl MachO {
         // we don't really care about cpusubtype but could fill it in
     }
 
-    fn parse_load_commands(&mut self, mut lc_off: usize) {
+    fn parse_load_commands(&mut self, mut lc_off: usize, mc: &MCRef) {
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
-        let buf = &self.eb.buf;
-        let whole = buf.get();
-        //let buf_len = buf.len();
+        let whole = mc.get();
         let mut segi: usize = 0;
         for lci in 0..self.mh.ncmds {
             let lc: load_command = util::copy_from_slice(&whole[lc_off..lc_off + 8], end);
-            let lc_buf = buf.slice(lc_off, lc_off + lc.cmdsize.to_ui());
-            {
-            let lc_buf = lc_buf.get();
+            let lc_mc = mc.slice(lc_off, lc_off + lc.cmdsize.to_ui());
+            let lc_buf = lc_mc.get();
             let this_lc_off = lc_off;
             let mut do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if is64 == true { // '== true' due to macro suckage
@@ -359,6 +356,7 @@ impl MachO {
                     let mut off = size_of::<segment_command_x>();
                     let sc: segment_command_x = util::copy_from_slice(&lc_buf[..off], end);
                     let segprot = u32_to_prot(sc.initprot as u32);
+                    let data = mc.slice(sc.fileoff as usize, (sc.fileoff+sc.filesize) as usize);
                     let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
@@ -366,6 +364,7 @@ impl MachO {
                         filesize: sc.filesize as u64,
                         name: Some(util::from_cstr(&sc.segname)),
                         prot: segprot,
+                        data: Some(data),
                         seg_idx: None,
                         private: lci as usize,
                     };
@@ -380,6 +379,7 @@ impl MachO {
                             filesize: s.size as u64,
                             name: Some(util::from_cstr(&s.sectname)),
                             prot: segprot,
+                            data: None,
                             seg_idx: Some(segi),
                             private: this_lc_off + off,
                         };
@@ -394,12 +394,12 @@ impl MachO {
                 LC_SEGMENT => do_segment(false, &mut self.eb.segments, &mut self.eb.sections),
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB => {
-                    for fb in &self.file_bits {
+                    for fb in &self.linkedit_bits {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
                             let off: u32 = util::copy_from_slice(&lc_buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], end);
                             let count: u32 = util::copy_from_slice(&lc_buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], end);
-                            unsafe { *mcrefp = file_array(&self.eb.buf, fb.name, off, count, fb.elm_size); }
+                            unsafe { *mcrefp = file_array(self.eb.whole_buf.as_ref().unwrap(), fb.name, off, count, fb.elm_size); }
                         }
                     }
 
@@ -408,8 +408,7 @@ impl MachO {
                 _ => ()
             }
             lc_off += lc.cmdsize.to_ui();
-            }
-            self.load_commands.push(lc_buf);
+            self.load_commands.push(lc_mc.clone()); // unnecessary clone
         }
     }
 
@@ -460,20 +459,113 @@ impl MachO {
         }
     }
 
-/*
-    pub fn reallocate(&self) {
-        let _ = self.update_cmds();
+    pub fn reallocate(&mut self) {
+        self.update_symtab();
+
+        let (linkedit, linkedit_allocs) = self.reallocate_linkedit();
+
+        let mut linkedit_idx: usize = !0;
+        for (i, seg) in self.eb.segments.iter_mut().enumerate() {
+            if seg.name.as_ref().map(|s| &s[..]) == Some("__LINKEDIT") {
+                linkedit_idx = i;
+                seg.vmsize = linkedit.len() as u64;
+                seg.filesize = linkedit.len() as u64;
+                seg.data = Some(MCRef::with_data(&linkedit[..]));
+            }
+        }
+        if linkedit_idx == !0 && linkedit.len() > 0 {
+            panic!("allocating new segments in VM space not supported yet");
+        }
+
+        let initial_cmds = self.update_cmds(0, &linkedit_allocs);
+        let cmds_len: usize = initial_cmds.iter().map(Vec::len).sum();
+        // do we have enough space for the LCs?
+        let mut cmds_space = self.mh.sizeofcmds as usize;
+        if let Some(sect) = self.eb.sections.get(0) {
+            if sect.seg_idx == Some(0) {
+                cmds_space = sect.fileoff as usize;
+            }
+        }
+        let cmds_push = max(0, cmds_len as isize - cmds_space as isize) as usize;
+        self.eb.segments[0].filesize += cmds_push as u64;
+
+        self.reallocate_seg_offsets();
+
+        let cmds = self.update_cmds(if linkedit_idx == !0 { 0 } else { self.eb.segments[linkedit_idx].fileoff as usize }, &linkedit_allocs);
+        assert_eq!(cmds_len, cmds.iter().map(Vec::len).sum());
+
+        // update text/LC segment
+        {
+            let seg = &mut self.eb.segments[0];
+            let mut sbuf = Vec::new();
+            sbuf.resize(seg.filesize as usize, 0);
+            bytes::copy_memory(&seg.data.as_ref().unwrap().get()[cmds_space..], &mut sbuf[cmds_space + cmds_push..]);
+            let mut off = 0;
+            for cmd in &cmds {
+                bytes::copy_memory(&cmd[..], &mut sbuf[off..]);
+                off += cmd.len();
+            }
+            let smc = MCRef::with_data(&sbuf[..]);
+            seg.data = Some(smc.clone());
+            // update self.load_commands
+            off = 0;
+            self.load_commands.clear();
+            for cmd in &cmds {
+                self.load_commands.push(smc.slice(off, off+cmd.len()));
+                off += cmd.len();
+            }
+        }
     }
 
-    fn update_cmds(&self, (seg_allocs, bit_allocs): (Vec<(usize, usize)>, Vec<(usize, usize)>), symtab_allocations: (usize, usize, usize)) -> Vec<Vec<u8>> {
+    fn reallocate_linkedit(&self) -> (Vec<u8>, Vec<(usize, usize)>) {
+        let mut linkedit: Vec<u8> = Vec::new();
+        let mut allocs: Vec<(usize, usize)> = Vec::new();
+        for fb in &self.linkedit_bits {
+            let buf = unsafe {
+                let mcrefp: *const MCRef = transmute((self as *const MachO as usize) + fb.self_field_off);
+                (*mcrefp).get()
+            };
+            allocs.push((linkedit.len(), buf.len()));
+            linkedit.extend_slice(buf);
+        }
+        (linkedit, allocs)
+    }
+
+    fn reallocate_seg_offsets(&mut self) {
+        for sect in &mut self.eb.sections {
+            sect.fileoff -= self.eb.segments[sect.seg_idx.expect("sect not belonging to seg?")].fileoff;
+        }
+        let mut off: u64 = 0;
+        for seg in &mut self.eb.segments {
+            seg.fileoff = off;
+            off += (seg.filesize + 0xfff) & !0xfff;
+        }
+        for sect in &mut self.eb.sections {
+            sect.fileoff += self.eb.segments[sect.seg_idx.unwrap()].fileoff;
+        }
+    }
+
+    fn update_symtab(&mut self) {
+        let mut new_vec = self.localsym.get().to_owned();
+        new_vec.extend_slice(self.extdefsym.get());
+        new_vec.extend_slice(self.undefsym.get());
+        let mc = MCRef::with_data(&new_vec[..]);
+        let mut off = 0;
+        self.localsym = mc.slice(0, self.localsym.len()); off += self.localsym.len();
+        self.extdefsym = mc.slice(off, off + self.extdefsym.len()); off += self.extdefsym.len();
+        self.undefsym = mc.slice(off, off + self.undefsym.len());
+        self.symtab = mc;
+    }
+
+    fn update_cmds(&self, linkedit_off: usize, linkedit_allocs: &[(usize, usize)]) -> Vec<Vec<u8>> {
         let mut cmds: Vec<Vec<u8>> = Vec::new();
-        let (existing_segs, extra_segs) = self.update_seg_cmds(seg_allocs);
+        let (mut existing_segs, extra_segs) = self.update_seg_cmds();
         let mut lci = 0;
         let mut insert_extra_segs_idx: Option<usize> = None;
         let end = self.eb.endian;
 
         let mut dyld_info_cmd_id = LC_DYLD_INFO_ONLY;
-        for cmd in self.load_commands {
+        for cmd in &self.load_commands {
             let cmd = cmd.get();
             let cmd_id: u32 = util::copy_from_slice(&cmd[..4], self.eb.endian);
             if cmd_id == LC_DYLD_INFO {
@@ -483,70 +575,84 @@ impl MachO {
 
         let mut bit_cmds: [Option<Vec<u8>>; 3] = [None, None, None];
 
-        for (i, (cmd, cmdsize)) in &[
+        for (i, &(cmd, cmdsize)) in [
             (LC_DYLD_INFO, size_of::<dyld_info_command>()),
             (LC_SYMTAB, size_of::<symtab_command>()),
             (LC_DYSYMTAB, size_of::<dysymtab_command>()),
-        ].enumerate() {
-            let buf = std::iter::repeat(0).take(cmdsize).collect::<Vec<u8>>();
-            util::copy_to_slice(&mut buf[0..8], load_command {
+        ].iter().enumerate() {
+            let mut buf: Vec<u8> = Vec::new();
+            buf.resize(cmdsize, 0);
+            util::copy_to_slice(&mut buf[0..8], &load_command {
                 cmd: if cmd == LC_DYLD_INFO { dyld_info_cmd_id } else { cmd },
-                cmdsize: cmdsize,
+                cmdsize: cmdsize as u32,
             }, end);
-            for (fb, (off, len)) in self.file_bits.zip(bit_allocs) {
+            for (fb, &(mut off, len)) in self.linkedit_bits.iter().zip(linkedit_allocs) {
+                off += linkedit_off;
                 util::copy_to_slice(&mut buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], &(off as u32), end);
                 util::copy_to_slice(&mut buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], &((len / fb.elm_size) as u32), end);
             }
-            bit_cmds[i] = buf;
+            if i == 2 {
+                let elm_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
+                let mut is_off = offset_of!(dysymtab_command, ilocalsym);
+                for part in &[&self.localsym, &self.extdefsym, &self.undefsym] {
+                    let index = part.offset_in(&self.symtab).expect("*sym and symtab out of sync") / elm_size;
+                    let count = part.len() / elm_size;
+                    let vals: [u32; 2] = [index as u32, count as u32];
+                    util::copy_to_slice(&mut buf[is_off..is_off + 8], &vals, end);
+                    is_off += 8;
+                }
+            }
+            bit_cmds[i] = Some(buf);
         }
 
-        for cmd in self.load_commands {
+
+        for cmd in &self.load_commands {
             let cmd = cmd.get();
             let cmd_id: u32 = util::copy_from_slice(&cmd[..4], self.eb.endian);
             if cmd_id != LC_SEGMENT && cmd_id != LC_SEGMENT_64 {
-                insert_extra_segs_idx = cmds.len();
+                insert_extra_segs_idx = Some(cmds.len());
             }
             match cmd_id {
                 LC_SEGMENT | LC_SEGMENT_64 => {
-                    if let Some(new_cmd) = existing_segs.remove(lci) {
+                    if let Some(new_cmd) = existing_segs.remove(&lci) {
                         cmds.push(new_cmd);
                     }
                 },
-                LC_DYLD_INFO | LC_DYLD_INFO_ONLY => { if let new_cmd = bit_cmds[0].take() { cmds.push(new_cmd); } },
-                LC_SYMTAB => { if let new_cmd = bit_cmds[1].take() { cmds.push(new_cmd); } },
-                LC_DYSYMTAB => { if let new_cmd = bit_cmds[0].take() { cmds.push(new_cmd); } },
+                LC_DYLD_INFO | LC_DYLD_INFO_ONLY => { if let Some(new_cmd) = bit_cmds[0].take() { cmds.push(new_cmd); } },
+                LC_SYMTAB => { if let Some(new_cmd) = bit_cmds[1].take() { cmds.push(new_cmd); } },
+                LC_DYSYMTAB => { if let Some(new_cmd) = bit_cmds[0].take() { cmds.push(new_cmd); } },
                 _ => {
                     cmds.push(cmd.to_owned());
                 },
             }
             lci += cmd.len();
         }
-        for (cmd_id, new_cmd_o) in by_id.into_iter() {
-            if let Some(new_cmd) = new_cmd_o { cmds.push(new_cmd); }
+        for cmd in &mut bit_cmds { // XXX into_iter is borked
+            if let Some(cmd) = cmd.take() { cmds.push(cmd); }
         }
         let mut insert_extra_segs_idx = insert_extra_segs_idx.unwrap_or(cmds.len());
         for (_, new_cmd) in existing_segs.drain() {
             cmds.insert(insert_extra_segs_idx, new_cmd);
             insert_extra_segs_idx += 1;
         }
-        for new_cmd in extra_segs.move_iter() {
+        for new_cmd in extra_segs.into_iter() {
             cmds.insert(insert_extra_segs_idx, new_cmd);
             insert_extra_segs_idx += 1;
         }
         cmds
     }
 
-    fn update_seg_cmds(&self, seg_allocs: Vec<(usize, usize>)) -> (HashMap<usize, Vec<u8>>, Vec<Vec<u8>>) {
+    fn update_seg_cmds(&self) -> (HashMap<usize, Vec<u8>>, Vec<Vec<u8>>) {
         let mut existing_segs = HashMap::new();
         let mut extra_segs = Vec::new();
-        for (segi, seg) in self.eb.segments.enumerate() {
+        for (segi, seg) in self.eb.segments.iter().enumerate() {
             let lci = seg.private;
             let cmd = if self.is64 { LC_SEGMENT_64 } else { LC_SEGMENT };
-            let sects: Vec<&exec::Segment> = self.eb.segments.map(|seg| seg.seg_idx == Some(segi)).collect();
+            let sects: Vec<&exec::Segment> = self.eb.segments.iter().filter(|seg| seg.seg_idx == Some(segi)).collect();
             let nsects = sects.len();
             let segname = seg_name_to_macho(&seg, "MachO::reallocate: segment");
             let mut new_cmd = Vec::<u8>::new();
-            let olcbuf = if lci != usize::MAX { Some(self.load_commands[lci].get()) } else { None }
+            let olcbuf = if lci != usize::MAX { Some(self.load_commands[lci].get()) } else { None };
             branch!(if self.is64 {
                 type segment_command_x = segment_command_64;
                 type section_x = section_64;
@@ -561,43 +667,43 @@ impl MachO {
                 } else {
                     segment_command_x {
                         maxprot: 7,
-                        ..Default()
+                        ..Default::default()
                     }
                 };
                 sc.cmd = cmd;
-                sc.cmdsize = size_of::<segment_command_x>() + nsects * size_of::<section_x>();
+                sc.cmdsize = (size_of::<segment_command_x>() + nsects * size_of::<section_x>()) as u32;
                 sc.segname = segname;
-                assert!(seg.vmaddr.0 <= size_x::MAX);
+                assert!(seg.vmaddr.0 <= !0 as size_x as u64);
                 sc.vmaddr = seg.vmaddr.0 as size_x;
                 sc.vmsize = seg.vmsize as size_x;
                 sc.fileoff = seg.fileoff as size_x;
                 sc.filesize = seg.filesize as size_x;
                 sc.initprot = 0;
-                if seg.prot.r { sc.initprot |= VM_PROT_READ; }
-                if seg.prot.w { sc.initprot |= VM_PROT_WRITE; }
-                if seg.prot.x { sc.initprot |= VM_PROT_EXECUTE; }
+                if seg.prot.r { sc.initprot |= VM_PROT_READ as i32; }
+                if seg.prot.w { sc.initprot |= VM_PROT_WRITE as i32; }
+                if seg.prot.x { sc.initprot |= VM_PROT_EXECUTE as i32; }
 
-                seg.nsects = nsects;
-                util::copy_to_vec(&mut new_cmd, &seg, self.eb.endian);
+                sc.nsects = nsects as u32;
+                util::copy_to_vec(&mut new_cmd, &sc, self.eb.endian);
 
-                for (secti, sect) in sects.enumerate() {
+                for (secti, sect) in sects.into_iter().enumerate() {
                     let mut snc: section_x = if let Some(ref lcbuf) = olcbuf {
                         let off = secti * size_of::<section_x>();
                         util::copy_from_slice(&lcbuf[off..off+size_of::<section_x>()], self.eb.endian)
                     } else {
-                        Default()
+                        Default::default()
                     };
                     snc.segname = segname;
                     snc.sectname = seg_name_to_macho(&sect, "MachO::reallocate: section");
                     snc.addr = sect.vmaddr.0 as size_x;
                     snc.size = sect.vmsize as size_x;
                     if sect.filesize != sect.vmsize {
-                        errln!("warning: MachO::reallocate: section {} filesize != vmsize, using vmsize", sect.name);
+                        errln!("warning: MachO::reallocate: section {} filesize != vmsize, using vmsize", sect.pretty_name());
                     }
-                    snc.offset = sect.fileoff as size_x;
-                    util::copy_to_vec(&mut new_cmd, &sect, self.eb.endian);
+                    snc.offset = sect.fileoff as u32;
+                    util::copy_to_vec(&mut new_cmd, &snc, self.eb.endian);
                 }
-            })
+            });
             if lci == usize::MAX {
                 extra_segs.push(new_cmd);
             } else {
@@ -606,7 +712,6 @@ impl MachO {
         }
         (existing_segs, extra_segs)
     }
-*/
 }
 
 #[derive(Copy, Clone)]

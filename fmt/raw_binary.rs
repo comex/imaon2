@@ -25,6 +25,7 @@ impl RawBinary {
             filesize: len as u64,
             name: None,
             prot: exec::prot_all,
+            data: Some(buf.clone()),
             seg_idx: None,
             private: 0,
         };
@@ -34,7 +35,7 @@ impl RawBinary {
                 endian: util::BigEndian,
                 segments: vec!(seg.clone()),
                 sections: vec!(seg.clone()),
-                buf: buf,
+                whole_buf: Some(buf),
             }
         }
     }
