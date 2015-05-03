@@ -13,6 +13,7 @@ use arch::Arch;
 use std::vec::Vec;
 use std::fmt;
 use std::mem::replace;
+use std::mem::transmute;
 use std::str::FromStr;
 
 pub mod arch;
@@ -96,6 +97,9 @@ impl Segment {
     pub fn pretty_name(&self) -> &str {
         self.name.as_ref().map_or("unnamed", |a| a)
     }
+    pub fn get_data(&self) -> &[u8] {
+        self.data.as_ref().unwrap().get()
+    }
 }
 
 #[derive(Default)]
@@ -140,6 +144,7 @@ pub trait Exec : 'static {
     }
 
     fn as_any(&self) -> &std::any::Any;// { self as &std::any::Any }
+    fn as_any_mut(&mut self) -> &mut std::any::Any { unsafe { transmute(self.as_any()) } }
 }
 
 // Prober:

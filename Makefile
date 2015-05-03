@@ -16,6 +16,9 @@ RUSTCFLAGS_bin := -C lto
 else
 LIB := dylib
 RUSTC := $(RUSTC) -C codegen-units=1 -C prefer-dynamic
+ifneq ($(NDEBUG),1)
+RUSTC := $(RUSTC) -g
+endif
 endif
 
 RUSTC := $(RUSTC) -Z no-landing-pads

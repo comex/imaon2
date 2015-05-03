@@ -291,10 +291,10 @@ impl MachO {
         }
         me.linkedit_bits = make_linkedit_bits(me.is64);
         me.parse_header();
+        me.eb.whole_buf = Some(mc.clone());
         if do_lcs {
             me.parse_load_commands(lc_off, &mc);
         }
-        me.eb.whole_buf = Some(mc);
         Ok(me)
     }
 
@@ -376,7 +376,7 @@ impl MachO {
                             vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
-                            filesize: s.size as u64,
+                            filesize: if s.offset != 0 { s.size as u64 } else { 0 },
                             name: Some(util::from_cstr(&s.sectname)),
                             prot: segprot,
                             data: None,
@@ -459,19 +459,37 @@ impl MachO {
         }
     }
 
+    pub fn rewhole(&mut self) {
+        let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
+        let mut mm = util::MemoryMap::with_fd_size(None, new_size as usize);
+        {
+            let buf = mm.get_mut();
+            for seg in &self.eb.segments {
+                bytes::copy_memory(seg.get_data(), &mut buf[seg.fileoff as usize..]);
+            }
+        }
+        self.eb.whole_buf = Some(MCRef::with_mm(mm));
+    }
+
     pub fn reallocate(&mut self) {
         self.update_symtab();
 
         let (linkedit, linkedit_allocs) = self.reallocate_linkedit();
 
         let mut linkedit_idx: usize = !0;
+        let mut text_idx: usize = !0;
         for (i, seg) in self.eb.segments.iter_mut().enumerate() {
             if seg.name.as_ref().map(|s| &s[..]) == Some("__LINKEDIT") {
                 linkedit_idx = i;
                 seg.vmsize = linkedit.len() as u64;
                 seg.filesize = linkedit.len() as u64;
                 seg.data = Some(MCRef::with_data(&linkedit[..]));
+            } else if seg.fileoff == 0 && seg.filesize > 0 {
+                text_idx = i;
             }
+        }
+        if text_idx == !0 {
+            panic!("no text segment?");
         }
         if linkedit_idx == !0 && linkedit.len() > 0 {
             panic!("allocating new segments in VM space not supported yet");
@@ -482,10 +500,12 @@ impl MachO {
         // do we have enough space for the LCs?
         let mut cmds_space = self.mh.sizeofcmds as usize;
         if let Some(sect) = self.eb.sections.get(0) {
-            if sect.seg_idx == Some(0) {
+            if sect.seg_idx == Some(text_idx) {
                 cmds_space = sect.fileoff as usize;
             }
         }
+        let header_size = if self.is64 { size_of::<mach_header_64>() } else { size_of::<mach_header>() };
+        cmds_space -= header_size;
         let cmds_push = max(0, cmds_len as isize - cmds_space as isize) as usize;
         self.eb.segments[0].filesize += cmds_push as u64;
 
@@ -494,13 +514,17 @@ impl MachO {
         let cmds = self.update_cmds(if linkedit_idx == !0 { 0 } else { self.eb.segments[linkedit_idx].fileoff as usize }, &linkedit_allocs);
         assert_eq!(cmds_len, cmds.iter().map(Vec::len).sum());
 
+        self.mh.ncmds = cmds.len() as u32;
+        self.mh.sizeofcmds = cmds_len as u32;
+
         // update text/LC segment
         {
-            let seg = &mut self.eb.segments[0];
+            let seg = &mut self.eb.segments[text_idx];
             let mut sbuf = Vec::new();
             sbuf.resize(seg.filesize as usize, 0);
-            bytes::copy_memory(&seg.data.as_ref().unwrap().get()[cmds_space..], &mut sbuf[cmds_space + cmds_push..]);
-            let mut off = 0;
+            bytes::copy_memory(&seg.get_data()[cmds_space..], &mut sbuf[cmds_space + cmds_push..]);
+            util::copy_to_slice(&mut sbuf[..size_of::<mach_header>()], &self.mh, self.eb.endian);
+            let mut off = header_size;
             for cmd in &cmds {
                 bytes::copy_memory(&cmd[..], &mut sbuf[off..]);
                 off += cmd.len();
@@ -533,7 +557,9 @@ impl MachO {
 
     fn reallocate_seg_offsets(&mut self) {
         for sect in &mut self.eb.sections {
-            sect.fileoff -= self.eb.segments[sect.seg_idx.expect("sect not belonging to seg?")].fileoff;
+            if sect.filesize != 0 {
+                sect.fileoff -= self.eb.segments[sect.seg_idx.expect("sect not belonging to seg?")].fileoff;
+            }
         }
         let mut off: u64 = 0;
         for seg in &mut self.eb.segments {
@@ -541,7 +567,11 @@ impl MachO {
             off += (seg.filesize + 0xfff) & !0xfff;
         }
         for sect in &mut self.eb.sections {
-            sect.fileoff += self.eb.segments[sect.seg_idx.unwrap()].fileoff;
+            if sect.filesize == 0 {
+                sect.fileoff = 0;
+            } else {
+                sect.fileoff += self.eb.segments[sect.seg_idx.unwrap()].fileoff;
+            }
         }
     }
 
@@ -560,7 +590,6 @@ impl MachO {
     fn update_cmds(&self, linkedit_off: usize, linkedit_allocs: &[(usize, usize)]) -> Vec<Vec<u8>> {
         let mut cmds: Vec<Vec<u8>> = Vec::new();
         let (mut existing_segs, extra_segs) = self.update_seg_cmds();
-        let mut lci = 0;
         let mut insert_extra_segs_idx: Option<usize> = None;
         let end = self.eb.endian;
 
@@ -587,9 +616,11 @@ impl MachO {
                 cmdsize: cmdsize as u32,
             }, end);
             for (fb, &(mut off, len)) in self.linkedit_bits.iter().zip(linkedit_allocs) {
-                off += linkedit_off;
-                util::copy_to_slice(&mut buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], &(off as u32), end);
-                util::copy_to_slice(&mut buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], &((len / fb.elm_size) as u32), end);
+                if cmd == fb.cmd_id {
+                    off += linkedit_off;
+                    util::copy_to_slice(&mut buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], &(off as u32), end);
+                    util::copy_to_slice(&mut buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], &((len / fb.elm_size) as u32), end);
+                }
             }
             if i == 2 {
                 let elm_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
@@ -606,10 +637,10 @@ impl MachO {
         }
 
 
-        for cmd in &self.load_commands {
+        for (lci, cmd) in self.load_commands.iter().enumerate() {
             let cmd = cmd.get();
             let cmd_id: u32 = util::copy_from_slice(&cmd[..4], self.eb.endian);
-            if cmd_id != LC_SEGMENT && cmd_id != LC_SEGMENT_64 {
+            if cmd_id != LC_SEGMENT && cmd_id != LC_SEGMENT_64 && insert_extra_segs_idx == None {
                 insert_extra_segs_idx = Some(cmds.len());
             }
             match cmd_id {
@@ -625,7 +656,6 @@ impl MachO {
                     cmds.push(cmd.to_owned());
                 },
             }
-            lci += cmd.len();
         }
         for cmd in &mut bit_cmds { // XXX into_iter is borked
             if let Some(cmd) = cmd.take() { cmds.push(cmd); }

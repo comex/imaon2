@@ -38,7 +38,7 @@ fn macho_filedata_info(_mo: &macho::MachO) {
     */
 }
 
-fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
+fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     let eb = ex.get_exec_base();
     let macho = ex.as_any().downcast_ref::<macho::MachO>();
     if m.opt_present("segs") {
@@ -122,6 +122,17 @@ fn do_stuff(ex: Box<exec::Exec>, m: getopts::Matches) {
     }
 }
 
+fn do_mut_stuff(mut ex: Box<exec::Exec>, m: &getopts::Matches) {
+    if let Some(out_file) = m.opt_str("extract") {
+        // TODO generic
+        let macho = ex.as_any_mut().downcast_mut::<macho::MachO>().unwrap();
+        macho.reallocate();
+        macho.rewhole();
+        let mut fp = fs::File::create(&Path::new(&out_file)).unwrap();
+        fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();
+    }
+}
+
 fn main() {
     let top = "Usage: exectool <binary> [format...] [-- ops...]";
     let mut optgrps = vec!(
@@ -133,6 +144,7 @@ fn main() {
         getopts::optopt( "",  "o2a",   "Offset to address", "off"),
         getopts::optopt( "",  "a2o",   "Address to offset", "addr"),
         getopts::optopt( "",  "dump",  "Dump address range", "addr+len"),
+        getopts::optopt( "",  "extract", "Rewrite whole file", "outfile"),
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
     );
@@ -159,7 +171,8 @@ fn main() {
         }
         let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap();
         let m = util::do_getopts_or_panic(&*real_args, top, 0, 0, &mut optgrps);
-        do_stuff(ex, m)
+        do_stuff(&ex, &m);
+        do_mut_stuff(ex, &m);
     } else {
         let results = exec::probe_all(&execall::all_probers(), mm.clone());
         // no format specified, give a list

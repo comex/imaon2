@@ -48,6 +48,7 @@ pub fn copy_to_vec<T: Copy + Swap>(vec: &mut Vec<u8>, t: &T, end: Endian) {
     let off = vec.len();
     assert!(off <= !0usize - size);
     unsafe {
+        vec.reserve(size);
         vec.set_len(off + size);
         let stp: *mut T = transmute(vec.as_mut_ptr().offset(off as isize));
         copy(t, stp, 1);
@@ -165,34 +166,39 @@ pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
 
 
 // XXX using my own MemoryMap for now
-struct MemoryMap {
+pub struct MemoryMap {
     ptr: *mut u8,
-    size: usize
+    len: usize
 }
 
 impl MemoryMap {
-    fn new(fd: Option<libc::c_int>, size: usize) -> MemoryMap {
+    pub fn with_fd_size(fd: Option<libc::c_int>, size: usize) -> MemoryMap {
+        if size > std::usize::MAX - 0x1000 {
+            panic!("MemoryMap::with_fd_size: size {} too big", size);
+        }
+        let rsize = max(size, 1);
         unsafe {
             let anon = if fd.is_some() { 0 } else { libc::MAP_ANON };
-            let ptr = libc::mmap(0 as *mut libc::c_void, size as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | anon, fd.unwrap_or(0), 0);
+            let ptr = libc::mmap(0 as *mut libc::c_void, rsize as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | anon, fd.unwrap_or(0), 0);
             if ptr == null_mut() {
                 panic!("mmap failed");
             }
-            MemoryMap { ptr: transmute(ptr), size: size }
+            MemoryMap { ptr: transmute(ptr), len: size }
         }
     }
-    fn data(&self) -> *mut u8 { self.ptr }
-    fn len(&self) -> usize { self.size }
+    pub fn data(&self) -> *mut u8 { self.ptr }
+    pub fn len(&self) -> usize { self.len }
+    pub fn get_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut::<u8>(self.ptr, self.len) }
+    }
 }
 impl Drop for MemoryMap {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.size as libc::size_t);
+            libc::munmap(self.ptr as *mut libc::c_void, self.len as libc::size_t);
         }
     }
 }
-
-// this interface should probably have a safe way to mutate, to avoid copying...
 
 #[derive(Clone)]
 pub struct MCRef {
@@ -217,25 +223,18 @@ impl std::fmt::Debug for MCRef {
 
 impl MCRef {
     pub fn with_data(data: &[u8]) -> MCRef {
-        unsafe {
-            let me = MCRef::with_fd_size(None, data.len());
-            bytes::copy_memory(data, me.get_mut_unsafe());
-            me
-        }
+        let mut mm = MemoryMap::with_fd_size(None, data.len());
+        bytes::copy_memory(data, mm.get_mut());
+        MCRef::with_mm(mm)
     }
 
-    fn with_fd_size(fd: Option<libc::c_int>, size: usize) -> MCRef {
-        if size > std::usize::MAX - 0x1000 {
-            panic!("MCRef::with_fd_size: size {} too big", size);
-        }
-        let size = max(size, 1);
-        let mm = MemoryMap::new(fd, size);
-        assert!(mm.len() >= size);
+    pub fn with_mm(mm: MemoryMap) -> MCRef {
         let ptr = mm.data();
+        let len = mm.len();
         MCRef {
             mm: Some(Arc::new(mm)),
             ptr: ptr,
-            len: size
+            len: len
         }
     }
 
@@ -252,13 +251,10 @@ impl MCRef {
     pub fn get(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts::<u8>(self.ptr, self.len) }
     }
-    unsafe fn get_mut_unsafe(&self) -> &mut [u8] {
-        std::slice::from_raw_parts_mut::<u8>(self.ptr, self.len)
-    }
     pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
         let mine = self.ptr as usize;
         let theirs = other.ptr as usize;
-        if theirs >= mine && theirs < mine + self.len {
+        if theirs >= mine && theirs < mine + max(self.len, 1) {
             Some(theirs - mine)
         } else { None }
     }
@@ -283,7 +279,7 @@ pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
     if size > std::usize::MAX as u64 {
         panic!("safe_mmap: size {} too big", size);
     }
-    MCRef::with_fd_size(Some(fd), size as usize)
+    MCRef::with_mm(MemoryMap::with_fd_size(Some(fd), size as usize))
 }
 
 
