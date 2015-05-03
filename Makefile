@@ -73,25 +73,8 @@ externals/rust-bindgen/bindgen: cargo-build
 	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
 	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L/Library/Developer/CommandLineTools/usr/lib/
 
-$(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile
-	rm -rf $@
-	mkdir $@
-	cp -a $< $@/bindgen
-	install_name_tool -add_rpath /Library/Developer/CommandLineTools/usr/lib/ $@/bindgen # XXX
-	mod=1; \
-	while [ "$$mod" = "1" ]; do \
-		mod=0; \
-		for exe in $@/*; do \
-			otool -L $$exe | fgrep -q /stage || continue; \
-			mod=1; \
-			for dylib in `otool -L $$exe | fgrep /stage | awk '{print $$1}'`; do \
-				d=$$(basename $$dylib); \
-				cp -n /usr/local/lib/$$d $@/; \
-				install_name_tool -id $$d $@/$$d; \
-				install_name_tool -change $$dylib $$(echo $$dylib | sed 's!.*lib/!@loader_path/!') $$exe; \
-			done; \
-		done; \
-	done
+$(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
+	./staticize.sh "$@" "$<"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
