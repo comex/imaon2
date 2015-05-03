@@ -254,8 +254,8 @@ impl MCRef {
     pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
         let mine = self.ptr as usize;
         let theirs = other.ptr as usize;
-        if theirs >= mine && theirs < mine + max(self.len, 1) {
-            Some(theirs - mine)
+        if mine >= theirs && mine < theirs + max(other.len, 1) {
+            Some(mine - theirs)
         } else { None }
     }
     pub fn len(&self) -> usize {

@@ -128,10 +128,11 @@ struct LinkeditBit {
     cmd_off_field_off: usize,
     cmd_count_field_off: usize,
     elm_size: usize,
+    is_symtab: bool,
 }
 
-macro_rules! lbit{($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => {
-    {
+macro_rules! lbit {
+    ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr, $is_symtab:expr) => {
         LinkeditBit {
             name: stringify!($self_field),
             self_field_off: offset_of!(MachO, $self_field),
@@ -139,17 +140,27 @@ macro_rules! lbit{($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:id
             cmd_off_field_off: offset_of!($cmd_type, $off_field),
             cmd_count_field_off: offset_of!($cmd_type, $size_field),
             elm_size: $divi,
+            is_symtab: $is_symtab,
         }
-    }
-}}
+    };
+    ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => { lbit!($self_field, $cmd_id, $cmd_type, $off_field, $size_field, $divi, false) }
+}
 
 fn make_linkedit_bits(is64: bool) -> Vec<LinkeditBit> {
+    let nlist_size = if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
     vec![
+        lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, nlist_size), // must be first
+        lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
+
         lbit!(dyld_rebase, LC_DYLD_INFO, dyld_info_command, rebase_off, rebase_size, 1),
         lbit!(dyld_bind, LC_DYLD_INFO, dyld_info_command, bind_off, bind_size, 1),
         lbit!(dyld_weak_bind, LC_DYLD_INFO, dyld_info_command, weak_bind_off, weak_bind_size, 1),
         lbit!(dyld_lazy_bind, LC_DYLD_INFO, dyld_info_command, lazy_bind_off, lazy_bind_size, 1),
         lbit!(dyld_export, LC_DYLD_INFO, dyld_info_command, export_off, export_size, 1),
+
+        lbit!(localsym, LC_DYSYMTAB, dysymtab_command, ilocalsym, nlocalsym, nlist_size, /* is_symtab */ true),
+        lbit!(extdefsym, LC_DYSYMTAB, dysymtab_command, iextdefsym, nextdefsym, nlist_size, /* is_symtab */ true),
+        lbit!(undefsym, LC_DYSYMTAB, dysymtab_command, iundefsym, nundefsym, nlist_size, /* is_symtab */ true),
 
         lbit!(modtab, LC_DYSYMTAB, dysymtab_command, modtaboff, nmodtab,
               if is64 { size_of::<dylib_module_64>() } else { size_of::<dylib_module>() }),
@@ -158,9 +169,6 @@ fn make_linkedit_bits(is64: bool) -> Vec<LinkeditBit> {
         lbit!(indirectsym, LC_DYSYMTAB, dysymtab_command, indirectsymoff, nindirectsyms, 4),
         lbit!(extrel, LC_DYSYMTAB, dysymtab_command, extreloff, nextrel, size_of::<relocation_info>()),
         lbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
-
-        lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() }),
-        lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
 
         lbit!(function_starts, LC_FUNCTION_STARTS, linkedit_data_command, dataoff, datasize, 1),
         lbit!(data_in_code, LC_DATA_IN_CODE, linkedit_data_command, dataoff, datasize, 1),
@@ -409,20 +417,17 @@ impl MachO {
                     for fb in &self.linkedit_bits {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
-                            let off: u32 = util::copy_from_slice(&lc_buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], end);
+                            let mut off: u32 = util::copy_from_slice(&lc_buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], end);
                             let count: u32 = util::copy_from_slice(&lc_buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], end);
-                            unsafe { *mcrefp = file_array(self.eb.whole_buf.as_ref().unwrap(), fb.name, off, count, fb.elm_size); }
+                            let buf = if fb.is_symtab {
+                                off *= fb.elm_size as u32;
+                                &self.symtab
+                            } else {
+                                self.eb.whole_buf.as_ref().unwrap()
+                            };
+                            unsafe { *mcrefp = file_array(buf, fb.name, off, count, fb.elm_size); }
                         }
                     }
-                    if lc.cmd == LC_SYMTAB {
-                        let sc: symtab_command = util::copy_from_slice(lc_buf, end);
-                        symtab_parts = Some([
-                            (sc.ilocalsym as usize * nlist_size, sc.nlocalsym as usize * nlist_size),
-                            (sc.iextdefsym as usize * nlist_size, sc.nextdefsym as usize * nlist_size),
-                            (sc.iundefsym as usize * nlist_size, sc.nundefsym as usize * nlist_size),
-                        ]);
-                    }
-
                 },
 
                 _ => ()
@@ -430,7 +435,6 @@ impl MachO {
             lc_off += lc.cmdsize.to_ui();
             self.load_commands.push(lc_mc.clone()); // unnecessary clone
         }
-        symtab_lens.and_then(self.symtab_to_xsym);
     }
 
     fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<exec::Symbol<'a>>) {
@@ -566,12 +570,17 @@ impl MachO {
         let mut linkedit: Vec<u8> = Vec::new();
         let mut allocs: Vec<(usize, usize)> = Vec::new();
         for fb in &self.linkedit_bits {
-            let buf = unsafe {
+            let mcref: &MCRef = unsafe {
                 let mcrefp: *const MCRef = transmute((self as *const MachO as usize) + fb.self_field_off);
-                (*mcrefp).get()
+                &*mcrefp
             };
-            allocs.push((linkedit.len(), buf.len()));
-            linkedit.extend_slice(buf);
+            let buf = mcref.get();
+            if fb.is_symtab {
+                allocs.push((mcref.offset_in(&self.symtab).unwrap(), buf.len()));
+            } else {
+                allocs.push((linkedit.len(), buf.len()));
+                linkedit.extend_slice(buf);
+            }
         }
         (linkedit, allocs)
     }
@@ -612,10 +621,9 @@ impl MachO {
 
     fn symtab_to_xsym(&mut self, parts: &[(usize, usize); 3]) {
         let mc = &self.symtab;
-        let mut off = 0;
-        self.localsym = mc.slice(parts[0].0, parts[0].1);
-        self.extdefsym = mc.slice(parts[1].0, parts[1].1);
-        self.undefsym = mc.slice(parts[2].0, parts[2].1);
+        self.localsym = mc.slice(parts[0].0, parts[0].0+parts[0].1);
+        self.extdefsym = mc.slice(parts[1].0, parts[1].0+parts[1].1);
+        self.undefsym = mc.slice(parts[2].0, parts[2].0+parts[2].1);
     }
 
     fn update_cmds(&self, linkedit_off: usize, linkedit_allocs: &[(usize, usize)]) -> Vec<Vec<u8>> {
@@ -653,7 +661,11 @@ impl MachO {
             let mut got_any = false;
             for (fb, &(mut off, len)) in self.linkedit_bits.iter().zip(linkedit_allocs) {
                 if cmd == fb.cmd_id {
-                    off += linkedit_off;
+                    if fb.is_symtab {
+                        off /= fb.elm_size;
+                    } else {
+                        off += linkedit_off;
+                    }
                     util::copy_to_slice(&mut buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], &(off as u32), end);
                     util::copy_to_slice(&mut buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], &((len / fb.elm_size) as u32), end);
                     if len > 0 {
@@ -662,17 +674,6 @@ impl MachO {
                 }
             }
             if !got_any { continue; }
-            if i == 2 {
-                let elm_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
-                let mut is_off = offset_of!(dysymtab_command, ilocalsym);
-                for part in &[&self.localsym, &self.extdefsym, &self.undefsym] {
-                    let index = part.offset_in(&self.symtab).expect("*sym and symtab out of sync") / elm_size;
-                    let count = part.len() / elm_size;
-                    let vals: [u32; 2] = [index as u32, count as u32];
-                    util::copy_to_slice(&mut buf[is_off..is_off + 8], &vals, end);
-                    is_off += 8;
-                }
-            }
             bit_cmds[i] = Some(buf);
         }
 
