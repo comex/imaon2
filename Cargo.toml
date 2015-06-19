@@ -9,7 +9,7 @@ path = "dummy.rs"
 regex = "0.1.9"
 [dependencies.regex_macros]
 regex_macros = "0.1.4"
-#[dependencies.rust-bindgen]
+#[dependencies.bindgen]
 #git = "https://github.com/crabtw/rust-bindgen.git"
 [dependencies.autollvm]
 path = "../autollvm"
