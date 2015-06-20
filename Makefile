@@ -1,9 +1,12 @@
 # This Makefile is public domain.
 
+
+rustc-extern = --extern $(1)=`ls -t target/debug/deps/lib$(1)*.rlib | head -n 1`
+
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc --out-dir $(OUT) -Ltarget/debug/deps --extern regex=`echo target/debug/deps/libregex*.rlib` -L. -L$(OUT)
+RUSTC := rustc -Ltarget/debug/deps $(call rustc-extern,regex) $(call rustc-extern,log) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
@@ -30,7 +33,8 @@ define define_crate_
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) cargo-build
-	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) $$<
+	# specify -o explicitly?
+	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
 	#cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 
 all: $$(cratefile-$(2))
@@ -74,7 +78,7 @@ cargo-build: Cargo.toml
 externals/rust-bindgen/bindgen: cargo-build
 	dir=~/.cargo/git/checkouts; \
 	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
-	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L/Library/Developer/CommandLineTools/usr/lib/
+	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
 
 $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"
