@@ -144,6 +144,7 @@ pub trait Exec : 'static {
     }
 
     fn as_any(&self) -> &std::any::Any;// { self as &std::any::Any }
+    #[allow(mutable_transmutes)]
     fn as_any_mut(&mut self) -> &mut std::any::Any { unsafe { transmute(self.as_any()) } }
 }
 

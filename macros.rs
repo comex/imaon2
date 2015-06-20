@@ -16,7 +16,7 @@ macro_rules! deriving_swap {
         $($etc:item)*
     ) => (
         #[repr(C)]
-        #[derive(Copy, Clone)]
+        #[derive(Copy)]
         pub struct $name {
             $(
                 pub $field: $typ
@@ -29,12 +29,6 @@ macro_rules! deriving_swap {
                 )+
             }
         }
-        /* no longer needed!
-        impl Default for $name {
-            fn default() -> $name {
-                unsafe { zeroed_t() }
-            }
-        } */
         $($etc)*
     )
 }

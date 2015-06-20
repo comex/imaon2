@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, collections, core)]
+#![feature(libc, collections, slice_bytes)]
 #![allow(raw_pointer_derive)]
 
 extern crate libc;
@@ -19,6 +19,7 @@ use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
 use std::num::ParseIntError;
 use std::cmp::max;
+use std::slice;
 use std::slice::bytes;
 
 pub use Endian::*;
@@ -58,7 +59,7 @@ pub fn copy_to_vec<T: Copy + Swap>(vec: &mut Vec<u8>, t: &T, end: Endian) {
 
 pub fn copy_to_new_vec<T: Copy + Swap>(t: &T, end: Endian) -> Vec<u8> {
     unsafe {
-        let mut res: Vec<u8> = Vec::from_raw_buf(transmute(t), size_of::<T>());
+        let mut res: Vec<u8> = slice::from_raw_parts(transmute(t), size_of::<T>()).to_vec();
         let newt: *mut T = transmute(res.as_mut_ptr());
         (*newt).bswap_from(end);
         res

@@ -7,7 +7,7 @@ exename="$(basename "$infile")"
 rm -rf "$outdir"
 mkdir "$outdir"
 cp -a "$infile" "$outdir/$exename"
-install_name_tool -add_rpath /Library/Developer/CommandLineTools/usr/lib/ "$outdir/$exename"
+#install_name_tool -add_rpath /Library/Developer/CommandLineTools/usr/lib/ "$outdir/$exename"
 mod=1
 while [ "$mod" = "1" ]; do
 	mod=0

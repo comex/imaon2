@@ -75,10 +75,11 @@ cargo-build: Cargo.toml
 	cargo build
 	touch $@ # xxx
 
+XC_LIBCLANG_PATH := /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
 externals/rust-bindgen/bindgen: cargo-build
 	dir=~/.cargo/git/checkouts; \
 	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
-	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L$(XC_LIBCLANG_PATH) -C link-args='-rpath $(XC_LIBCLANG_PATH)'
 
 $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"

@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(collections, libc, into_cow)]
-#![feature(negate_unsigned, core, std_misc)]
+#![feature(negate_unsigned, iter_arith, slice_bytes, vec_resize, drain, vec_push_all)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -40,6 +40,7 @@ pub struct x_nlist {
     pub n_value: uint32_t,
 }
 );
+impl Clone for x_nlist { fn clone(&self) -> Self { *self } }
 deriving_swap!(
 #[repr(C)]
 #[derive(Copy)]
@@ -51,6 +52,7 @@ pub struct x_nlist_64 {
     pub n_value: uint64_t,
 }
 );
+impl Clone for x_nlist_64 { fn clone(&self) -> Self { *self } }
 
 pub fn u32_to_prot(ip: u32) -> exec::Prot {
     exec::Prot {
@@ -872,7 +874,7 @@ impl exec::ExecProber for FatMachOProber {
                     desc: format!("(slice #{}) {}", i, pr.desc),
                     arch: pr.arch,
                     likely: pr.likely,
-                    cmd: vec!("fat", "--arch", &*arch).strings() + &*pr.cmd,
+                    cmd: { let mut s = vec!("fat", "--arch", &*arch).strings(); s.push_all(&*pr.cmd); s },
                 };
                 result.push(npr);
             }
