@@ -133,6 +133,11 @@ fn do_mut_stuff(mut ex: Box<exec::Exec>, m: &getopts::Matches) {
     }
 }
 
+fn usage_panic<T>(s: String) -> T {
+    errln!("{}", s);
+    util::exit()
+}
+
 fn main() {
     let top = "Usage: exectool <binary> [format...] [-- ops...]";
     let mut optgrps = vec!(
@@ -151,7 +156,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     args.remove(0);
     if args[0].starts_with("-") {
-        util::usage(top, &mut optgrps);
+        usage_panic::<()>(util::usage(top, &mut optgrps));
     }
     let filename = args.remove(0);
     let mut fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
@@ -161,7 +166,7 @@ fn main() {
     let mm = util::safe_mmap(&mut fp);
     if args.len() > 0 {
         if args[0].starts_with("-") {
-            let m_ = util::do_getopts_or_panic(&*args, top, 0, 0, &mut optgrps);
+            let m_ = util::do_getopts_or_usage(&*args, top, 0, 0, &mut optgrps).unwrap_or_else(usage_panic);
             args.insert(0, "--".to_string());
             if let Some(arch) = m_.opt_str("arch") {
                 args.insert(0, arch);
@@ -169,8 +174,15 @@ fn main() {
             }
             args.insert(0, "auto".to_string());
         }
-        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap();
-        let m = util::do_getopts_or_panic(&*real_args, top, 0, 0, &mut optgrps);
+        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap_or_else(|e| {
+            if e.kind == exec::ErrorKind::InvalidArgs {
+                errln!("{}", e.message);
+                util::exit();
+            } else {
+                panic!("error: {:?}", e);
+            }
+        });
+        let m = util::do_getopts_or_usage(&*real_args, top, 0, 0, &mut optgrps).unwrap_or_else(usage_panic);
         do_stuff(&ex, &m);
         do_mut_stuff(ex, &m);
     } else {

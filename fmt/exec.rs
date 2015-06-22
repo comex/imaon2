@@ -10,6 +10,7 @@ extern crate collections;
 extern crate bsdlike_getopts as getopts;
 use arch::Arch;
 //use collections::hashmap::HashMap;
+use collections::borrow::IntoCow;
 use std::vec::Vec;
 use std::fmt;
 use std::mem::replace;
@@ -18,8 +19,9 @@ use std::str::FromStr;
 
 pub mod arch;
 
-#[derive(Copy, Debug, Clone)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
+    InvalidArgs,
     BadData,
     Other
 }
@@ -32,6 +34,10 @@ pub struct Error {
 pub type ExecResult<T> = Result<T, Error>;
 pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
     Err(Error { kind: kind, message: s.into_cow() })
+}
+
+pub fn usage_to_invalid_args<T>(o: Result<T, String>) -> ExecResult<T> {
+    o.map_err(|msg| Error { kind: ErrorKind::InvalidArgs, message: msg.into_cow() })
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,9 +195,9 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>)
 
 fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     // TODO: error conversion
-    let m = util::do_getopts_or_panic(&*args, "auto [--arch arch]", 0, std::usize::MAX, &mut vec![
+    let m = try!(usage_to_invalid_args(util::do_getopts_or_usage(&*args, "auto [--arch arch]", 0, std::usize::MAX, &mut vec![
         getopts::optopt("", "arch", "Architecture bias", "arch"),
-    ]);
+    ])));
     let mut results = probe_all(eps, buf.clone());
     if let Some(arch_str) = m.opt_str("arch") {
         let arch: Arch = FromStr::from_str(&*arch_str).unwrap();

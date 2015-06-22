@@ -216,7 +216,7 @@ impl exec::ExecProber for DyldWholeProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "dyld-whole", 0, std::usize::MAX, &mut vec!());
+        let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-whole", 0, std::usize::MAX, &mut vec!())));
         let c = try!(DyldCache::new(buf));
         Ok((Box::new(c) as Box<exec::Exec>, m.free))
     }
@@ -255,9 +255,9 @@ impl exec::ExecProber for DyldSingleProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
+        let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
             ::getopts::optflag("i", "idx", "choose by idx"),
-        ]);
+        ])));
         let c = try!(DyldCache::new(buf.clone()));
         let mut free = m.free.clone();
         let path = &free.remove(0)[..];

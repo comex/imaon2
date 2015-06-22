@@ -92,7 +92,8 @@ $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
-$(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,util,)
+$(call define_crate,$(LIB),dis,dis/dis.rs,exec)
+$(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 
 $(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
 

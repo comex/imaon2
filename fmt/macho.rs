@@ -819,9 +819,9 @@ impl exec::ExecProber for MachOProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
-        let m = util::do_getopts_or_panic(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
+        let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
             // ...
-        ));
+        ))));
         let mo: MachO = try!(MachO::new(buf, true, 0));
         Ok((Box::new(mo) as Box<exec::Exec>, m.free))
     }
@@ -889,13 +889,11 @@ impl exec::ExecProber for FatMachOProber {
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),
             getopts::optopt("s", "slice", "choose by slice number", ""),
         );
-        let mut m = util::do_getopts_or_panic(&*args, top, 0, std::usize::MAX, &mut optgrps);
+        let mut m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, top, 0, std::usize::MAX, &mut optgrps)));
         let slice_num = m.opt_str("slice");
         let arch = m.opt_str("arch");
         if slice_num.is_some() == arch.is_some() {
-            // TODO
-            util::usage(top, &mut optgrps);
-            panic!();
+            return exec::usage_to_invalid_args(Err(util::usage(top, &mut optgrps)));
         }
         let slice_i = slice_num.map_or(0u64, |s| FromStr::from_str(&*s).unwrap());
         let mut result = None;
@@ -916,7 +914,7 @@ impl exec::ExecProber for FatMachOProber {
         }
         match result {
             Some(e) => e,
-            None => exec::err(exec::ErrorKind::Other, "fat arch matching command line not found")
+            None => exec::err(exec::ErrorKind::Other, "no fat arch matched the arguments specified")
         }
     }
 }

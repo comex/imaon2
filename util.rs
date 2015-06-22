@@ -294,13 +294,13 @@ pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: 
     None
 }
 
-pub fn do_getopts_or_panic(args: &[String], top: &str, min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> getopts::Matches {
-    do_getopts(args, min_expected_free, max_expected_free, optgrps).unwrap_or_else(|| { usage(top, optgrps); panic!(); })
+pub fn do_getopts_or_usage(args: &[String], top: &str, min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> Result<getopts::Matches, String> {
+    do_getopts(args, min_expected_free, max_expected_free, optgrps).ok_or_else(|| { usage(top, optgrps) })
 }
 
-pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) {
+pub fn usage(top: &str, optgrps: &mut Vec<getopts::OptGroup>) -> String {
     optgrps.push(getopts::optflag("h", "help", "This help"));
-    println!("{}", getopts::usage(top, &optgrps));
+    getopts::usage(top, &optgrps)
 }
 
 pub fn exit() -> ! {
