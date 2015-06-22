@@ -1,7 +1,6 @@
-#![feature(unboxed_closures)]
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(collections, into_cow)]
+#![feature(collections, into_cow, box_syntax)]
 
 #[macro_use]
 extern crate macros;
@@ -31,13 +30,19 @@ pub struct Error {
     pub kind: ErrorKind,
     pub message: std::borrow::Cow<'static, str>,
 }
-pub type ExecResult<T> = Result<T, Error>;
+display_as_debug!(Error);
+
+impl std::error::Error for Error {
+    fn description(&self) -> &str { &*self.message }
+}
+
+pub type ExecResult<T> = Result<T, Box<Error>>;
 pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
-    Err(Error { kind: kind, message: s.into_cow() })
+    Err(box Error { kind: kind, message: s.into_cow() })
 }
 
 pub fn usage_to_invalid_args<T>(o: Result<T, String>) -> ExecResult<T> {
-    o.map_err(|msg| Error { kind: ErrorKind::InvalidArgs, message: msg.into_cow() })
+    o.map_err(|msg| box Error { kind: ErrorKind::InvalidArgs, message: msg.into_cow() })
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
