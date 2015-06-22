@@ -66,7 +66,7 @@ macro_rules! delegate_arith{($stru:ident, $traitname:ident, $methname:ident, $ot
 #[macro_export]
 macro_rules! display_as_debug{($ty:ty) => (
     impl ::std::fmt::Display for $ty {
-        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result  {
+        fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result  {
             ::std::fmt::Debug::fmt(self, fmt)
         }
     }

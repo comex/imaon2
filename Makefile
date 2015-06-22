@@ -32,10 +32,9 @@ define define_crate_
 # 1=kind 2=name 3=sources 4=deps
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
+# specify -o explicitly?
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) cargo-build
-	# specify -o explicitly?
 	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
-	#cd $(OUT); ln -nfs $$(call cratematch_$(1),$(2)) ../$$@
 
 all: $$(cratefile-$(2))
 
@@ -92,10 +91,10 @@ $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h > "$@"
 $(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
-$(call define_crate,$(LIB),dis,dis/dis.rs,exec)
+$(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 
-$(call define_crate,bin,exectool,fmt/exectool.rs fmt/execall.rs,macho elf raw_binary)
+$(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis llvmdis)
 
 clean:
 	rm -rf out cargo-build Cargo.lock target

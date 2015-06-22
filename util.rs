@@ -406,6 +406,13 @@ pub fn stoi<T: IntStuff>(mut s: &str) -> Option<T> {
     result
 }
 
+#[derive(Debug, Clone)]
+pub struct GenericError(pub String);
+display_as_debug!(GenericError);
+impl std::error::Error for GenericError {
+    fn description(&self) -> &str { &*self.0 }
+}
+
 #[test]
 fn test_branch() {
     let do_i = |i: usize| {

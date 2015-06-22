@@ -12,7 +12,10 @@ use std::fs;
 use std::path::Path;
 use std::io::Write;
 use std::cmp::min;
-mod execall;
+
+use util::VecCopyExt;
+#[path = "fmt/execall.rs"] mod execall;
+#[path = "dis/disall.rs"] mod disall;
 
 fn macho_filedata_info(_mo: &macho::MachO) {
     panic!();
@@ -36,6 +39,39 @@ fn macho_filedata_info(_mo: &macho::MachO) {
     entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
     entry(&mo.dyld_export,    "dyld export");
     */
+}
+
+fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Vec<u8> {
+    let eb = ex.get_exec_base();
+    let z;
+    let is_addr_end: bool;
+    if let Some(z_) = dump_spec.find('+') {
+        z = z_; is_addr_end = false;
+    } else if let Some(z_) = dump_spec.find('-') {
+        z = z_; is_addr_end = true;
+    } else {
+        panic!();
+    }
+    let addr: u64 = util::stoi(&dump_spec[..z]).unwrap();
+    let mut size: u64 = util::stoi(&dump_spec[z+1..]).unwrap();
+    assert!(size <= (std::usize::MAX as u64));
+    let mut ret = Vec::with_capacity(size as usize);
+    if is_addr_end { size -= addr; }
+
+    let (mut addr, mut size) = (exec::VMA(addr), size);
+    while size != 0 {
+        if let Some((seg, off, mut osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
+            osize = min(osize, size);
+            let buf = seg.data.as_ref().unwrap().get();
+            ret.extend_slice(&buf[off as usize..(off+osize) as usize]);
+            addr = addr + osize;
+            size -= osize;
+        } else {
+            panic!("unmapped: {}", addr);
+        }
+    }
+
+    ret
 }
 
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
@@ -94,31 +130,8 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         }
     }
     if let Some(dump_spec) = m.opt_str("dump") {
-        let z;
-        let is_addr_end: bool;
-        if let Some(z_) = dump_spec.find('+') {
-            z = z_; is_addr_end = false;
-        } else if let Some(z_) = dump_spec.find('-') {
-            z = z_; is_addr_end = true;
-        } else {
-            panic!();
-        }
-        let addr: u64 = util::stoi(&dump_spec[..z]).unwrap();
-        let mut size: u64 = util::stoi(&dump_spec[z+1..]).unwrap();
-        if is_addr_end { size -= addr; }
-
-        let (mut addr, mut size) = (exec::VMA(addr), size);
-        while size != 0 {
-            if let Some((seg, off, mut osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
-                osize = min(osize, size);
-                let buf = seg.data.as_ref().unwrap().get();
-                std::io::stdout().write(&buf[off as usize..(off+osize) as usize]).unwrap();
-                addr = addr + osize;
-                size -= osize;
-            } else {
-                panic!("unmapped: {}", addr);
-            }
-        }
+        let dump_data = get_dump_from_spec(ex, dump_spec);
+        std::io::stdout().write(&*dump_data);
     }
 }
 
@@ -149,6 +162,8 @@ fn main() {
         getopts::optopt( "",  "o2a",   "Offset to address", "off"),
         getopts::optopt( "",  "a2o",   "Address to offset", "addr"),
         getopts::optopt( "",  "dump",  "Dump address range", "addr+len"),
+        getopts::optopt( "",  "dis-range",   "Disassemble address range", "addr+len"),
+        getopts::optopt( "",  "dis",   "Disassembler name and options", "llvm/..."),
         getopts::optopt( "",  "extract", "Rewrite whole file", "outfile"),
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
