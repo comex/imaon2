@@ -140,7 +140,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
             None => arch::Arch::UnknownArch,
         };
-        let dis = dis::create(&*disall::all_families(), arch, &[]).unwrap();
+        let dis = dis::create(disall::all_families, arch, &[]).unwrap();
         let dump_data = get_dump_from_spec(ex, dump_spec);
         //std::io::stdout().write(&*dump_data);
     }

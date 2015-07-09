@@ -71,6 +71,7 @@ all: out-td
 
 cargo-build: Cargo.toml
 	test -a Cargo.lock && cargo update || true
+	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
 	cargo build
 	touch $@ # xxx
 

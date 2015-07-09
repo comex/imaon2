@@ -1,8 +1,7 @@
 extern crate dis;
 extern crate llvmdis;
+use std::marker::PhantomData;
 
-static LDF: llvmdis::LLVMDisassemblerFamily = llvmdis::LLVMDisassemblerFamily;
-
-pub fn all_families() -> Vec<&'static dis::DisassemblerFamilyBoxy> {
-    vec![&LDF as &'static dis::DisassemblerFamilyBoxy]
-}
+pub static all_families: &'static [&'static dis::DisassemblerFamily] = &[
+    &dis::DisassemblerFamilyImpl::<llvmdis::LLVMDisassembler>(PhantomData) as &dis::DisassemblerFamily,
+];

@@ -55,27 +55,24 @@ impl LLVMDisassembler {
 
 impl dis::Disassembler for LLVMDisassembler {
 }
-
-pub struct LLVMDisassemblerFamily;
-impl dis::DisassemblerFamily for LLVMDisassemblerFamily {
-    type Dis = LLVMDisassembler;
-    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Self::Dis>, Box<dis::CreateDisError>> {
+impl dis::DisassemblerStatics for LLVMDisassembler {
+    fn new_with_args(arch: arch::Arch, args: &[String]) -> Result<LLVMDisassembler, dis::CreateDisError> {
         let mut optgrps = vec![
             getopts::optopt("", "triple",      "triple to pass to LLVM", ""),
             getopts::optopt("", "cpu",         "CPU name to pass to LLVM", ""),
             getopts::optopt("", "features",    "feature string to pass to LLVM", ""),
 
         ];
-        let m = try!(util::do_getopts_or_usage(args, "llvmdis ...", 0, 0, &mut optgrps).map_err(|e| box dis::CreateDisError::InvalidArgs(e)));
+        let m = try!(util::do_getopts_or_usage(args, "llvmdis ...", 0, 0, &mut optgrps).map_err(|e| dis::CreateDisError::InvalidArgs(e)));
 
         let triple = m.opt_str("triple");
         let cpu = m.opt_str("cpu");
         let features = m.opt_str("features");
 
         match LLVMDisassembler::new(arch, triple.as_ref().map(|x| &**x), cpu.as_ref().map(|x| &**x), features.as_ref().map(|x| &**x)) {
-            Some(d) => Ok(box d),
-            None => Err(box dis::CreateDisError::Other(box util::GenericError("LLVMCreateDisasmCPUFeatures failed".to_owned()))),
+            Some(d) => Ok(d),
+            None => Err(dis::CreateDisError::Other(box util::GenericError("LLVMCreateDisasmCPUFeatures failed".to_owned()))),
         }
     }
-    fn name(&self) -> &str { "llvm" }
+    fn name() -> &'static str { "llvm" }
 }

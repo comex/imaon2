@@ -3,6 +3,7 @@ extern crate exec;
 #[macro_use]
 extern crate macros;
 use exec::arch;
+use std::marker::PhantomData;
 
 #[derive(Debug)]
 pub enum CreateDisError {
@@ -30,31 +31,32 @@ pub trait Disassembler : 'static {
     fn can_disassemble_to_str(&self) -> bool { false }
     fn disassemble_to_str(&self, _bytes: &[u8]) -> String { unimplemented!() }
 }
-pub trait DisassemblerFamily : 'static {
-    type Dis: Disassembler;
-    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Self::Dis>, Box<CreateDisError>>;
+pub trait DisassemblerStatics : Disassembler {
+    fn new_with_args(arch: arch::Arch, args: &[String]) -> Result<Self, CreateDisError>;
+    fn name() -> &'static str;
+}
+
+pub trait DisassemblerFamily : Sync + 'static {
+    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>>;
     fn name(&self) -> &str;
 }
 
-pub trait DisassemblerFamilyBoxy : 'static {
-    fn create_disassembler_box(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>>;
-    fn name(&self) -> &str;
-}
-impl<T: DisassemblerFamily> DisassemblerFamilyBoxy for T {
-    fn create_disassembler_box(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
-        self.create_disassembler(arch, args).map(|bd| bd as Box<Disassembler>)
+pub struct DisassemblerFamilyImpl<Dis: 'static>(pub PhantomData<fn(Dis)>);
+impl<Dis: DisassemblerStatics> DisassemblerFamily for DisassemblerFamilyImpl<Dis> {
+    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
+        Dis::new_with_args(arch, args).map(|dis| box dis as Box<Disassembler>).map_err(|err| box err)
     }
-    fn name(&self) -> &str { DisassemblerFamily::name(self) }
+    fn name(&self) -> &str { Dis::name() }
 }
 
-pub fn create(dfs: &[&'static DisassemblerFamilyBoxy], arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
+pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
     if args.len() == 0 {
         return Err(box CreateDisError::InvalidArgs("empty argument list passed to dis::create".to_owned()));
     }
     let name = &args[0];
     for df in dfs.iter() {
         if df.name() == name {
-            return df.create_disassembler_box(arch, &args[1..]);
+            return df.create_disassembler(arch, &args[1..]);
         }
     }
     Err(box CreateDisError::InvalidArgs(format!("no disassembler named {}", name)))
