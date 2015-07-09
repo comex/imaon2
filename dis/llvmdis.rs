@@ -77,4 +77,5 @@ impl dis::DisassemblerFamily for LLVMDisassemblerFamily {
             None => Err(box dis::CreateDisError::Other(box util::GenericError("LLVMCreateDisasmCPUFeatures failed".to_owned()))),
         }
     }
+    fn name(&self) -> &str { "llvm" }
 }

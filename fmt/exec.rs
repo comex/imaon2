@@ -186,6 +186,9 @@ pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>
 }
 
 pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+    if args.len() == 0 {
+        return err(ErrorKind::InvalidArgs, "empty argument list passed to exec::create");
+    }
     let prober_name = args.remove(0);
     if prober_name == "auto" {
         return create_auto(eps, buf, args);
@@ -195,7 +198,7 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>)
             return epp.create(eps, buf, args);
         }
     }
-    panic!("no format named {}", prober_name)
+    err(ErrorKind::InvalidArgs, format!("no format named {}", prober_name))
 }
 
 fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {

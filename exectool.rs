@@ -4,16 +4,18 @@ extern crate util;
 extern crate bsdlike_getopts as getopts;
 extern crate exec;
 extern crate macho;
+extern crate dis;
 #[macro_use]
 extern crate macros;
 
-use exec::SymbolValue;
 use std::fs;
 use std::path::Path;
 use std::io::Write;
 use std::cmp::min;
+use std::str::FromStr;
 
 use util::VecCopyExt;
+use exec::{arch, SymbolValue};
 #[path = "fmt/execall.rs"] mod execall;
 #[path = "dis/disall.rs"] mod disall;
 
@@ -131,7 +133,16 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     }
     if let Some(dump_spec) = m.opt_str("dump") {
         let dump_data = get_dump_from_spec(ex, dump_spec);
-        std::io::stdout().write(&*dump_data);
+        std::io::stdout().write(&*dump_data).unwrap();
+    }
+    if let Some(dump_spec) = m.opt_str("dis-range") {
+        let arch = match m.opt_str("arch") {
+            Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
+            None => arch::Arch::UnknownArch,
+        };
+        let dis = dis::create(&*disall::all_families(), arch, &[]).unwrap();
+        let dump_data = get_dump_from_spec(ex, dump_spec);
+        //std::io::stdout().write(&*dump_data);
     }
 }
 
