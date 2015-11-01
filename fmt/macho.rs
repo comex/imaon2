@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(collections, libc, into_cow)]
-#![feature(negate_unsigned, iter_arith, slice_bytes, vec_resize, drain, vec_push_all)]
+#![feature(negate_unsigned, iter_arith, slice_bytes, drain, vec_push_all)]
 #[macro_use]
 extern crate macros;
 extern crate util;

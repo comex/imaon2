@@ -52,7 +52,7 @@ pub trait Disassembler : 'static {
     }
     // todo - disassemble_all_to_str?
 }
-pub trait DisassemblerStatics : Disassembler {
+pub trait DisassemblerStatics : Disassembler + Sized {
     fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<Self, CreateDisError>;
     fn name() -> &'static str;
 }

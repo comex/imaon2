@@ -1,4 +1,4 @@
-#![feature(box_syntax)]
+#![feature(box_syntax, libc)]
 extern crate exec;
 extern crate util;
 extern crate autollvm as al;

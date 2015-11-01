@@ -373,7 +373,7 @@ impl<T: std::string::ToString> VecStrExt for Vec<T> {
     fn strings(&self) -> Vec<String> { self.iter().map(|x| x.to_string()).collect() }
 }
 
-pub trait IntStuffSU {
+pub trait IntStuffSU : Sized {
     fn neg_if_possible(self) -> Option<Self>;
 }
 
