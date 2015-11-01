@@ -27,29 +27,50 @@ impl std::error::Error for CreateDisError {
     }
 }
 
+pub struct DisassemblerInput<'a> {
+    pub data: &'a [u8],
+    pub pc: exec::VMA,
+}
+
 pub trait Disassembler : 'static {
+    fn arch(&self) -> &arch::ArchAndOptions;
     fn can_disassemble_to_str(&self) -> bool { false }
-    fn disassemble_to_str(&self, _bytes: &[u8]) -> String { unimplemented!() }
+    fn disassemble_insn_to_str(&self, _input: DisassemblerInput) -> Option<(String, u32)> { unimplemented!() }
+    fn disassemble_multiple_to_str(&self, input: DisassemblerInput) -> Vec<(String, exec::VMA, u32)> {
+        let mut result = Vec::new();
+        let mut off = 0;
+        let nia = self.arch().natural_insn_align();
+        while off < input.data.len() {
+            if let Some((dissed, length)) = self.disassemble_insn_to_str(DisassemblerInput { data: &input.data[off..], pc: input.pc + (off as u64)}) {
+                result.push((dissed, input.pc + (off as u64), length));
+                off += length as usize;
+            } else {
+                off += nia as usize;
+            }
+        }
+        result
+    }
+    // todo - disassemble_all_to_str?
 }
 pub trait DisassemblerStatics : Disassembler {
-    fn new_with_args(arch: arch::Arch, args: &[String]) -> Result<Self, CreateDisError>;
+    fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<Self, CreateDisError>;
     fn name() -> &'static str;
 }
 
 pub trait DisassemblerFamily : Sync + 'static {
-    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>>;
+    fn create_disassembler(&self, arch: arch::ArchAndOptions, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>>;
     fn name(&self) -> &str;
 }
 
-pub struct DisassemblerFamilyImpl<Dis: 'static>(pub PhantomData<fn(Dis)>);
+pub struct DisassemblerFamilyImpl<Dis: 'static>(pub PhantomData<fn()->Dis>);
 impl<Dis: DisassemblerStatics> DisassemblerFamily for DisassemblerFamilyImpl<Dis> {
-    fn create_disassembler(&self, arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
+    fn create_disassembler(&self, arch: arch::ArchAndOptions, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
         Dis::new_with_args(arch, args).map(|dis| box dis as Box<Disassembler>).map_err(|err| box err)
     }
     fn name(&self) -> &str { Dis::name() }
 }
 
-pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::Arch, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
+pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::ArchAndOptions, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
     if args.len() == 0 {
         return Err(box CreateDisError::InvalidArgs("empty argument list passed to dis::create".to_owned()));
     }

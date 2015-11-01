@@ -3,8 +3,11 @@ extern crate exec;
 extern crate util;
 extern crate autollvm as al;
 extern crate dis;
+extern crate libc;
 extern crate bsdlike_getopts as getopts;
 use exec::arch;
+use exec::arch::ArchAndOptions;
+use libc::c_char;
 
 use std::ffi::CString;
 
@@ -12,11 +15,12 @@ use std::sync::{Once, ONCE_INIT};
 static LLVM_INIT_ONCE: Once = ONCE_INIT;
 
 pub struct LLVMDisassembler {
+    arch: arch::ArchAndOptions,
     dcr: al::LLVMDisasmContextRef,
 }
 
 impl LLVMDisassembler {
-    pub fn new(arch: arch::Arch, triple: Option<&str>, cpu: Option<&str>, features: Option<&str>) -> Option<Self> {
+    pub fn new(arch: arch::ArchAndOptions, triple: Option<&str>, cpu: Option<&str>, features: Option<&str>) -> Result<Self, util::GenericError> {
         LLVM_INIT_ONCE.call_once(|| {
             unsafe {
                 al::LLVMInitializeAllTargetInfos();
@@ -25,9 +29,16 @@ impl LLVMDisassembler {
             }
         });
 
-        let triple = triple.unwrap_or_else(|| {
-            "arm-apple-darwin9"
-        });
+        let triple = if let Some(t) = triple { t } else {
+            match arch {
+                ArchAndOptions::ARM(arch::ARMOptions { thumb, ..}) =>
+                    if thumb { "thumbv7" } else { "armv7" },
+                ArchAndOptions::X86_64(..) => "x86_64",
+                ArchAndOptions::X86(..) => "x86",
+                ArchAndOptions::UnknownArch => return Err(util::GenericError("can't create disassembler for unknown arch".to_owned())),
+                _ => panic!("todo"),
+            }
+        };
         let triple_cs = CString::new(triple).unwrap();
         let cpu_cs = CString::new(cpu.unwrap_or("")).unwrap();
         let features_cs = CString::new(features.unwrap_or("")).unwrap();
@@ -45,18 +56,35 @@ impl LLVMDisassembler {
         };
 
         if dcr == std::ptr::null_mut() {
-            return None;
+            return Err(util::GenericError("LLVMCreateDisasmCPUFeatures failed".to_owned()));
         }
 
-        Some(LLVMDisassembler { dcr: dcr })
+        Ok(LLVMDisassembler { arch: arch, dcr: dcr })
+    }
+}
+
+impl Drop for LLVMDisassembler {
+    fn drop(&mut self) {
+        unsafe { al::LLVMDisasmDispose(self.dcr); }
     }
 }
 
 
 impl dis::Disassembler for LLVMDisassembler {
+    fn arch(&self) -> &arch::ArchAndOptions { &self.arch }
+    fn can_disassemble_to_str(&self) -> bool { true }
+    fn disassemble_insn_to_str(&self, input: dis::DisassemblerInput) -> Option<(String, u32)> {
+        let mut tmp: [u8; 256] = unsafe { std::mem::uninitialized() };
+        let res = unsafe { al::LLVMDisasmInstruction(self.dcr, input.data.as_ptr() as *mut u8, input.data.len() as u64, input.pc.0, &mut tmp[0] as *mut u8 as *mut c_char, 256) };
+        if res == 0 {
+            None
+        } else {
+            Some((util::from_cstr(&tmp[..]), res as u32))
+        }
+    }
 }
 impl dis::DisassemblerStatics for LLVMDisassembler {
-    fn new_with_args(arch: arch::Arch, args: &[String]) -> Result<LLVMDisassembler, dis::CreateDisError> {
+    fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<LLVMDisassembler, dis::CreateDisError> {
         let mut optgrps = vec![
             getopts::optopt("", "triple",      "triple to pass to LLVM", ""),
             getopts::optopt("", "cpu",         "CPU name to pass to LLVM", ""),
@@ -69,10 +97,12 @@ impl dis::DisassemblerStatics for LLVMDisassembler {
         let cpu = m.opt_str("cpu");
         let features = m.opt_str("features");
 
-        match LLVMDisassembler::new(arch, triple.as_ref().map(|x| &**x), cpu.as_ref().map(|x| &**x), features.as_ref().map(|x| &**x)) {
-            Some(d) => Ok(d),
-            None => Err(dis::CreateDisError::Other(box util::GenericError("LLVMCreateDisasmCPUFeatures failed".to_owned()))),
-        }
+        LLVMDisassembler::new(
+            arch,
+            triple.as_ref().map(|x| &**x),
+            cpu.as_ref().map(|x| &**x),
+            features.as_ref().map(|x| &**x)
+        ).map_err(|e| dis::CreateDisError::Other(box e))
     }
     fn name() -> &'static str { "llvm" }
 }

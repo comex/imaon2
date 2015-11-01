@@ -43,7 +43,7 @@ fn macho_filedata_info(_mo: &macho::MachO) {
     */
 }
 
-fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Vec<u8> {
+fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>, String> {
     let eb = ex.get_exec_base();
     let z;
     let is_addr_end: bool;
@@ -52,28 +52,37 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Vec<u8> {
     } else if let Some(z_) = dump_spec.find('-') {
         z = z_; is_addr_end = true;
     } else {
-        panic!();
+        return Err(format!("invalid dump spec '{}' - should be addr+len or addr1-addr2", dump_spec));
     }
     let addr: u64 = util::stoi(&dump_spec[..z]).unwrap();
     let mut size: u64 = util::stoi(&dump_spec[z+1..]).unwrap();
     assert!(size <= (std::usize::MAX as u64));
     let mut ret = Vec::with_capacity(size as usize);
-    if is_addr_end { size -= addr; }
+    if is_addr_end {
+        // 'size' is actually end
+        if size < addr {
+            return Err(format!("in dump spec '{}', end < start", dump_spec));
+        }
+        size -= addr;
+    }
 
     let (mut addr, mut size) = (exec::VMA(addr), size);
     while size != 0 {
-        if let Some((seg, off, mut osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
-            osize = min(osize, size);
+        if let Some((seg, off, osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
+            let osize = min(osize, size);
+            if osize > seg.filesize {
+                return Err(format!("zerofill at: {} (in segment '{}')", addr + seg.filesize, seg.name.as_ref().map(|x| &**x).unwrap_or("<unnamed>")));
+            }
             let buf = seg.data.as_ref().unwrap().get();
             ret.extend_slice(&buf[off as usize..(off+osize) as usize]);
             addr = addr + osize;
             size -= osize;
         } else {
-            panic!("unmapped: {}", addr);
+            return Err(format!("unmapped at: {}", addr));
         }
     }
 
-    ret
+    Ok(ret)
 }
 
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
@@ -132,18 +141,34 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         }
     }
     if let Some(dump_spec) = m.opt_str("dump") {
-        let dump_data = get_dump_from_spec(ex, dump_spec);
-        std::io::stdout().write(&*dump_data).unwrap();
-    }
-    if let Some(dump_spec) = m.opt_str("dis-range") {
-        let arch = match m.opt_str("arch") {
-            Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
-            None => arch::Arch::UnknownArch,
+        match get_dump_from_spec(ex, dump_spec) {
+            Ok(dump_data) => {std::io::stdout().write(&*dump_data).unwrap();},
+            Err(msg) => errln!("dump error: {}", msg),
         };
-        let dis = dis::create(disall::all_families, arch, &[]).unwrap();
-        let dump_data = get_dump_from_spec(ex, dump_spec);
-        //std::io::stdout().write(&*dump_data);
     }
+    let arch = match m.opt_str("arch") {
+        Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
+        None => arch::Arch::UnknownArch,
+    };
+    /*
+    if let Some(dump_spec) = m.opt_str("dis-range") {
+        let dis = dis::create(disall::ALL_FAMILIES, arch.into(), &["llvm".to_owned()]).unwrap();
+        let dump_data = get_dump_from_spec(ex, dump_spec).unwrap();
+        let results = dis.disassemble_multiple_to_str(dis::DisassemblerInput { data: &dump_data[..], pc: exec::VMA(0) });
+        let mut last_end: u64= 0;
+        for (dissed, pc, length) in results {
+            let diff = last_end - pc;
+            if diff != 0 {
+                println!("...skip {}", diff);
+            }
+            println!("-> {}: {}", pc, dissed);
+            last_end = pc.0 + length;
+        }
+        if last_end != (dump_data.len() as u64) {
+            println!("...skip {}", (dump_data.len() as u64) - last_end);
+        }
+    }
+    */
 }
 
 fn do_mut_stuff(mut ex: Box<exec::Exec>, m: &getopts::Matches) {
