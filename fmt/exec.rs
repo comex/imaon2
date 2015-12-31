@@ -40,6 +40,9 @@ pub type ExecResult<T> = Result<T, Box<Error>>;
 pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
     Err(box Error { kind: kind, message: s.into_cow() })
 }
+pub fn err_only<S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> Box<Error> {
+    box Error { kind: kind, message: s.into_cow() }
+}
 
 pub fn usage_to_invalid_args<T>(o: Result<T, String>) -> ExecResult<T> {
     o.map_err(|msg| box Error { kind: ErrorKind::InvalidArgs, message: msg.into_cow() })

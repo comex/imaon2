@@ -1,12 +1,10 @@
 # This Makefile is public domain.
 
 
-rustc-extern = --extern $(1)=`ls -t target/debug/deps/lib$(1)*.rlib | head -n 1`
 
 OUT := ./out
 $(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
-RUSTC := rustc -Ltarget/debug/deps $(call rustc-extern,regex) $(call rustc-extern,log) -L. -L$(OUT)
 LLVM := $(RUSTSRC)/src/llvm
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
@@ -16,13 +14,20 @@ ifeq ($(OPT),1)
 LIB := rlib
 RUSTC := $(RUSTC) -O
 RUSTCFLAGS_bin := -C lto
+CARGO_BUILD_TYPE := release
+CARGO_BUILD_FLAGS := --release
 else
 LIB := dylib
 RUSTC := $(RUSTC) -C codegen-units=1 -C prefer-dynamic
 ifneq ($(NDEBUG),1)
 RUSTC := $(RUSTC) -g
 endif
+CARGO_BUILD_TYPE := debug
+CARGO_BUILD_FLAGS :=
 endif
+
+rustc-extern = --extern $(1)=`ls -t target/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
+RUSTC := rustc -Ltarget/$(CARGO_BUILD_TYPE)/deps $(call rustc-extern,regex) $(call rustc-extern,log) $(call rustc-extern,autollvm) -L. -L$(OUT) $(RUSTC)
 
 RUSTC := $(RUSTC) -Z no-landing-pads
 
@@ -72,7 +77,7 @@ all: out-td
 cargo-build: Cargo.toml
 	test -a Cargo.lock && cargo update || true
 	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
-	cargo build
+	cargo build $(CARGO_BUILD_FLAGS)
 	touch $@ # xxx
 
 XC_LIBCLANG_PATH := /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
@@ -98,7 +103,7 @@ $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 $(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis llvmdis)
 
 clean:
-	rm -rf out cargo-build Cargo.lock target
+	rm -rf out target cargo-build
 
 extraclean: clean
-	rm -rf tables/llvm-tblgen
+	rm -rf tables/llvm-tblgen Cargo.lock

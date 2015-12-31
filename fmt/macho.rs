@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(collections, libc, into_cow)]
-#![feature(negate_unsigned, iter_arith, slice_bytes, drain, vec_push_all)]
+#![feature(negate_unsigned, iter_arith, slice_bytes)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -16,7 +16,7 @@ use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::borrow::IntoCow;
 use std::cmp::max;
-use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt};
+use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
@@ -76,7 +76,7 @@ fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size
         errln!("warning: {} (offset {}, {} * {}b-sized elements) extends past end of file ({})); truncating", name, off, count, elm_size, buf_len);
         count = (buf_len - off) / elm_size;
     }
-    buf.slice(off as usize, (off + count * elm_size) as usize)
+    buf.slice(off as usize, (off + count * elm_size) as usize).unwrap()
 }
 
 
@@ -286,11 +286,17 @@ fn seg_name_to_macho(seg: &exec::Segment, error_pfx: &str) -> [libc::c_char; 16]
     segname
 }
 
+trait OKOrTruncated<T> { fn ok_or_truncated(self) -> exec::ExecResult<T>; }
+impl<T> OKOrTruncated<T> for Option<T> {
+    fn ok_or_truncated(self) -> exec::ExecResult<T> {
+        if let Some(a) = self { Ok(a) } else { exec::err(exec::ErrorKind::BadData, "truncated") }
+    }
+}
+
 impl MachO {
     pub fn new(mc: MCRef, do_lcs: bool, hdr_offset: usize) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
-        if hdr_offset >= std::usize::MAX - size_of::<mach_header>() { return exec::err(exec::ErrorKind::BadData, "truncated"); }
-        let mut lc_off = hdr_offset + size_of::<mach_header>();
+        let mut lc_off = try!(hdr_offset.checked_add(size_of::<mach_header>()).ok_or_truncated());
         {
             let buf = mc.get();
             if buf.len() < lc_off { return exec::err(exec::ErrorKind::BadData, "truncated"); }
@@ -361,8 +367,11 @@ impl MachO {
         let whole = mc.get();
         let mut segi: usize = 0;
         for lci in 0..self.mh.ncmds {
-            let lc: load_command = util::copy_from_slice(&whole[lc_off..lc_off + 8], end);
-            let lc_mc = mc.slice(lc_off, lc_off + lc.cmdsize.to_ui());
+            let lc_data = some_or!(whole.slice_opt(lc_off, lc_off + 8),
+                                   { errln!("warning: load commands truncated (couldn't read LC header)"); return; });
+            let lc: load_command = util::copy_from_slice(lc_data, end);
+            let lc_mc = some_or!(mc.slice(lc_off, lc_off + lc.cmdsize.to_ui()),
+                                 { errln!("warning: load commands truncated (cmdsize {} too high?)", lc.cmdsize); return; });
             let lc_buf = lc_mc.get();
             let this_lc_off = lc_off;
             let mut do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
@@ -374,9 +383,11 @@ impl MachO {
                     type section_x = section;
                 } then {
                     let mut off = size_of::<segment_command_x>();
-                    let sc: segment_command_x = util::copy_from_slice(&lc_buf[..off], end);
+                    let sc_data = some_or!(lc_buf.slice_opt(0, off),
+                                           { errln!("warning: segment command too small; skipping"); return; });
+                    let sc: segment_command_x = util::copy_from_slice(sc_data, end);
                     let segprot = u32_to_prot(sc.initprot as u32);
-                    let data = mc.slice(sc.fileoff as usize, (sc.fileoff+sc.filesize) as usize);
+                    let data: Option<MCRef> = mc.slice(sc.fileoff as usize, (sc.fileoff+sc.filesize) as usize);
                     let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
@@ -384,7 +395,7 @@ impl MachO {
                         filesize: sc.filesize as u64,
                         name: Some(util::from_cstr(&sc.segname)),
                         prot: segprot,
-                        data: Some(data),
+                        data: data,
                         seg_idx: None,
                         private: lci as usize,
                     };
@@ -419,8 +430,12 @@ impl MachO {
                     for fb in &self.linkedit_bits {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
-                            let mut off: u32 = util::copy_from_slice(&lc_buf[fb.cmd_off_field_off..fb.cmd_off_field_off+4], end);
-                            let count: u32 = util::copy_from_slice(&lc_buf[fb.cmd_count_field_off..fb.cmd_count_field_off+4], end);
+                            let (off_data, count_data) =
+                                some_or!(         lc_buf.slice_opt(fb.cmd_off_field_off, fb.cmd_off_field_off+4)
+                                         .and_tup(lc_buf.slice_opt(fb.cmd_count_field_off, fb.cmd_count_field_off+4)),
+                                         { errln!("warning: load command too small for offset/size of {}", fb.name); continue; });
+                            let mut off: u32 = util::copy_from_slice(off_data, end);
+                            let count: u32 = util::copy_from_slice(count_data, end);
                             let buf = if fb.is_symtab {
                                 off *= fb.elm_size as u32;
                                 &self.symtab
@@ -562,7 +577,7 @@ impl MachO {
             off = 0;
             self.load_commands.clear();
             for cmd in &cmds {
-                self.load_commands.push(smc.slice(off, off+cmd.len()));
+                self.load_commands.push(smc.slice(off, off+cmd.len()).unwrap());
                 off += cmd.len();
             }
         }
@@ -623,9 +638,9 @@ impl MachO {
 
     fn symtab_to_xsym(&mut self, parts: &[(usize, usize); 3]) {
         let mc = &self.symtab;
-        self.localsym = mc.slice(parts[0].0, parts[0].0+parts[0].1);
-        self.extdefsym = mc.slice(parts[1].0, parts[1].0+parts[1].1);
-        self.undefsym = mc.slice(parts[2].0, parts[2].0+parts[2].1);
+        self.localsym = mc.slice(parts[0].0, parts[0].0+parts[0].1).unwrap();
+        self.extdefsym = mc.slice(parts[1].0, parts[1].0+parts[1].1).unwrap();
+        self.undefsym = mc.slice(parts[2].0, parts[2].0+parts[2].1).unwrap();
     }
 
     fn update_cmds(&self, linkedit_off: usize, linkedit_allocs: &[(usize, usize)]) -> Vec<Vec<u8>> {
@@ -799,7 +814,6 @@ impl MachO {
     }
 }
 
-#[derive(Copy, Clone)]
 pub struct MachOProber;
 
 impl exec::ExecProber for MachOProber {
@@ -812,7 +826,7 @@ impl exec::ExecProber for MachOProber {
                 desc: m.desc(),
                 arch: m.eb.arch,
                 likely: true,
-                cmd: vec!("macho".to_string()),
+                cmd: vec!["macho".to_string()],
             })
         } else {
             vec!()
@@ -827,7 +841,6 @@ impl exec::ExecProber for MachOProber {
     }
 }
 
-#[derive(Copy, Clone)]
 pub struct FatMachOProber;
 
 impl FatMachOProber {
@@ -869,12 +882,12 @@ impl exec::ExecProber for FatMachOProber {
             };
             let off = fa.offset.to_ui();
             let size = fa.size.to_ui();
-            for pr in exec::probe_all(eps, mc.slice(off, off + size)).into_iter() {
+            for pr in exec::probe_all(eps, mc.slice(off, off + size).unwrap()).into_iter() {
                 let npr = exec::ProbeResult {
                     desc: format!("(slice #{}) {}", i, pr.desc),
                     arch: pr.arch,
                     likely: pr.likely,
-                    cmd: { let mut s = vec!("fat", "--arch", &*arch).strings(); s.push_all(&*pr.cmd); s },
+                    cmd: { let mut s = vec!("fat", "--arch", &*arch).strings(); s.extend_from_slice(&*pr.cmd); s },
                 };
                 result.push(npr);
             }
@@ -906,7 +919,7 @@ impl exec::ExecProber for FatMachOProber {
             {
                 let off = fa.offset.to_ui();
                 let size = fa.size.to_ui();
-                result = Some(exec::create(eps, mc.slice(off, off + size), replace(&mut m.free, vec!())));
+                result = Some(exec::create(eps, mc.slice(off, off + size).unwrap(), replace(&mut m.free, vec!())));
             }
         });
         if !ok {

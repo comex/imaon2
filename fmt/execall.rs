@@ -14,6 +14,7 @@ pub fn all_probers() -> Vec<exec::ExecProberRef> {
             mem::transmute(&dyldcache::DyldWholeProber  as &ExecProber),
             mem::transmute(&dyldcache::DyldSingleProber as &ExecProber),
             mem::transmute(&self::macho::FatMachOProber as &ExecProber),
+            mem::transmute(&self::elf::ElfProber        as &ExecProber),
             mem::transmute(&self::raw_binary::RawProber as &ExecProber),
         );
     }

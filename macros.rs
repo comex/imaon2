@@ -4,7 +4,7 @@
 
 macro_rules! deriving_swap {
     (
-        $(twin $twin:ident)*
+        //$(twin $twin:ident)*
         #[repr(C)]
         #[derive(Copy)]
         pub struct $name:ident {
@@ -82,3 +82,8 @@ macro_rules! errln {($($a:tt)*) => {{
     use ::std::io::Write;
     writeln!(::std::io::stderr(), $($a)*).unwrap();
 }}}
+
+#[macro_export]
+macro_rules! some_or {($opt:expr, $els:stmt) => {
+    if let Some(xxx) = $opt { xxx } else { $els; }
+}}

@@ -1,7 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
 #![feature(libc, collections, slice_bytes)]
-#![allow(raw_pointer_derive)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -239,13 +238,13 @@ impl MCRef {
         }
     }
 
-    pub fn slice(&self, from: usize, to: usize) -> MCRef {
+    pub fn slice(&self, from: usize, to: usize) -> Option<MCRef> {
         let len = to - from;
         if from > self.len || len > self.len - from {
-            panic!("MCRef::slice: bad slice");
+            return None
         }
         unsafe {
-            MCRef { mm: self.mm.clone(), ptr: self.ptr.offset(from as isize), len: len }
+            Some(MCRef { mm: self.mm.clone(), ptr: self.ptr.offset(from as isize), len: len })
         }
     }
 
@@ -345,9 +344,32 @@ pub fn shell_quote(args: &[String]) -> String {
 
 pub trait OptionExt<T> {
     fn unwrap_ref(&self) -> &T;
+    fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)>;
 }
 impl<T> OptionExt<T> for Option<T> {
     fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
+    fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)> {
+        if let Some(s) = self {
+            if let Some(o) = other {
+                return Some((s, o));
+            }
+        }
+        None
+    }
+}
+
+pub trait SliceExt<T> {
+    fn slice_opt(&self, start: usize, end: usize) -> Option<&[T]>;
+}
+impl<T> SliceExt<T> for [T] {
+    fn slice_opt(&self, start: usize, end: usize) -> Option<&[T]> {
+        let len = self.len();
+        if end > len || start > end {
+            None
+        } else {
+            unsafe { Some(std::slice::from_raw_parts(self.as_ptr().offset(start as isize), end - start)) }
+        }
+    }
 }
 
 pub trait VecCopyExt<T> {
