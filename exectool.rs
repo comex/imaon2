@@ -205,10 +205,10 @@ fn main() {
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
     );
     let mut args: Vec<String> = std::env::args().collect();
-    args.remove(0);
-    if args[0].starts_with("-") {
+    if args.len() < 2 || args[1].starts_with("-") {
         usage_panic::<()>(util::usage(top, &mut optgrps));
     }
+    args.remove(0);
     let filename = args.remove(0);
     let mut fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
         errln!("open {} failed: {}", filename, e);
