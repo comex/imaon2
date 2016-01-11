@@ -202,6 +202,9 @@ impl exec::Exec for MachO {
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 }
 
+pub const X_CPU_TYPE_ANY: u32 = 0xffffffff;
+pub const X_CPU_SUBTYPE_MULTIPLE: u32 = 0xffffffff;
+
 fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
     let cputype = cputype as u32;
     let cpusubtype = cpusubtype as u32;
@@ -216,7 +219,7 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
         (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_ALL) => "ppc64",
         (CPU_TYPE_SPARC, CPU_SUBTYPE_SPARC_ALL) => "sparc",
         (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_ALL) => "arm",
-        (CPU_TYPE_ANY, CPU_SUBTYPE_MULTIPLE) => "any",
+        (X_CPU_TYPE_ANY, X_CPU_SUBTYPE_MULTIPLE) => "any",
         (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_7100LC) => "hppa7100LC",
         (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68030_ONLY) => "m68030",
         (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68040) => "m68040",
@@ -248,8 +251,8 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
         (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K) => "armv7k",
         (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL) => "arm64",
         (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8) => "arm64v8",
-        (CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
-        (CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
+        (X_CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
+        (X_CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
         _ => return None,
     })
 }

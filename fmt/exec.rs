@@ -1,15 +1,13 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(collections, into_cow, box_syntax)]
+#![feature(into_cow, box_syntax)]
 
 #[macro_use]
 extern crate macros;
 extern crate util;
-extern crate collections;
 extern crate bsdlike_getopts as getopts;
 use arch::Arch;
-//use collections::hashmap::HashMap;
-use collections::borrow::IntoCow;
+use std::borrow::IntoCow;
 use std::vec::Vec;
 use std::fmt;
 use std::mem::replace;

@@ -1,9 +1,11 @@
 #![allow(non_camel_case_types)]
+#![feature(into_cow)]
 
 extern crate util;
 extern crate bsdlike_getopts as getopts;
 extern crate exec;
 extern crate macho;
+extern crate elf;
 extern crate dis;
 #[macro_use]
 extern crate macros;
@@ -13,6 +15,8 @@ use std::path::Path;
 use std::io::Write;
 use std::cmp::min;
 use std::str::FromStr;
+
+use std::borrow::IntoCow;
 
 use util::VecCopyExt;
 use exec::{arch, SymbolValue};
@@ -41,6 +45,16 @@ fn macho_filedata_info(_mo: &macho::MachO) {
     entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
     entry(&mo.dyld_export,    "dyld export");
     */
+}
+
+fn elf_dynamic(elf: &elf::Elf) {
+    println!(".dynamic entries:");
+    for dyn in &elf.dynamic {
+        println!("{}: 0x{:x}",
+                  dyn.tag_name().map(|n| n.into_cow()).unwrap_or_else(|| format!("<0x{:x}>", dyn.tag).into_cow()),
+                  dyn.val);
+
+    }
 }
 
 fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>, String> {
@@ -88,6 +102,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     let eb = ex.get_exec_base();
     let macho = ex.as_any().downcast_ref::<macho::MachO>();
+    let elf = ex.as_any().downcast_ref::<elf::Elf>();
     if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
@@ -123,6 +138,9 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     }
     if m.opt_present("macho-filedata-info") {
         macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
+    }
+    if m.opt_present("elf-dynamic") {
+        elf_dynamic(elf.expect("elf-dynamic: not elf"));
     }
     if let Some(off_str) = m.opt_str("o2a") {
         let off: u64 = util::stoi(&off_str).unwrap();
@@ -203,6 +221,7 @@ fn main() {
         getopts::optopt( "",  "extract", "Rewrite whole file", "outfile"),
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
+        getopts::optflag("",  "elf-dynamic", "List ELF .dynamic contents"),
     );
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1].starts_with("-") {

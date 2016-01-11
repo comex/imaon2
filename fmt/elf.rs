@@ -1,18 +1,5 @@
 #![feature(libc, slice_bytes, box_syntax)]
 #![allow(non_camel_case_types)]
-static EM_NAMES: [&'static str; 95] = [
-    // fmt/em_names.awk
-    "none", "m32", "sparc", "386", "68k", "88k", "unk_6", "860", "mips", "s370", "mips_rs3_le",
-    "unk_11", "unk_12", "unk_13", "unk_14", "parisc", "unk_16", "vpp500", "sparc32plus", "960",
-    "ppc", "ppc64", "s390", "unk_23", "unk_24", "unk_25", "unk_26", "unk_27", "unk_28", "unk_29",
-    "unk_30", "unk_31", "unk_32", "unk_33", "unk_34", "unk_35", "v800", "fr20", "rh32", "rce",
-    "arm", "fake_alpha", "sh", "sparcv9", "tricore", "arc", "h8_300", "h8_300h", "h8s", "h8_500",
-    "ia_64", "mips_x", "coldfire", "68hc12", "mma", "pcp", "ncpu", "ndr1", "starcore", "me16",
-    "st100", "tinyj", "x86_64", "pdsp", "unk_64", "unk_65", "fx66", "st9plus", "st7", "68hc16",
-    "68hc11", "68hc08", "68hc05", "svx", "st19", "vax", "cris", "javelin", "firepath", "zsp",
-    "mmix", "huany", "prism", "avr", "fr30", "d10v", "d30v", "v850", "m32r", "mn10300", "mn10200",
-    "pj", "openrisc", "arc_a5", "xtensa", 
-];
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -35,7 +22,7 @@ macro_rules! convert_each {
     }
 }
 
-struct ElfBasics {
+pub struct ElfBasics {
     is64: bool,
     endian: util::Endian,
     abi: &'static str,
@@ -44,13 +31,13 @@ struct ElfBasics {
     arch: Arch,
 }
 
-struct OffCountSize {
+pub struct OffCountSize {
     off: u64,
     count: u64,
     size: u64,
 }
 
-struct Ehdr {
+pub struct Ehdr {
     entry: VMA,
     flags: u32,
     ph: OffCountSize,
@@ -58,13 +45,15 @@ struct Ehdr {
     shstrndx: u16,
     version: u32,
 }
-type Phdr = Elf64_Phdr;
-type Shdr = Elf64_Shdr;
+pub type Phdr = Elf64_Phdr;
+pub type Shdr = Elf64_Shdr;
 
-struct Elf {
+pub struct Elf {
     pub eb: exec::ExecBase,
+    pub basics: ElfBasics,
     pub ehdr: Ehdr,
-
+    pub shdrs: Vec<Shdr>,
+    pub dynamic: Vec<Dyn>,
 }
 
 fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
@@ -112,8 +101,10 @@ fn get_ehdr(basics: &ElfBasics, buf: &[u8]) -> ExecResult<Ehdr> {
     Ok(eh)
 }
 
-fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> Vec<Segment> {
+fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Phdr>) {
     let mut off = ocs.off as usize;
+    let mut segs = Vec::new();
+    let mut phdrs = Vec::new();
     branch!(if basics.is64 == true {
         type ElfX_Phdr = Elf64_Phdr;
     } else {
@@ -122,14 +113,14 @@ fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> Vec<Segment>
         let sizeo = size_of::<ElfX_Phdr>();
         if ocs.size < sizeo as u64 {
             errln!("warning: phdr size ({}) too small, expected at least {}", ocs.size, sizeo);
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let realsize = ocs.size as usize;
-        (0..ocs.count).map(|_| {
+        for i in 0..ocs.count {
             let phdr: ElfX_Phdr = util::copy_from_slice(&buf[off..off+sizeo], basics.endian);
             let private = off;
             off += realsize;
-            Segment {
+            segs.push(Segment {
                 vmaddr: VMA(phdr.p_vaddr as u64),
                 vmsize: phdr.p_memsz as u64,
                 fileoff: phdr.p_offset as u64,
@@ -142,10 +133,17 @@ fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> Vec<Segment>
                 },
                 data: None, // fill in later
                 seg_idx: None,
-                private: std::usize::MAX,
-            }
-        }).collect()
-    })
+                private: i as usize,
+            });
+            phdrs.push(
+                convert_each!(phdr, Elf64_Phdr,
+                    p_type, p_offset, p_vaddr, p_paddr,
+                    p_filesz, p_memsz, p_flags, p_align
+                )
+            );
+        }
+    });
+    (segs, phdrs)
 }
 
 fn get_shdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Shdr>) {
@@ -232,17 +230,104 @@ fn fill_in_sect_names(sects: &mut [Segment], shdrs: &[Shdr], shstrndx: u16) {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Dyn {
+    pub tag: i64,
+    pub val: u64,
+}
+
+impl Dyn {
+    pub fn tag_name(&self) -> Option<&'static str> {
+        if 0 <= self.tag && self.tag <= std::u32::MAX as i64 {
+            d_tag_to_str(self.tag as u32)
+        } else { None }
+    }
+}
+
+
+fn get_dynamic_data(segs: &[Segment], phdrs: &[Phdr], sects: &[Segment], shdrs: &[Shdr]) -> Option<(MCRef, bool)> {
+    // following readelf, find ".dynamic" if possible, else PT_DYNAMIC
+    let mut the_dynamic: Option<MCRef> = None;
+    for (sect, shdr) in sects.iter().zip(shdrs) {
+        if sect.name.is_some() && sect.name.as_ref().unwrap() == ".dynamic" {
+            if the_dynamic.is_some() {
+                errln!("warning: extra .dynamic sections... using the later one");
+            }
+            if sect.data.is_none() {
+                errln!("warning: .dynamic section out of file range, skipping this one");
+                continue;
+            }
+            the_dynamic = sect.data.clone();
+        } else if shdr.sh_type == SHT_DYNAMIC {
+            errln!("warning: section named {} is SHT_DYNAMIC but not called .dynamic, so not using", sect.pretty_name());
+        }
+    }
+    if let Some(x) = the_dynamic { return Some((x, true)); }
+    for (seg, phdr) in segs.iter().zip(phdrs) {
+        if phdr.p_type == PT_DYNAMIC {
+            if the_dynamic.is_some() {
+                errln!("warning: extra PT_DYNAMIC segments... using the later one");
+            }
+            if seg.data.is_none() {
+                errln!("warning: PT_DYNAMIC segment out of file range, skipping this one");
+                continue;
+            }
+            the_dynamic = seg.data.clone();
+        }
+    }
+    if the_dynamic.is_some() && sects.len() > 0 {
+        errln!("warning: found PT_DYNAMIC but no .dynamic, even though there *is* a section table.  weird.");
+    }
+    if let Some(x) = the_dynamic { return Some((x, false)); }
+    None
+}
+
+
+fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Segment], shdrs: &[Shdr]) -> Vec<Dyn> {
+    let (the_dynamic, found_in_section) = some_or!(get_dynamic_data(segs, phdrs, sects, shdrs), { return Vec::new(); });
+    let buf = the_dynamic.get();
+    let mut out = Vec::new();
+    let mut offset = 0;
+    branch!(if basics.is64 == true {
+        type ElfX_Dyn = Elf64_Dyn;
+    } else {
+        type ElfX_Dyn = Elf32_Dyn;
+    } then {
+        let sizeo = size_of::<ElfX_Dyn>();
+        if found_in_section && buf.len() % sizeo != 0 {
+            errln!("warning: .dynamic section length not divisible by sizeof(ElfX_Dyn)");
+        }
+        loop {
+            let s = some_or!(buf.slice_opt(offset, offset + sizeo), {
+                errln!("warning: ELF dynamic data doesn't end with DT_NULL");
+                return out;
+            });
+            let dyn: ElfX_Dyn = util::copy_from_slice(s, basics.endian);
+            if dyn.d_tag == (DT_NULL as i32).into() {
+                return out;
+            }
+            out.push(Dyn {
+                tag: dyn.d_tag.into(),
+                // lol bindgen
+                val: (unsafe { let mut d_un = dyn.d_un; *d_un.d_ptr() }).into()
+            });
+            offset += sizeo;
+        }
+    });
+}
+
 impl Elf {
     fn new(buf: MCRef) -> ExecResult<Self> {
         let mut res = {
             let b = buf.get();
             let basics = try!(check_elf_basics(b, true).map_err(|a| exec::err_only(ErrorKind::BadData, a)));
             let ehdr = try!(get_ehdr(&basics, b));
-            let mut segs = get_phdrs(&basics, b, &ehdr.ph);
+            let (mut segs, phdrs) = get_phdrs(&basics, b, &ehdr.ph);
             let (mut sects, shdrs) = get_shdrs(&basics, b, &ehdr.sh);
             fill_in_data(&mut segs, &buf);
             fill_in_data(&mut sects, &buf);
             fill_in_sect_names(&mut sects, &shdrs, ehdr.shstrndx);
+            let dynamic = get_dynamic(&basics, &segs, &phdrs, &sects, &shdrs);
             let eb = exec::ExecBase {
                 arch: basics.arch,
                 endian: basics.endian,
@@ -251,8 +336,11 @@ impl Elf {
                 whole_buf: None,
             };
             Elf {
-                ehdr: ehdr,
                 eb: eb,
+                basics: basics,
+                ehdr: ehdr,
+                shdrs: shdrs,
+                dynamic: dynamic,
             }
         };
         res.eb.whole_buf = Some(buf);
@@ -330,18 +418,10 @@ fn check_elf_basics(buf: &[u8], warn: bool) -> Result<ElfBasics, &'static str> {
                 "unknown-type"
             },
         },
-        machine: match e_machine as u32 {
-            0x9026 => "alpha",
-            0...94 => EM_NAMES[e_machine as usize],
-            183 => "aarch64",
-            188 => "tilepro",
-            191 => "tilegx",
-            _ => {
+        machine: e_machine_to_str(e_machine as u32).unwrap_or_else(|| {
                 if warn { errln!("warning: unknown e_machine {}", e_machine); }
                 "unknown-machine"
-            },
-
-        },
+        }),
         arch: match e_machine as u32 {
             EM_386 => Arch::X86,
             EM_X86_64 => Arch::X86_64,
