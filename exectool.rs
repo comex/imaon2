@@ -23,12 +23,10 @@ use exec::{arch, SymbolValue};
 #[path = "fmt/execall.rs"] mod execall;
 #[path = "dis/disall.rs"] mod disall;
 
-fn macho_filedata_info(_mo: &macho::MachO) {
-    panic!();
-    /* XXX
+fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
     let entry = |mc: &util::MCRef, name| {
-        if let Some(offset) = mc.offset_in(&mo.eb.whole_buf.unwrap()) {
+        if let Some(offset) = mc.offset_in(&mo.eb.whole_buf.as_ref().unwrap()) {
             println!("{:<16}: offset {:<#8x}, length {:<#8x}",
                 name, offset, mc.len());
         }
@@ -44,7 +42,6 @@ fn macho_filedata_info(_mo: &macho::MachO) {
     entry(&mo.dyld_weak_bind, "dyld weak_bind");
     entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
     entry(&mo.dyld_export,    "dyld export");
-    */
 }
 
 fn elf_dynamic(elf: &elf::Elf) {
