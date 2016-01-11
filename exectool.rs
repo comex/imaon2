@@ -103,7 +103,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
-            println!("{:<16} @ {:<#18x} sz {:<#12x}  off:{:<#12x} filesz {:<#8x} {}",
+            println!("{:<16} @ {:<#18x} sz {:<#12x}  off {:<#12x} filesz {:<#8x} {}",
                 match seg.name { Some(ref n) => &**n, None => "(unnamed)" },
                 seg.vmaddr.0, seg.vmsize,
                 seg.fileoff, seg.filesize,
