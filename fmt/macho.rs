@@ -23,8 +23,12 @@ use std::{u64, u32, usize};
 use std::slice::bytes;
 use std::collections::HashMap;
 
-#[path="../out/macho_bind.rs"]
+#[cfg(opt)]
+#[path="../outrel/macho_bind.rs"]
 mod macho_bind;
+//#[cfg(not(opt))]
+//#[path="../out/macho_bind.rs"]
+//mod macho_bind;
 
 pub mod dyldcache;
 

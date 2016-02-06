@@ -6,8 +6,14 @@ extern crate util;
 extern crate exec;
 extern crate libc;
 
-#[path="../out/elf_bind.rs"]
+
+// XXX cfg_attr broken, and this is totally broken ugh
+#[cfg(opt)]
+#[path="../outrel/elf_bind.rs"]
 mod elf_bind;
+//#[cfg(not(opt))]
+//#[path="../out/elf_bind.rs"]
+//mod elf_bind;
 
 use exec::arch::Arch;
 use util::{MCRef, SliceExt};

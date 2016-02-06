@@ -2,20 +2,16 @@
 
 
 
-OUT := ./out
-$(shell mkdir -p $(OUT))
 RUSTSRC := /usr/src/rust
 LLVM := $(RUSTSRC)/src/llvm
-cratefile_dylib = $(OUT)/lib$(1).dylib
-cratefile_rlib = $(OUT)/lib$(1).rlib
-cratefile_bin = $(OUT)/$(1)
 
 ifeq ($(OPT),1)
 LIB := rlib
-RUSTC := $(RUSTC) -O
+RUSTC := $(RUSTC) -O --cfg opt
 RUSTCFLAGS_bin := -C lto
 CARGO_BUILD_TYPE := release
 CARGO_BUILD_FLAGS := --release
+OUT := ./outrel
 else
 LIB := dylib
 RUSTC := $(RUSTC) -C codegen-units=1 -C prefer-dynamic
@@ -24,7 +20,13 @@ RUSTC := $(RUSTC) -g
 endif
 CARGO_BUILD_TYPE := debug
 CARGO_BUILD_FLAGS :=
+OUT := ./out
 endif
+
+$(shell mkdir -p $(OUT))
+cratefile_dylib = $(OUT)/lib$(1).dylib
+cratefile_rlib = $(OUT)/lib$(1).rlib
+cratefile_bin = $(OUT)/$(1)
 
 rustc-extern = --extern $(1)=`ls -t target/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
 RUSTC := rustc -Ltarget/$(CARGO_BUILD_TYPE)/deps $(call rustc-extern,regex) $(call rustc-extern,log) $(call rustc-extern,autollvm) -L. -L$(OUT) $(RUSTC)
@@ -38,7 +40,7 @@ define define_crate_
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 # specify -o explicitly?
-$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) cargo-build
+$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) $(OUT)/cargo-build
 	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
 
 all: $$(cratefile-$(2))
@@ -74,14 +76,14 @@ td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
 
-cargo-build: Cargo.toml
+$(OUT)/cargo-build: Cargo.toml
 	test -a Cargo.lock && cargo update || true
 	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
 	cargo build $(CARGO_BUILD_FLAGS)
 	touch $@ # xxx
 
 XC_LIBCLANG_PATH := /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
-externals/rust-bindgen/bindgen: cargo-build
+externals/rust-bindgen/bindgen: $(OUT)/cargo-build
 	dir=~/.cargo/git/checkouts; \
 	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
 	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L$(XC_LIBCLANG_PATH) -C link-args='-rpath $(XC_LIBCLANG_PATH)'
@@ -106,7 +108,7 @@ $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 $(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis llvmdis)
 
 clean:
-	rm -rf out target cargo-build
+	rm -rf $(OUT) target/$(CARGO_BUILD_TYPE)
 
 extraclean: clean
 	rm -rf tables/llvm-tblgen Cargo.lock
