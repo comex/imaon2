@@ -1,8 +1,8 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, into_cow)]
-#![feature(iter_arith, slice_bytes)]
+#![feature(collections, libc)]
+#![feature(iter_arith)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -15,14 +15,13 @@ use std::default::Default;
 use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
-use std::borrow::IntoCow;
 use std::cmp::max;
-use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt};
+use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
-use std::slice::bytes;
 use std::collections::HashMap;
+use std::borrow::Cow;
 use util::ByteStr;
 
 pub mod dyldcache;
@@ -342,9 +341,9 @@ impl MachO {
             MH_KEXT_BUNDLE => "kext",
             _ => "<unknown filetype>"
         };
-        let st_desc = match self.subtype_desc() {
-            Some(d) => d.into_cow(),
-            None => format!("<unknown cpu {}/{}>", self.mh.cputype, self.mh.cpusubtype).into_cow()
+        let st_desc: Cow<str> = match self.subtype_desc() {
+            Some(d) => d.into(),
+            None => format!("<unknown cpu {}/{}>", self.mh.cputype, self.mh.cpusubtype).into()
         };
         format!("Mach-O {}/{}", ft_desc, st_desc)
     }
@@ -509,7 +508,7 @@ impl MachO {
         {
             let buf = mm.get_mut();
             for seg in &self.eb.segments {
-                bytes::copy_memory(seg.get_data(), &mut buf[seg.fileoff as usize..]);
+                copy_memory(seg.get_data(), &mut buf[seg.fileoff as usize..]);
             }
         }
         self.eb.whole_buf = Some(MCRef::with_mm(mm));
@@ -566,11 +565,11 @@ impl MachO {
             let seg = &mut self.eb.segments[text_idx];
             let mut sbuf = Vec::new();
             sbuf.resize(seg.filesize as usize, 0);
-            bytes::copy_memory(&seg.get_data()[cmds_space..], &mut sbuf[cmds_space + cmds_push..]);
+            copy_memory(&seg.get_data()[cmds_space..], &mut sbuf[cmds_space + cmds_push..]);
             util::copy_to_slice(&mut sbuf[..size_of::<mach_header>()], &self.mh, self.eb.endian);
             let mut off = header_size;
             for cmd in &cmds {
-                bytes::copy_memory(&cmd[..], &mut sbuf[off..]);
+                copy_memory(&cmd[..], &mut sbuf[off..]);
                 off += cmd.len();
             }
             let smc = MCRef::with_data(&sbuf[..]);

@@ -1,4 +1,4 @@
-#![feature(slice_bytes, box_syntax)]
+#![feature(box_syntax)]
 #![feature(stmt_expr_attributes)]
 #![allow(non_camel_case_types)]
 #[macro_use]
@@ -8,8 +8,8 @@ extern crate exec;
 extern crate elf_bind;
 
 use exec::arch::Arch;
-use util::{MCRef, SliceExt, ByteStr, ByteString};
-use std::slice::bytes;
+use exec::ReadVMA;
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory};
 use std::mem::size_of;
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot}; 
 use elf_bind::*;
@@ -30,7 +30,7 @@ pub struct ElfBasics {
 }
 
 #[derive(Default, Debug)]
-struct DynamicInfo {
+pub struct DynamicInfo {
     needed: Vec<ByteString>,
     pltgot: Option<VMA>,
     hash: Option<VMA>,
@@ -71,14 +71,15 @@ struct DynamicInfoTemp {
     preinit_array: OptOffCountSize,
 }
 
-fn read_cstr<'a>(read: &'a Fn(VMA, usize) -> &'a [u8], offset: VMA) -> Option<ByteString> {
+fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
     let mut size = 32;
     loop {
-        let res = read(offset, size);
+        let res = reader.read(offset, size);
+        let res = res.get();
         if let Some(o) = res.iter().position(|&c| c == 0) {
             return Some(ByteString::from_bytes(&res[..o]));
         }
-        if res.len() < size { return None; }
+        if (res.len() as u64) < size { return None; }
         size *= 2;
     }
 }
@@ -117,7 +118,7 @@ impl DynamicInfo {
         os(&mut self.runpath, "DT_RUNPATH", DT_RUNPATH) ||
         ou32(&mut self.flags, "DT_FLAGS", DT_FLAGS)
     }
-    fn decode<'a>(dyn: &[Dyn], read: &'a Fn(VMA, usize) -> &'a [u8]) -> Self {
+    fn decode<'a>(dyn: &[Dyn], reader: &ReadVMA) -> Self {
         // first, try to find some strtab; more detailed warnings will happen during the main loop
         let mut strtab: Option<VMA> = None;
         for d in dyn {
@@ -136,7 +137,7 @@ impl DynamicInfo {
                      #[inline(always)] |os: &mut Option<ByteString>, name, tag| {
                         if d.tag != tag as i64 { return false; }
                         if let Some(s) = strtab {
-                            if let Some(bs) = read_cstr(read, s + d.val) {
+                            if let Some(bs) = read_cstr(reader, s + d.val) {
                                 *os = Some(bs);
                             } else {
                                 errln!("warning: bad {} offset", name);
@@ -149,7 +150,7 @@ impl DynamicInfo {
                     #[inline(always)] |vs: &mut Vec<ByteString>, name, tag| {
                         if d.tag != tag as i64 { return false; }
                         if let Some(s) = strtab {
-                            if let Some(bs) = read_cstr(read, s + d.val) {
+                            if let Some(bs) = read_cstr(reader, s + d.val) {
                                 vs.push(bs);
                             } else {
                                 errln!("warning: bad {} offset", name);
@@ -159,7 +160,7 @@ impl DynamicInfo {
                         }
                         true
                     },
-                    #[inline(always)] |ov: &mut Option<VMA>, name, tag| {
+                    #[inline(always)] |ov: &mut Option<VMA>, _name, tag| {
                         if d.tag != tag as i64 { return false; }
                         *ov = Some(VMA(d.val));
                         true
@@ -216,18 +217,18 @@ impl DynamicInfo {
 
 #[derive(Default, Debug)]
 pub struct OffCountSize {
-    off: u64,
-    count: u64,
-    size: u64,
+    pub off: u64,
+    pub count: u64,
+    pub size: u64,
 }
 
 pub struct Ehdr {
-    entry: VMA,
-    flags: u32,
-    ph: OffCountSize,
-    sh: OffCountSize,
-    shstrndx: u16,
-    version: u32,
+    pub entry: VMA,
+    pub flags: u32,
+    pub ph: OffCountSize,
+    pub sh: OffCountSize,
+    pub shstrndx: u16,
+    pub version: u32,
 }
 pub type Phdr = Elf64_Phdr;
 pub type Shdr = Elf64_Shdr;
@@ -237,7 +238,8 @@ pub struct Elf {
     pub basics: ElfBasics,
     pub ehdr: Ehdr,
     pub shdrs: Vec<Shdr>,
-    pub dynamic: Vec<Dyn>,
+    pub dyns: Vec<Dyn>,
+    pub dynamic_info: DynamicInfo,
 }
 
 fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
@@ -483,11 +485,11 @@ fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Se
         loop {
             let s = some_or!(buf.slice_opt(offset, offset + sizeo), {
                 errln!("warning: ELF dynamic data doesn't end with DT_NULL");
-                return out;
+                break;
             });
             let dyn: ElfX_Dyn = util::copy_from_slice(s, basics.endian);
             if dyn.d_tag == (DT_NULL as i32).into() {
-                return out;
+                break;
             }
             out.push(Dyn {
                 tag: dyn.d_tag.into(),
@@ -497,6 +499,7 @@ fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Se
             offset += sizeo;
         }
     });
+    out
 }
 
 impl Elf {
@@ -510,7 +513,7 @@ impl Elf {
             fill_in_data(&mut segs, &buf);
             fill_in_data(&mut sects, &buf);
             fill_in_sect_names(&mut sects, &shdrs, ehdr.shstrndx);
-            let dynamic = get_dynamic(&basics, &segs, &phdrs, &sects, &shdrs);
+            let dyns = get_dynamic(&basics, &segs, &phdrs, &sects, &shdrs);
             let eb = exec::ExecBase {
                 arch: basics.arch,
                 endian: basics.endian,
@@ -523,10 +526,12 @@ impl Elf {
                 basics: basics,
                 ehdr: ehdr,
                 shdrs: shdrs,
-                dynamic: dynamic,
+                dyns: dyns,
+                dynamic_info: Default::default(),
             }
         };
         res.eb.whole_buf = Some(buf);
+        res.dynamic_info = DynamicInfo::decode(&res.dyns, &res.eb);
         Ok(res)
     }
 }
@@ -541,7 +546,7 @@ impl exec::Exec for Elf {
 
 fn check_elf_basics(buf: &[u8], warn: bool) -> Result<ElfBasics, &'static str> {
     let mut ident: [u8; 20] = [0; 20]; // plus e_{type, machine}
-    bytes::copy_memory(some_or!(buf.slice_opt(0, 20), { return Err("too short"); }), &mut ident);
+    copy_memory(some_or!(buf.slice_opt(0, 20), { return Err("too short"); }), &mut ident);
     if ident[0] != 0x7f ||
        ident[1] != 0x45 ||
        ident[2] != 0x4c ||

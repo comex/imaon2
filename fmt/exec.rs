@@ -13,7 +13,8 @@ use std::fmt;
 use std::mem::replace;
 use std::mem::transmute;
 use std::str::FromStr;
-use util::{ByteString};
+use std::cmp::min;
+use util::{ByteString, MCRef};
 
 pub mod arch;
 
@@ -254,4 +255,35 @@ pub fn addr_to_seg_off_range(segs: &[Segment], addr: VMA) -> Option<(&Segment, u
         }
     }
     None
+}
+
+pub trait ReadVMA {
+    fn read<'a>(&'a self, addr: VMA, size: u64) -> MCRef;
+}
+
+impl ReadVMA for ExecBase {
+    fn read<'a>(&'a self, addr: VMA, mut size: u64) -> MCRef {
+        let (seg, off, avail) = some_or!(addr_to_seg_off_range(&self.segments, addr),
+            { return MCRef::empty() });
+        if size <= avail {
+            let data = some_or!(seg.data.as_ref(), { return MCRef::empty() });
+            if off > std::usize::MAX as u64 { return MCRef::empty(); }
+            return data.slice(off as usize, min(off + size, data.len() as u64) as usize).unwrap();
+        }
+        let mut res = Vec::new();
+        while size > 0 {
+            let (seg, off, avail) = some_or!(addr_to_seg_off_range(&self.segments, addr),
+                { break });
+            if off > std::usize::MAX as u64 { break; }
+            let data = some_or!(seg.data.as_ref(), { return MCRef::empty() });
+            let data = data.get();
+            let desired = min(avail, size);
+            let end = min(off + desired, data.len() as u64);
+            let sl = &data[off as usize..end as usize];
+            res.extend(sl);
+            if sl.len() as u64 != desired { break; }
+            size -= desired;
+        }
+        MCRef::with_data(&res) // xxx
+    }
 }

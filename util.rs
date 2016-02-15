@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, collections, slice_bytes, pattern)]
+#![feature(libc, collections, pattern)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -19,10 +19,9 @@ use std::os::unix::prelude::AsRawFd;
 use std::num::ParseIntError;
 use std::cmp::max;
 use std::slice;
-use std::slice::bytes;
 use std::fmt::{Debug, Display, Formatter};
 use std::borrow::Cow;
-use std::ops::{Deref, DerefMut, Index, IndexMut};
+use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
 use std::str::pattern::{Pattern, ReverseSearcher};
 
 pub use Endian::*;
@@ -168,32 +167,56 @@ impl ByteStr {
     pub fn from_bytes_mut(s: &mut [u8]) -> &mut ByteStr {
         unsafe { transmute(s) }
     }
-    // TODO this is borked
-    pub fn find<P>(&self, pat: P) -> Option<usize>
-        where for<'b> P: Pattern<'b> {
-        let x = self.lossy();
-        (*x).find(pat)
+    pub fn find<P>(&self, pat: u8) -> Option<usize> {
+        let ptr = self.0.as_ptr();
+        let chr = unsafe { memchr(ptr, pat as i32, self.0.len()) };
+        if chr == 0 as *mut u8 {
+            None
+        } else {
+            Some((chr as usize) - (ptr as usize))
+        }
     }
     /*
     pub fn rfind<P>(&self, pat: P) -> Option<usize>
         where for<'b> P: Pattern<'b>,
               for<'b> <P as Pattern<'b>>::Searcher: ReverseSearcher<'b>
               */
-    pub fn rfind(&self, pat: char) -> Option<usize> {
-        (*self.lossy()).rfind(pat)
+    pub fn rfind(&self, pat: u8) -> Option<usize> {
+        for i in (0..self.len()).rev() {
+            if self[i] == pat {
+                return Some(i);
+            }
+        }
+        None
     }
 }
+pub trait SomeRange<T> {}
+impl<T> SomeRange<T> for RangeTo<T> {}
+impl<T> SomeRange<T> for RangeFrom<T> {}
+impl<T> SomeRange<T> for Range<T> {}
+impl<T> SomeRange<T> for RangeFull {}
 impl<T> Index<T> for ByteStr
-    where [u8]: Index<T>/*, <[u8] as Index<T>>::Output = [u8]*/ {
+    where T: SomeRange<usize>, [u8]: Index<T> {
     type Output = ByteStr;
     fn index(&self, idx: T) -> &Self::Output {
         unsafe { ByteStr::from_bytes(transmute(&self.0[idx])) }
     }
 }
 impl<T> IndexMut<T> for ByteStr
-    where [u8]: IndexMut<T>/*, <[u8] as Index<T>>::Output = [u8]*/ {
+    where T: SomeRange<usize>, [u8]: IndexMut<T> {
     fn index_mut(&mut self, idx: T) -> &mut Self::Output {
         unsafe { ByteStr::from_bytes_mut(transmute(&mut self.0[idx])) }
+    }
+}
+impl Index<usize> for ByteStr {
+    type Output = u8;
+    fn index(&self, idx: usize) -> &u8 {
+        &self.0[idx]
+    }
+}
+impl IndexMut<usize> for ByteStr {
+    fn index_mut(&mut self, idx: usize) -> &mut u8 {
+        &mut self.0[idx]
     }
 }
 impl ByteString {
@@ -309,7 +332,7 @@ unsafe impl Send for MCRef {}
 
 impl std::default::Default for MCRef {
     fn default() -> MCRef {
-        MCRef { mm: None, ptr: 0 as *mut u8, len: 0 }
+        MCRef::empty()
     }
 }
 
@@ -322,7 +345,7 @@ impl Debug for MCRef {
 impl MCRef {
     pub fn with_data(data: &[u8]) -> MCRef {
         let mut mm = MemoryMap::with_fd_size(None, data.len());
-        bytes::copy_memory(data, mm.get_mut());
+        copy_memory(data, mm.get_mut());
         MCRef::with_mm(mm)
     }
 
@@ -334,6 +357,12 @@ impl MCRef {
             ptr: ptr,
             len: len
         }
+    }
+
+    #[inline]
+    pub fn empty() -> MCRef {
+        MCRef { mm: None, ptr: 0 as *mut u8, len: 0 }
+
     }
 
     pub fn slice(&self, from: usize, to: usize) -> Option<MCRef> {
@@ -554,3 +583,23 @@ fn test_branch() {
     }
 }
 
+extern {
+    fn memmove(dst: *mut u8, src: *const u8, len: usize);
+    fn memset(dst: *mut u8, byte: i32, len: usize);
+    fn memchr(src: *const u8, byte: i32, len: usize) -> *mut u8;
+}
+#[inline]
+pub fn copy_memory(src: &[u8], dst: &mut [u8]) {
+    assert_eq!(dst.len(), src.len());
+    unsafe { memmove(dst.as_mut_ptr(), src.as_ptr(), dst.len()); }
+}
+
+pub trait XSetMemory {
+    fn set_memory(&mut self, byte: u8);
+}
+impl XSetMemory for [u8] {
+    #[inline]
+    fn set_memory(&mut self, byte: u8) {
+        unsafe { memset(self.as_mut_ptr(), byte as i32, self.len()); }
+    }
+}

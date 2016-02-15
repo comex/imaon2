@@ -224,7 +224,7 @@ impl exec::ExecProber for DyldWholeProber {
 }
 
 fn get_basename(ii: &ImageInfo) -> &ByteStr {
-    if let Some(pos) = ii.path.rfind('/') { &ii.path[pos+1..] } else { &ii.path[..] }
+    if let Some(pos) = ii.path.rfind(b'/') { &ii.path[pos+1..] } else { &ii.path[..] }
 }
 
 #[derive(Copy, Clone)]
