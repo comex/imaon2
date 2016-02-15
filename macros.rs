@@ -36,7 +36,7 @@ macro_rules! deriving_swap {
 // TODO bug report?
 #[macro_export]
 macro_rules! branch {
-    (if $cond:expr { $($a:stmt)* } else { $($b:stmt)* } then $c:expr) => (
+    (if ($cond:expr) { $($a:stmt)* } else { $($b:stmt)* } then $c:expr) => (
         if $cond {
             $($a);*; $c
         } else {
@@ -86,4 +86,14 @@ macro_rules! errln {($($a:tt)*) => {{
 #[macro_export]
 macro_rules! some_or {($opt:expr, $els:stmt) => {
     if let Some(xxx) = $opt { xxx } else { $els; }
+}}
+#[macro_export]
+macro_rules! as_items { ($($i:item)*) => { $($i)* } }
+
+#[macro_export]
+macro_rules! trait_alias {(($($bounds:ident),*), $name:ident, $($based:tt)*) => {
+    as_items! {
+        trait $name<$($bounds),*> : $($based)* {}
+        impl<$($bounds),*, Q: $($based)*> $name<$($bounds),*> for Q {}
+    }
 }}

@@ -1,6 +1,10 @@
-#![allow(non_camel_case_types)]
-#![allow(non_upper_case_globals)]
-#![allow(dead_code)]
+#![allow(non_camel_case_types, non_upper_case_globals, dead_code, non_snake_case)]
+#![feature(libc)]
+
+#[macro_use]
+extern crate macros;
+extern crate util;
+extern crate libc;
 
 use util::Swap;
 pub type int64_t  = i64;

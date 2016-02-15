@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(collections, libc, into_cow)]
-#![feature(negate_unsigned, iter_arith, slice_bytes)]
+#![feature(iter_arith, slice_bytes)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -10,6 +10,7 @@ extern crate exec;
 extern crate bsdlike_getopts as getopts;
 extern crate collections;
 extern crate libc;
+extern crate macho_bind;
 use std::default::Default;
 use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
@@ -22,13 +23,7 @@ use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
 use std::slice::bytes;
 use std::collections::HashMap;
-
-#[cfg(opt)]
-#[path="../outrel/macho_bind.rs"]
-mod macho_bind;
-//#[cfg(not(opt))]
-//#[path="../out/macho_bind.rs"]
-//mod macho_bind;
+use util::ByteStr;
 
 pub mod dyldcache;
 
@@ -283,13 +278,13 @@ fn fixup_segment_overflow(seg: &mut exec::Segment, sixtyfour: bool) {
 }
 
 fn seg_name_to_macho(seg: &exec::Segment, error_pfx: &str) -> [libc::c_char; 16] {
-    let mut name = if let Some(ref name) = seg.name { &name[..] } else { "" };
+    let mut name: &ByteStr = if let Some(ref name) = seg.name { &**name } else { ByteStr::from_str("") };
     if name.len() > 15 {
         errln!("warning: {} name '{}' is too long, truncating", error_pfx, name);
         name = &name[..15];
     }
     let mut segname: [libc::c_char; 16] = [0; 16];
-    for (i, b) in name.bytes().enumerate() { segname[i] = b as i8; }
+    for (i, b) in name.iter().enumerate() { segname[i] = *b as i8; }
     segname
 }
 
@@ -382,7 +377,7 @@ impl MachO {
             let lc_buf = lc_mc.get();
             let this_lc_off = lc_off;
             let mut do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
-                branch!(if is64 == true { // '== true' due to macro suckage
+                branch!(if (is64) {
                     type segment_command_x = segment_command_64;
                     type section_x = section_64;
                 } else {
@@ -465,7 +460,7 @@ impl MachO {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
             let slice = &symtab[off..off + self.nlist_size];
-            branch!(if self.is64 == true {
+            branch!(if (self.is64) {
                 type nlist_x = x_nlist_64;
             } else {
                 type nlist_x = x_nlist;
@@ -528,7 +523,7 @@ impl MachO {
         let mut linkedit_idx: usize = !0;
         let mut text_idx: usize = !0;
         for (i, seg) in self.eb.segments.iter_mut().enumerate() {
-            if seg.name.as_ref().map(|s| &s[..]) == Some("__LINKEDIT") {
+            if seg.name.as_ref().map(|s| &s[..]) == Some(ByteStr::from_str("__LINKEDIT")) {
                 linkedit_idx = i;
                 seg.vmsize = linkedit.len() as u64;
                 seg.filesize = linkedit.len() as u64;
@@ -760,7 +755,7 @@ impl MachO {
             let segname = seg_name_to_macho(&seg, "MachO::reallocate: segment");
             let mut new_cmd = Vec::<u8>::new();
             let olcbuf = if lci != usize::MAX { Some(self.load_commands[lci].get()) } else { None };
-            branch!(if self.is64 {
+            branch!(if (self.is64) {
                 type segment_command_x = segment_command_64;
                 type section_x = section_64;
                 type size_x = u64;

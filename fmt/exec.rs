@@ -1,18 +1,19 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(into_cow, box_syntax)]
+#![feature(box_syntax)]
 
 #[macro_use]
 extern crate macros;
 extern crate util;
 extern crate bsdlike_getopts as getopts;
 use arch::Arch;
-use std::borrow::IntoCow;
+use std::borrow::Cow;
 use std::vec::Vec;
 use std::fmt;
 use std::mem::replace;
 use std::mem::transmute;
 use std::str::FromStr;
+use util::{ByteString};
 
 pub mod arch;
 
@@ -26,7 +27,7 @@ pub enum ErrorKind {
 #[derive(Clone, Debug)]
 pub struct Error {
     pub kind: ErrorKind,
-    pub message: std::borrow::Cow<'static, str>,
+    pub message: Cow<'static, str>,
 }
 display_as_debug!(Error);
 
@@ -35,15 +36,15 @@ impl std::error::Error for Error {
 }
 
 pub type ExecResult<T> = Result<T, Box<Error>>;
-pub fn err<T, S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> ExecResult<T> {
-    Err(box Error { kind: kind, message: s.into_cow() })
+pub fn err<T, S: Into<Cow<'static, str>>>(kind: ErrorKind, s: S) -> ExecResult<T> {
+    Err(box Error { kind: kind, message: s.into() })
 }
-pub fn err_only<S: std::borrow::IntoCow<'static, str>>(kind: ErrorKind, s: S) -> Box<Error> {
-    box Error { kind: kind, message: s.into_cow() }
+pub fn err_only<S: Into<Cow<'static, str>>>(kind: ErrorKind, s: S) -> Box<Error> {
+    box Error { kind: kind, message: s.into() }
 }
 
 pub fn usage_to_invalid_args<T>(o: Result<T, String>) -> ExecResult<T> {
-    o.map_err(|msg| box Error { kind: ErrorKind::InvalidArgs, message: msg.into_cow() })
+    o.map_err(|msg| box Error { kind: ErrorKind::InvalidArgs, message: msg.into() })
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,7 +99,7 @@ pub struct Segment {
     pub vmsize: u64,
     pub fileoff: u64,
     pub filesize: u64,
-    pub name: Option<String>,
+    pub name: Option<ByteString>,
     pub prot: Prot,
     pub data: Option<util::MCRef>,
     pub seg_idx: Option<usize>, // for sections
@@ -106,8 +107,8 @@ pub struct Segment {
 }
 
 impl Segment {
-    pub fn pretty_name(&self) -> &str {
-        self.name.as_ref().map_or("unnamed", |a| a)
+    pub fn pretty_name<'a>(&'a self) -> Cow<'a, str> {
+        self.name.as_ref().map_or("unnamed".into(), |a| a.lossy())
     }
     pub fn get_data(&self) -> &[u8] {
         self.data.as_ref().unwrap().get()

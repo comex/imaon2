@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::MCRef;
+use util::{MCRef, ByteString};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use std::mem::{size_of};
@@ -9,12 +9,13 @@ use std::cmp::min;
 use std::ops::Range;
 use std::collections::HashSet;
 use std;
+use util::ByteStr;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry};
 pub struct ImageInfo {
     pub address: u64,
     pub mod_time: u64,
     pub inode: u64,
-    pub path: String,
+    pub path: ByteString,
 }
 
 pub struct LocalSymbols {
@@ -222,7 +223,7 @@ impl exec::ExecProber for DyldWholeProber {
     }
 }
 
-fn get_basename(ii: &ImageInfo) -> &str {
+fn get_basename(ii: &ImageInfo) -> &ByteStr {
     if let Some(pos) = ii.path.rfind('/') { &ii.path[pos+1..] } else { &ii.path[..] }
 }
 
@@ -238,13 +239,14 @@ impl exec::ExecProber for DyldSingleProber {
             c.image_info.iter().enumerate().map(|(i, ii)| {
                 let cmd0 = "dyld-single".to_string();
                 let basename = get_basename(ii);
-                let cmd = if seen_basenames.insert(basename.to_string()) {
+                let str_ver = std::str::from_utf8(basename).ok();
+                let cmd = if str_ver.is_some() && seen_basenames.insert(str_ver) {
                     vec![cmd0, basename.to_string()]
                 } else {
                     vec![cmd0, "-i".to_string(), format!("{}", i)]
                 };
                 exec::ProbeResult {
-                    desc: ii.path.clone(),
+                    desc: ii.path.lossy().to_string(),
                     arch: c.eb.arch,
                     likely: true,
                     cmd: cmd,
@@ -261,13 +263,14 @@ impl exec::ExecProber for DyldSingleProber {
         let c = try!(DyldCache::new(buf.clone()));
         let mut free = m.free.clone();
         let path = &free.remove(0)[..];
+        let bpath = ByteStr::from_str(path);
         let idx = if m.opt_present("i") {
             let r: Result<usize, _> = path.parse();
             if let Ok(i) = r { i } else { return exec::err(exec::ErrorKind::Other, "--idx arg not a number") }
         } else {
             let is_basename = path.find('/') == None;
             let o = c.image_info.iter().position(|ii| {
-                path == if is_basename { get_basename(ii) } else { &ii.path[..] }
+                bpath == if is_basename { get_basename(ii) } else { &ii.path[..] }
             });
             if let Some(i) = o { i } else { return exec::err(exec::ErrorKind::Other, "no such file in shared cache") }
         };

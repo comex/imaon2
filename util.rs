@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, collections, slice_bytes)]
+#![feature(libc, collections, slice_bytes, pattern)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -20,6 +20,10 @@ use std::num::ParseIntError;
 use std::cmp::max;
 use std::slice;
 use std::slice::bytes;
+use std::fmt::{Debug, Display, Formatter};
+use std::borrow::Cow;
+use std::ops::{Deref, DerefMut, Index, IndexMut};
+use std::str::pattern::{Pattern, ReverseSearcher};
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -147,6 +151,100 @@ impl ToUi for u16 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for i8 { fn to_ui(&self) -> usize { *self as usize } }
 impl ToUi for u8 { fn to_ui(&self) -> usize { *self as usize } }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ByteStr([u8]);
+#[derive(Clone, PartialEq, Eq)]
+pub struct ByteString(Vec<u8>);
+impl ByteStr {
+    pub fn lossy<'a>(&'a self) -> Cow<'a, str> {
+        String::from_utf8_lossy(&self.0)
+    }
+    pub fn from_bytes(s: &[u8]) -> &ByteStr {
+        unsafe { transmute(s) }
+    }
+    pub fn from_str(s: &str) -> &ByteStr {
+        ByteStr::from_bytes(s.as_bytes())
+    }
+    pub fn from_bytes_mut(s: &mut [u8]) -> &mut ByteStr {
+        unsafe { transmute(s) }
+    }
+    // TODO this is borked
+    pub fn find<P>(&self, pat: P) -> Option<usize>
+        where for<'b> P: Pattern<'b> {
+        let x = self.lossy();
+        (*x).find(pat)
+    }
+    /*
+    pub fn rfind<P>(&self, pat: P) -> Option<usize>
+        where for<'b> P: Pattern<'b>,
+              for<'b> <P as Pattern<'b>>::Searcher: ReverseSearcher<'b>
+              */
+    pub fn rfind(&self, pat: char) -> Option<usize> {
+        (*self.lossy()).rfind(pat)
+    }
+}
+impl<T> Index<T> for ByteStr
+    where [u8]: Index<T>/*, <[u8] as Index<T>>::Output = [u8]*/ {
+    type Output = ByteStr;
+    fn index(&self, idx: T) -> &Self::Output {
+        unsafe { ByteStr::from_bytes(transmute(&self.0[idx])) }
+    }
+}
+impl<T> IndexMut<T> for ByteStr
+    where [u8]: IndexMut<T>/*, <[u8] as Index<T>>::Output = [u8]*/ {
+    fn index_mut(&mut self, idx: T) -> &mut Self::Output {
+        unsafe { ByteStr::from_bytes_mut(transmute(&mut self.0[idx])) }
+    }
+}
+impl ByteString {
+    pub fn from_bytes(s: &[u8]) -> Self {
+        ByteString(s.to_owned())
+    }
+    pub fn from_str(s: &str) -> ByteString {
+        ByteString::from_bytes(s.as_bytes())
+    }
+    pub fn from_vec(s: Vec<u8>) -> ByteString {
+        ByteString(s)
+    }
+    pub fn from_string(s: String) -> ByteString {
+        ByteString(s.into_bytes())
+    }
+}
+impl Deref for ByteString {
+    type Target = ByteStr;
+    fn deref(&self) -> &ByteStr { unsafe { transmute::<&[u8], &ByteStr>(&self.0[..]) } }
+}
+impl DerefMut for ByteString {
+    fn deref_mut(&mut self) -> &mut ByteStr { unsafe { transmute::<&mut [u8], &mut ByteStr>(&mut self.0[..]) } }
+}
+impl Deref for ByteStr {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { &self.0 }
+}
+impl DerefMut for ByteStr {
+    fn deref_mut(&mut self) -> &mut [u8] { &mut self.0 }
+}
+impl Debug for ByteStr {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Debug::fmt(&self.lossy()[..], f)
+    }
+}
+impl Display for ByteStr {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Display::fmt(&self.lossy()[..], f)
+    }
+}
+impl Debug for ByteString {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+impl Display for ByteString {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Display::fmt(&**self, f)
+    }
+}
+
 pub trait X8 {} //: std::marker::MarkerTrait {}
 impl X8 for u8 {}
 impl X8 for i8 {}
@@ -159,9 +257,9 @@ pub fn trim_to_null<T: X8>(chs_: &[T]) -> &[u8] {
     }
 }
 
-pub fn from_cstr<T: X8>(chs_: &[T]) -> String {
+pub fn from_cstr<T: X8>(chs_: &[T]) -> ByteString {
     let truncated = trim_to_null(chs_);
-    String::from_utf8_lossy(truncated).to_string()
+    ByteString::from_bytes(truncated)
 }
 
 
@@ -215,8 +313,8 @@ impl std::default::Default for MCRef {
     }
 }
 
-impl std::fmt::Debug for MCRef {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl Debug for MCRef {
+    fn fmt(&self, fmt: &mut Formatter) -> std::fmt::Result {
         write!(fmt, "MCRef({:?}, {})", self.ptr, self.len)
     }
 }
@@ -438,7 +536,7 @@ impl std::error::Error for GenericError {
 #[test]
 fn test_branch() {
     let do_i = |i: usize| {
-        branch!(if i == 1 {
+        branch!(if (i == 1) {
             // Due to rustc being a piece of shit, ... I don't even.  You can only have one `let` (or any expression-as-statement), so make it count.  Maybe tomorrow I will figure this out.  Such a waste of time...
             type A = isize;
             type B = isize;

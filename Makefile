@@ -94,14 +94,16 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
-$(call define_crate,$(LIB),macho,fmt/macho.rs $(OUT)/macho_bind.rs fmt/dyldcache.rs,exec util)
+$(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
+$(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h \
 		-enum2string 'EM_' 'e_machine_to_str' 'lower strip_prefix' \
 		-enum2string 'DT_' 'd_tag_to_str' '' \
 		> "$@"
-$(call define_crate,$(LIB),elf,fmt/elf.rs $(OUT)/elf_bind.rs,exec util)
+$(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
+$(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 

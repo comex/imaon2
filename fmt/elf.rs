@@ -1,22 +1,14 @@
-#![feature(libc, slice_bytes, box_syntax)]
+#![feature(slice_bytes, box_syntax)]
+#![feature(stmt_expr_attributes)]
 #![allow(non_camel_case_types)]
 #[macro_use]
 extern crate macros;
 extern crate util;
 extern crate exec;
-extern crate libc;
-
-
-// XXX cfg_attr broken, and this is totally broken ugh
-#[cfg(opt)]
-#[path="../outrel/elf_bind.rs"]
-mod elf_bind;
-//#[cfg(not(opt))]
-//#[path="../out/elf_bind.rs"]
-//mod elf_bind;
+extern crate elf_bind;
 
 use exec::arch::Arch;
-use util::{MCRef, SliceExt};
+use util::{MCRef, SliceExt, ByteStr, ByteString};
 use std::slice::bytes;
 use std::mem::size_of;
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot}; 
@@ -37,6 +29,192 @@ pub struct ElfBasics {
     arch: Arch,
 }
 
+#[derive(Default, Debug)]
+struct DynamicInfo {
+    needed: Vec<ByteString>,
+    pltgot: Option<VMA>,
+    hash: Option<VMA>,
+    strtab: Option<OffCountSize>,
+    symtab: Option<OffCountSize>,
+    rela: Option<OffCountSize>,
+    rel: Option<OffCountSize>,
+    init: Option<VMA>,
+    fini: Option<VMA>,
+    soname: Option<ByteString>,
+    rpath: Vec<ByteString>,
+    pltrel: Option<u32>,
+    textrel: bool,
+    jmprel: Option<VMA>,
+    bind_now: bool,
+    init_array: Option<OffCountSize>,
+    fini_array: Option<OffCountSize>,
+    preinit_array: Option<OffCountSize>,
+    runpath: Option<ByteString>,
+    flags: Option<u32>,
+}
+
+#[derive(Default, Debug)]
+struct OptOffCountSize {
+    off: Option<u64>,
+    count: Option<u64>,
+    size: Option<u64>,
+}
+
+#[derive(Default, Debug)]
+struct DynamicInfoTemp {
+    strtab: OptOffCountSize,
+    symtab: OptOffCountSize,
+    rela: OptOffCountSize,
+    rel: OptOffCountSize,
+    init_array: OptOffCountSize,
+    fini_array: OptOffCountSize,
+    preinit_array: OptOffCountSize,
+}
+
+fn read_cstr<'a>(read: &'a Fn(VMA, usize) -> &'a [u8], offset: VMA) -> Option<ByteString> {
+    let mut size = 32;
+    loop {
+        let res = read(offset, size);
+        if let Some(o) = res.iter().position(|&c| c == 0) {
+            return Some(ByteString::from_bytes(&res[..o]));
+        }
+        if res.len() < size { return None; }
+        size *= 2;
+    }
+}
+
+
+trait_alias!((T), DIFunc, FnMut(&mut T, &'static str, u32) -> bool);
+
+impl DynamicInfo {
+    #[inline(always)]
+    fn do_<OS: DIFunc<Option<ByteString>>,
+           VS: DIFunc<Vec<ByteString>>,
+           OVMA: DIFunc<Option<VMA>>,
+           OOCS: FnMut(&mut Option<OffCountSize>, /*temp*/ &mut OptOffCountSize, &'static str, (u32, u32, u32)) -> bool,
+           OU32: DIFunc<Option<u32>>,
+           B: DIFunc<bool>>
+        (&mut self, temp: &mut DynamicInfoTemp,
+         mut os: OS, mut vs: VS, mut ovma: OVMA, mut oocs: OOCS, mut ou32: OU32, mut b: B) -> bool {
+        vs(&mut self.needed, "DT_NEEDED", DT_NEEDED) ||
+        ovma(&mut self.pltgot, "DT_PLTGOT", DT_PLTGOT) ||
+        ovma(&mut self.hash, "DT_HASH", DT_HASH) ||
+        oocs(&mut self.strtab, &mut temp.strtab, "DT_STRTAB", (DT_STRTAB, DT_STRSZ, 0)) ||
+        //oocs(&mut self.symtab, &mut temp.symtab, "DT_SYMTAB", (DT_SYMTAB, 0, DT_SYMENT)) ||
+        oocs(&mut self.rela, &mut temp.rela, "DT_RELA", (DT_RELA, DT_RELAENT, DT_RELASZ)) ||
+        oocs(&mut self.rel, &mut temp.rel, "DT_REL", (DT_REL, DT_RELENT, DT_RELSZ)) ||
+        ovma(&mut self.init, "DT_INIT", DT_INIT) ||
+        ovma(&mut self.fini, "DT_FINI", DT_FINI) ||
+        os(&mut self.soname, "DT_SONAME", DT_SONAME) ||
+        vs(&mut self.rpath, "DT_RPATH", DT_RPATH) ||
+        ou32(&mut self.pltrel, "DT_PLTREL", DT_PLTREL) ||
+        b(&mut self.textrel, "DT_TEXTREL", DT_TEXTREL) ||
+        ovma(&mut self.jmprel, "DT_JMPREL", DT_JMPREL) ||
+        b(&mut self.bind_now, "DT_BIND_NOW", DT_BIND_NOW) ||
+        oocs(&mut self.init_array, &mut temp.init_array, "DT_INIT_ARRAY", (DT_INIT_ARRAY, DT_INIT_ARRAYSZ, 0)) ||
+        oocs(&mut self.fini_array, &mut temp.fini_array, "DT_FINI_ARRAY", (DT_FINI_ARRAY, DT_FINI_ARRAYSZ, 0)) ||
+        oocs(&mut self.preinit_array, &mut temp.preinit_array, "DT_PREINIT_ARRAY", (DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, 0)) ||
+        os(&mut self.runpath, "DT_RUNPATH", DT_RUNPATH) ||
+        ou32(&mut self.flags, "DT_FLAGS", DT_FLAGS)
+    }
+    fn decode<'a>(dyn: &[Dyn], read: &'a Fn(VMA, usize) -> &'a [u8]) -> Self {
+        // first, try to find some strtab; more detailed warnings will happen during the main loop
+        let mut strtab: Option<VMA> = None;
+        for d in dyn {
+            if d.tag == DT_STRTAB as i64 {
+                strtab = Some(VMA(d.val));
+            }
+        }
+        let mut temp: DynamicInfoTemp = Default::default();
+        let mut me: DynamicInfo = Default::default();
+        temp.strtab.size = Some(1);
+        temp.init_array.size = Some(1);
+        temp.fini_array.size = Some(1);
+        temp.preinit_array.size = Some(1);
+        for &d in dyn {
+            let res = me.do_(&mut temp,
+                     #[inline(always)] |os: &mut Option<ByteString>, name, tag| {
+                        if d.tag != tag as i64 { return false; }
+                        if let Some(s) = strtab {
+                            if let Some(bs) = read_cstr(read, s + d.val) {
+                                *os = Some(bs);
+                            } else {
+                                errln!("warning: bad {} offset", name);
+                            }
+                        } else {
+                            errln!("warning: got {} but no DT_STRTAB present", name);
+                        }
+                        true
+                    },
+                    #[inline(always)] |vs: &mut Vec<ByteString>, name, tag| {
+                        if d.tag != tag as i64 { return false; }
+                        if let Some(s) = strtab {
+                            if let Some(bs) = read_cstr(read, s + d.val) {
+                                vs.push(bs);
+                            } else {
+                                errln!("warning: bad {} offset", name);
+                            }
+                        } else {
+                            errln!("warning: got {} but no DT_STRTAB present", name);
+                        }
+                        true
+                    },
+                    #[inline(always)] |ov: &mut Option<VMA>, name, tag| {
+                        if d.tag != tag as i64 { return false; }
+                        *ov = Some(VMA(d.val));
+                        true
+                    },
+                    #[inline(always)] |oocs: &mut Option<OffCountSize>, temp: &mut OptOffCountSize, name, (otag, ctag, stag)| {
+                        {
+                            let (p, subname) =
+                                 if d.tag == otag as i64 { (&mut temp.off, "offset") }
+                            else if d.tag == ctag as i64 { (&mut temp.count, "count") }
+                            else if d.tag == stag as i64 { (&mut temp.size, "element size") }
+                            else { return false };
+                            if p.is_some() {
+                                errln!("warning: {} {} already exists", name, subname);
+                                return true;
+                            }
+                            *p = Some(d.val);
+                        }
+                        if let OptOffCountSize { off: Some(off), count: Some(mut count), size: Some(size) } = *temp {
+                            if count.checked_mul(size).map(|a| a.checked_add(off)).is_none() {
+                                errln!("warning: {} count({}) * size({}) + off({}) overflows",
+                                       name, count, size, off);
+                                count = (!0u64 - off) / size;
+                            }
+                            *oocs = Some(OffCountSize { off: off, count: count, size: size });
+                        }
+                        true
+                    },
+                    #[inline(always)] |ou32: &mut Option<u32>, name, tag| {
+                        if d.tag != tag as i64 { return false; }
+                        if d.val > 0xffffffff {
+                            errln!("warning: {}: out-of-range value {}", name, d.val);
+                        }
+                        *ou32 = Some((d.val & 0xffffffff) as u32);
+                        true
+                    },
+                    #[inline(always)] |b: &mut bool, name, tag| {
+                        if d.tag != tag as i64 { return false; }
+                        if d.val != 0 {
+                            errln!("warning: {} is a present/absent switch but val is {}, not 0",
+                                   name, d.val);
+                        }
+                        *b = true;
+                        true
+                    }
+            );
+            if !res {
+                errln!("warning: unknown dyn tag {}", d.tag);
+            }
+        }
+        me
+
+    }
+}
+
+#[derive(Default, Debug)]
 pub struct OffCountSize {
     off: u64,
     count: u64,
@@ -83,7 +261,7 @@ fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
 }
 
 fn get_ehdr(basics: &ElfBasics, buf: &[u8]) -> ExecResult<Ehdr> {
-    let mut eh = branch!(if basics.is64 == true { // '== true' due to macro suckage
+    let mut eh = branch!(if (basics.is64) {
         type ElfX_Ehdr = Elf64_Ehdr;
     } else {
         type ElfX_Ehdr = Elf32_Ehdr;
@@ -111,7 +289,7 @@ fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment
     let mut off = ocs.off as usize;
     let mut segs = Vec::new();
     let mut phdrs = Vec::new();
-    branch!(if basics.is64 == true {
+    branch!(if (basics.is64) {
         type ElfX_Phdr = Elf64_Phdr;
     } else {
         type ElfX_Phdr = Elf32_Phdr;
@@ -124,7 +302,6 @@ fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment
         let realsize = ocs.size as usize;
         for i in 0..ocs.count {
             let phdr: ElfX_Phdr = util::copy_from_slice(&buf[off..off+sizeo], basics.endian);
-            let private = off;
             off += realsize;
             segs.push(Segment {
                 vmaddr: VMA(phdr.p_vaddr as u64),
@@ -156,7 +333,7 @@ fn get_shdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment
     let mut off = ocs.off as usize;
     let mut segs = Vec::new();
     let mut shdrs = Vec::new();
-    branch!(if basics.is64 == true {
+    branch!(if (basics.is64) {
         type ElfX_Shdr = Elf64_Shdr;
         type FlagsTy = u64;
     } else {
@@ -255,7 +432,7 @@ fn get_dynamic_data(segs: &[Segment], phdrs: &[Phdr], sects: &[Segment], shdrs: 
     // following readelf, find ".dynamic" if possible, else PT_DYNAMIC
     let mut the_dynamic: Option<MCRef> = None;
     for (sect, shdr) in sects.iter().zip(shdrs) {
-        if sect.name.is_some() && sect.name.as_ref().unwrap() == ".dynamic" {
+        if sect.name.is_some() && &**sect.name.as_ref().unwrap() == ByteStr::from_str(".dynamic") {
             if the_dynamic.is_some() {
                 errln!("warning: extra .dynamic sections... using the later one");
             }
@@ -294,7 +471,7 @@ fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Se
     let buf = the_dynamic.get();
     let mut out = Vec::new();
     let mut offset = 0;
-    branch!(if basics.is64 == true {
+    branch!(if (basics.is64) {
         type ElfX_Dyn = Elf64_Dyn;
     } else {
         type ElfX_Dyn = Elf32_Dyn;
