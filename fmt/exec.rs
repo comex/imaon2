@@ -109,7 +109,7 @@ pub struct Segment {
 
 impl Segment {
     pub fn pretty_name<'a>(&'a self) -> Cow<'a, str> {
-        self.name.as_ref().map_or("unnamed".into(), |a| a.lossy())
+        self.name.as_ref().map_or("<unnamed>".into(), |a| a.lossy())
     }
     pub fn get_data(&self) -> &[u8] {
         self.data.as_ref().unwrap().get()

@@ -1,5 +1,4 @@
 #![allow(non_camel_case_types)]
-#![feature(into_cow)]
 
 extern crate util;
 extern crate bsdlike_getopts as getopts;
@@ -15,8 +14,7 @@ use std::path::Path;
 use std::io::Write;
 use std::cmp::min;
 use std::str::FromStr;
-
-use std::borrow::IntoCow;
+use std::borrow::Cow;
 
 use util::VecCopyExt;
 use exec::{arch, SymbolValue};
@@ -44,14 +42,23 @@ fn macho_filedata_info(mo: &macho::MachO) {
     entry(&mo.dyld_export,    "dyld export");
 }
 
-fn elf_dynamic(elf: &elf::Elf) {
-    println!(".dynamic entries:");
-    for dyn in &elf.dynamic {
+fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T> {
+    s.into()
+}
+
+fn elf_dynamic_raw(elf: &elf::Elf) {
+    println!("raw .dynamic entries:");
+    for dyn in &elf.dyns {
         println!("{}: 0x{:x}",
-                  dyn.tag_name().map(|n| n.into_cow()).unwrap_or_else(|| format!("<0x{:x}>", dyn.tag).into_cow()),
+                  dyn.tag_name().map_or_else(
+                    || panic!(),//into_cow(&*format!("<0x{:x}>", dyn.tag)),
+                    |n| into_cow::<'static, str, &'static str>(n)),
                   dyn.val);
 
     }
+}
+fn elf_dynamic(elf: &mut elf::Elf) {
+    elf.dynamic_info.dump();
 }
 
 fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>, String> {
@@ -82,7 +89,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
         if let Some((seg, off, osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
             let osize = min(osize, size);
             if osize > seg.filesize {
-                return Err(format!("zerofill at: {} (in segment '{}')", addr + seg.filesize, seg.name.as_ref().map(|x| &**x).unwrap_or("<unnamed>")));
+                return Err(format!("zerofill at: {} (in segment '{}')", addr + seg.filesize, seg.pretty_name()));
             }
             let buf = seg.data.as_ref().unwrap().get();
             ret.extend_slice(&buf[off as usize..(off+osize) as usize]);
@@ -104,7 +111,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         println!("All segments:");
         for seg in eb.segments.iter() {
             println!("{:<16} @ {:<#18x} sz {:<#12x}  off {:<#12x} filesz {:<#8x} {}",
-                match seg.name { Some(ref n) => &**n, None => "(unnamed)" },
+                seg.pretty_name(),
                 seg.vmaddr.0, seg.vmsize,
                 seg.fileoff, seg.filesize,
                 seg.prot,
@@ -136,9 +143,6 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     if m.opt_present("macho-filedata-info") {
         macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
     }
-    if m.opt_present("elf-dynamic") {
-        elf_dynamic(elf.expect("elf-dynamic: not elf"));
-    }
     if let Some(off_str) = m.opt_str("o2a") {
         let off: u64 = util::stoi(&off_str).unwrap();
         if let Some(exec::VMA(vma)) = exec::off_to_addr(&eb.segments, off, 0) {
@@ -161,7 +165,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             Err(msg) => errln!("dump error: {}", msg),
         };
     }
-    let arch = match m.opt_str("arch") {
+    let _arch = match m.opt_str("arch") {
         Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
         None => arch::Arch::UnknownArch,
     };
@@ -186,14 +190,24 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     */
 }
 
-fn do_mut_stuff(mut ex: Box<exec::Exec>, m: &getopts::Matches) {
+fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {
+    fn get_elf<'a>(exe: &'a mut exec::Exec) -> &'a mut elf::Elf { exe.as_any_mut().downcast_mut::<elf::Elf>().expect("not elf") }
+    fn get_macho<'a>(exe: &'a mut exec::Exec) -> &'a mut macho::MachO { exe.as_any_mut().downcast_mut::<macho::MachO>().expect("not elf") }
     if let Some(out_file) = m.opt_str("extract") {
         // TODO generic
-        let macho = ex.as_any_mut().downcast_mut::<macho::MachO>().unwrap();
+        let macho = get_macho(ex);
         macho.reallocate();
         macho.rewhole();
         let mut fp = fs::File::create(&Path::new(&out_file)).unwrap();
         fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();
+    }
+    if m.opt_present("elf-dynamic") {
+        let elf = get_elf(ex);
+        elf_dynamic(elf);
+    }
+    if m.opt_present("elf-dynamic-raw") {
+        let elf = get_elf(ex);
+        elf_dynamic_raw(elf);
     }
 }
 
@@ -219,6 +233,7 @@ fn main() {
         // todo: option groups
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
         getopts::optflag("",  "elf-dynamic", "List ELF .dynamic contents"),
+        getopts::optflag("",  "elf-dynamic-raw", "List ELF .dynamic contents (raw)"),
     );
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1].starts_with("-") {
@@ -241,7 +256,7 @@ fn main() {
             }
             args.insert(0, "auto".to_string());
         }
-        let (ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap_or_else(|e| {
+        let (mut ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap_or_else(|e| {
             if e.kind == exec::ErrorKind::InvalidArgs {
                 errln!("{}", e.message);
                 util::exit();
@@ -251,7 +266,7 @@ fn main() {
         });
         let m = util::do_getopts_or_usage(&*real_args, top, 0, 0, &mut optgrps).unwrap_or_else(usage_panic);
         do_stuff(&ex, &m);
-        do_mut_stuff(ex, &m);
+        do_mut_stuff(&mut *ex, &m);
     } else {
         let results = exec::probe_all(&execall::all_probers(), mm.clone());
         // no format specified, give a list
