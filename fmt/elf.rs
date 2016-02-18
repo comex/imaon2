@@ -316,7 +316,14 @@ impl DynamicInfo {
         );
     }
     fn dump_verneed(&self, elf: &Elf) {
-        println!(">>> {:?}", self.get_verneed(elf));
+        let vns = self.get_verneed(elf);
+        for vn in vns {
+            print!(" -> dep '{}' versions:", vn.filename);
+            for vna in vn.aux {
+                print!(" '{}'({})", vna.name, vna.flags);
+            }
+            print!("\n");
+        }
 
     }
     fn get_verneed(&self, elf: &Elf) -> Vec<Verneed> {
@@ -696,7 +703,8 @@ impl Elf {
         let xoff = some_or!(strtab.off.checked_add(off), { return None;});
         let res = read_cstr(&self.eb, VMA(xoff));
         if let Some(ref bs) = res {
-            if off > strtab.size || bs.len() as u64 > (strtab.size - off) {
+            let strtab_size = strtab.size * strtab.count;
+            if off > strtab_size || bs.len() as u64 > (strtab_size - off) {
                 errln!("warning: read dynstr entry from out of bounds, probably wrong: '{}'", bs);
             }
         }
