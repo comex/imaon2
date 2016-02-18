@@ -1,4 +1,5 @@
 import sys, subprocess, re, tempfile, os
+from collections import OrderedDict
 
 # TODO enum2str
 
@@ -81,7 +82,7 @@ bg = bg.replace('Struct_', '').replace('use libc::*;', '')
 
 bg = re.sub(re.compile('(#\[repr\(C\)\]\n#\[derive\(Copy\)\]\npub struct.*?\n})', re.S), 'deriving_swap!(\n\\1\n);', bg)
 
-consts = {}
+consts = OrderedDict()
 def f(m):
     name, ty, val = m.groups()
     val = int(val)
