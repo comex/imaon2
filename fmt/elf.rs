@@ -105,6 +105,18 @@ enum OCSType {
 }
 use OCSType::*;
 
+#[derive(Debug)]
+struct Verneed {
+    filename: ByteString,
+    aux: Vec<Vernaux>,
+}
+#[derive(Debug)]
+struct Vernaux {
+    hash: u64,
+    flags: u16,
+    name: ByteString,
+}
+
 impl DynamicInfo {
     #[inline(always)]
     fn do_<OS: DIFunc<Option<ByteString>>,
@@ -255,7 +267,9 @@ impl DynamicInfo {
         me
 
     }
-    pub fn dump(&mut self) {
+    pub fn dump(&self, elf: Option<&Elf>) {
+        #[allow(mutable_transmutes)]
+        let this: &mut Self = unsafe { std::mem::transmute(self) };
         let mut temp = DynamicInfoTemp::default(); // useless
         fn display<T: Display>(val: &mut Option<T>, tag: u32) -> bool {
             if let &mut Some(ref v) = val {
@@ -269,7 +283,7 @@ impl DynamicInfo {
             }
             false
         }
-        self.do_(&mut temp,
+        this.do_(&mut temp,
             /*os*/ display,
             |vs: &mut Vec<ByteString>, tag| {
                 for bs in vs {
@@ -278,9 +292,16 @@ impl DynamicInfo {
                 false
             },
             /*ovma*/ display,
-            |oocs: &mut Option<OffCountSize>, temp: &mut OptOffCountSize, (otag, _ctag, _stag), _typ| {
+            |oocs: &mut Option<OffCountSize>, _temp: &mut OptOffCountSize, (otag, _ctag, _stag), _typ| {
                 if let &mut Some(ref ocs) = oocs {
                     println!("{}: @0x{:x} {} entries of size 0x{:x}", d_tag_to_str(otag).unwrap(), ocs.off, ocs.count, ocs.size);
+                    if let Some(e) = elf {
+                        match otag {
+                            DT_VERNEED => self.dump_verneed(e),
+                            _ => (),
+
+                        }
+                    }
                 }
                 false
             },
@@ -294,13 +315,64 @@ impl DynamicInfo {
             },
         );
     }
-    fn get_verneed(&self) {
-        //TODO
+    fn dump_verneed(&self, elf: &Elf) {
+        println!(">>> {:?}", self.get_verneed(elf));
 
+    }
+    fn get_verneed(&self, elf: &Elf) -> Vec<Verneed> {
+        let ocs = self.verneed.unwrap_or(OffCountSize::default());
+        let mut addr = VMA(ocs.off);
+        let mut out = Vec::new();
+        for _i in 0..ocs.count {
+            let data = elf.eb.read(addr, ocs.size);
+            if (data.len() as u64) < ocs.size {
+                errln!("warning: verneed data truncated");
+                break;
+            }
+            branch!(if (elf.basics.is64) {
+                type ElfX_Verneed = Elf64_Verneed;
+                type ElfX_Vernaux = Elf64_Vernaux;
+            } else {
+                type ElfX_Verneed = Elf32_Verneed;
+                type ElfX_Vernaux = Elf32_Vernaux;
+            } then {
+                let vn: ElfX_Verneed = util::copy_from_slice(data.get(), elf.basics.endian);
+                if vn.vn_version as u32 != VER_NEED_CURRENT {
+                    errln!("warning: verneed version = {}, not VER_NEED_CURRENT({})",
+                           vn.vn_version, VER_NEED_CURRENT);
+                }
+                let mut auxaddr = addr + vn.vn_aux as u64;
+                addr = addr + vn.vn_next as u64;
+                let filename = some_or!(elf.read_dynstr(vn.vn_file as u64),
+                                        { errln!("warning: verneed filename invalid"); continue; });
+                let mut aux = Vec::new();
+                for _j in 0..vn.vn_cnt {
+                    let data = elf.eb.read(auxaddr, size_of::<ElfX_Vernaux>() as u64);
+                    if data.len() < size_of::<ElfX_Vernaux>() {
+                        errln!("warning: invalid vernaux entry");
+                        break;
+                    }
+                    let vna: ElfX_Vernaux = util::copy_from_slice(data.get(), elf.basics.endian);
+                    auxaddr = auxaddr + vna.vna_next as u64;
+                    let name = some_or!(elf.read_dynstr(vna.vna_name as u64),
+                                        { errln!("warning: vernaux name invalid"); continue; });
+                    aux.push(Vernaux {
+                        hash: vna.vna_hash as u64,
+                        flags: vna.vna_flags,
+                        name: name
+                    });
+                }
+                out.push(Verneed {
+                    filename: filename,
+                    aux: aux
+                });
+            });
+        }
+        out
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct OffCountSize {
     pub off: u64,
     pub count: u64,
@@ -618,6 +690,17 @@ impl Elf {
         res.eb.whole_buf = Some(buf);
         res.dynamic_info = DynamicInfo::decode(&res.dyns, &res.eb, res.basics.is64);
         Ok(res)
+    }
+    fn read_dynstr(&self, off: u64) -> Option<ByteString> {
+        let strtab = some_or!(self.dynamic_info.strtab, { return None; });
+        let xoff = some_or!(strtab.off.checked_add(off), { return None;});
+        let res = read_cstr(&self.eb, VMA(xoff));
+        if let Some(ref bs) = res {
+            if off > strtab.size || bs.len() as u64 > (strtab.size - off) {
+                errln!("warning: read dynstr entry from out of bounds, probably wrong: '{}'", bs);
+            }
+        }
+        res
     }
 }
 

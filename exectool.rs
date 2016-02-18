@@ -58,7 +58,7 @@ fn elf_dynamic_raw(elf: &elf::Elf) {
     }
 }
 fn elf_dynamic(elf: &mut elf::Elf) {
-    elf.dynamic_info.dump();
+    elf.dynamic_info.dump(Some(elf));
 }
 
 fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>, String> {
@@ -106,7 +106,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     let eb = ex.get_exec_base();
     let macho = ex.as_any().downcast_ref::<macho::MachO>();
-    let elf = ex.as_any().downcast_ref::<elf::Elf>();
+    //let elf = ex.as_any().downcast_ref::<elf::Elf>();
     if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
