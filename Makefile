@@ -107,6 +107,8 @@ $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 
+$(call define_crate,$(LIB),db,db/sexpr.rs,util)
+
 $(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis llvmdis)
 
 clean:

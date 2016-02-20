@@ -1,6 +1,6 @@
 #![feature(plugin)]
 #![plugin(regex_macros)]
-#![feature(libc, collections, pattern)]
+#![feature(libc, collections)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -22,7 +22,6 @@ use std::slice;
 use std::fmt::{Debug, Display, Formatter};
 use std::borrow::Cow;
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
-use std::str::pattern::{Pattern, ReverseSearcher};
 
 pub use Endian::*;
 //use std::ty::Unsafe;
