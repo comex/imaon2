@@ -64,17 +64,17 @@ delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
 
 impl VMA {
-    fn offset_from(self, other: VMA) -> Option<u64> {
+    pub fn offset_from(self, other: VMA) -> Option<u64> {
         if self.0 >= other.0 { Some(self.0 - other.0) } else { None }
     }
-    fn full_range_midpoint() -> VMA {
+    pub fn full_range_midpoint() -> VMA {
         VMA(1u64 << 63)
     }
-    fn midpoint(VMA(lo): VMA, VMA(hi): VMA) -> VMA {
+    pub fn midpoint(VMA(lo): VMA, VMA(hi): VMA) -> VMA {
         assert!(lo <= hi);
         VMA(lo + (hi - lo) / 2)
     }
-    fn checked_add(self, other: u64) -> Option<VMA> {
+    pub fn checked_add(self, other: u64) -> Option<VMA> {
         self.0.checked_add(other).map(VMA)
     }
 }
