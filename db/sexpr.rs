@@ -1,73 +1,108 @@
+// super basic
+
+#![feature(io)]
 #[macro_use]
 extern crate macros;
-// super basic
+
+use std::io::{BufRead, CharsError, Cursor};
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Sexpr {
     Str(String),
-    List(Vec<Sexpr>)
+    List(Vec<Sexpr>),
+    LineComment(String),
+    BlockComment(String),
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct ParseError {
-    pos: usize,
-    msg: &'static str,
+#[derive(Debug)]
+pub enum ReadError {
+    ParseError(&'static str),
+    Chars(CharsError),
 }
 
-pub type ParseResult = Result<Box<Sexpr>, ParseError>;
+pub type ReadResult = Result<Box<Sexpr>, ReadError>;
 
-fn parse_error(pos: usize) -> ParseResult {
-    Err(ParseError { pos: pos, msg: "parse error" })
+fn parse_error() -> ReadResult {
+    Err(ReadError::ParseError("parse error"))
 }
 
-pub fn parse_sexpr(s: &str) -> ParseResult {
-    let mut it = s.char_indices().peekable();
-    let mut stack: Vec<Vec<Sexpr>> = vec![vec![]];
-    while let Some((i, ch)) = it.next() {
+macro_rules! test { ($foo:expr) => { } }
+
+macro_rules! insert { ($stack:expr, $e:expr) => {
+    if let Some(last) = $stack.last_mut() {
+        last.push($e);
+    } else {
+        return Ok(Box::new($e));
+    }
+} }
+
+// Option<Result<X>> -> Option<X> (+ Chars wrap)
+macro_rules! intry { ($val:expr) => {
+    match $val {
+        None => None,
+        Some(Ok(v)) => Some(v),
+        Some(Err(e)) => { return Err(ReadError::Chars(e)) },
+    }
+} }
+macro_rules! intry_peek { ($it:expr) => {
+    match $it.peek() {
+        None => None,
+        Some(&Ok(v)) => Some(v),
+        Some(&Err(_)) => { return Err(ReadError::Chars($it.next().unwrap().unwrap_err())) },
+    }
+} }
+
+pub fn read_sexpr<R: BufRead>(r: R) -> ReadResult {
+    let mut it = r.chars().peekable();
+    let mut stack: Vec<Vec<Sexpr>> = vec![];
+    while let Some(ch) = intry!(it.next()) {
         if ch == '#' {
-            if let Some(&(_, '|')) = it.peek() {
+            if let Some('|') = intry_peek!(it) {
                 // block comment
                 let mut nesting = 1;
                 it.next();
-                while let Some((_, ch2)) = it.next() {
-                    match (ch2, it.peek()) {
-                        ('#', Some(&(_, '|'))) => { nesting += 1; it.next(); },
-                        ('|', Some(&(_, '#'))) => {
-                            nesting -= 1; 
+                let mut s = String::new();
+                while let Some(ch2) = intry!(it.next()) {
+                    match (ch2, intry_peek!(it)) {
+                        ('#', Some('|')) => { nesting += 1; it.next(); },
+                        ('|', Some('#')) => {
+                            nesting -= 1;
                             if nesting == 0 { break; }
-                            it.next();
+                            s.push(ch2);
+                            s.push(it.next().unwrap().unwrap());
                         },
-                        _ => ()
+                        _ => s.push(ch2),
                     }
                 }
+                insert!(stack, Sexpr::BlockComment(s));
                 continue;
             }
         }
         match ch {
         ';' => {
             // line comment
-            while let Some((_, ch2)) = it.next() {
+            let mut s = String::new();
+            while let Some(ch2) = intry!(it.next()) {
                 if ch2 == '\n' { break; }
+                s.push(ch2);
             }
+            insert!(stack, Sexpr::LineComment(s));
         },
         '(' => {
             stack.push(Vec::new());
         },
         ')' => {
-            if stack.len() == 1 {
-                return parse_error(i);
-            }
-            let last = stack.pop().unwrap();
-            stack.last_mut().unwrap().push(Sexpr::List(last));
+            let last = some_or!(stack.pop(), { return parse_error(); });
+            insert!(stack, Sexpr::List(last));
         },
         '"' => {
             // quoted string
             let mut s = String::new();
             loop {
-                let (j, ch2) = some_or!(it.next(), { return parse_error(i); });
+                let ch2 = some_or!(intry!(it.next()), { return parse_error(); });
                 match ch2 {
                     '\\' => {
-                        let (k, ch3) = some_or!(it.next(), { return parse_error(j); });
+                        let ch3 = some_or!(intry!(it.next()), { return parse_error(); });
                         let to_append = match ch3 {
                             'a' => Some('\x07'),
                             'b' => Some('\x08'),
@@ -80,8 +115,8 @@ pub fn parse_sexpr(s: &str) -> ParseResult {
                             '\\' => Some('\\'),
                             '\r' | '\n' => {
                                 loop {
-                                    match it.peek() {
-                                        Some(&(_, '\r')) | Some(&(_, '\n')) => { it.next(); continue; },
+                                    match intry_peek!(it) {
+                                        Some('\r') | Some('\n') => { it.next(); continue; },
                                         _ => { break; }
                                     }
                                 }
@@ -90,25 +125,25 @@ pub fn parse_sexpr(s: &str) -> ParseResult {
                             'x' => {
                                 let mut val: u32 = 0;
                                 loop {
-                                    let (l, ch4) = some_or!(it.next(), { return parse_error(k); });
+                                    let ch4 = some_or!(intry!(it.next()), { return parse_error(); });
                                     let ch4u = ch4 as u32;
                                     let digit = match ch4 {
                                         '0' ... '9' => { ch4u - ('0' as u32) },
                                         'a' ... 'f' => { 10 + (ch4u - ('a' as u32)) },
                                         'A' ... 'F' => { 10 + (ch4u - ('A' as u32)) },
                                         ';' => { break; },
-                                        _ => { return parse_error(l); }
+                                        _ => { return parse_error(); }
                                     };
                                     val = (val * 16) + digit;
                                     if val > 0x10ffff {
-                                        return Err(ParseError { pos: l, msg: "integer overflow in hex escape" });
+                                        return Err(ReadError::ParseError("integer overflow in hex escape"));
                                     }
                                 }
                                 Some(some_or!(std::char::from_u32(val), {
-                                    return Err(ParseError { pos: k, msg: "surrogate in hex escape" });
+                                    return Err(ReadError::ParseError("surrogate in hex escape"));
                                 }))
                             },
-                            _ => { return parse_error(k) }
+                            _ => { return parse_error() }
                         };
                         if let Some(c) = to_append { s.push(c); }
                     },
@@ -116,7 +151,7 @@ pub fn parse_sexpr(s: &str) -> ParseResult {
                     _ => { s.push(ch2); },
                 }
             }
-            stack.last_mut().unwrap().push(Sexpr::Str(s));
+            insert!(stack, Sexpr::Str(s));
         },
         _ if ch.is_whitespace() => (),
         _ => {
@@ -124,36 +159,36 @@ pub fn parse_sexpr(s: &str) -> ParseResult {
             let mut s = String::new();
             s.push(ch);
             loop {
-                match it.peek() {
+                match intry_peek!(it) {
                     None => { break; },
-                    Some(&(j, ch)) => {
+                    Some(ch) => {
                         if ch == '(' || ch == ')' || ch.is_whitespace() { break; }
-                        if ch == '"' { return parse_error(j); }
+                        if ch == '"' { return parse_error(); }
                     }
                 }
-                s.push(it.next().unwrap().1);
+                s.push(it.next().unwrap().unwrap());
             }
-            stack.last_mut().unwrap().push(Sexpr::Str(s));
+            insert!(stack, Sexpr::Str(s));
         }
         }
     }
     // out of chars
-    if stack.len() != 1  {
-        return parse_error(s.len());
-    }
-    Ok(Box::new(Sexpr::List(stack.pop().unwrap())))
+    parse_error()
 }
 
 #[test]
 fn test_parse_sexpr() {
-    let sin = "foo (foo bar(baz)\"boo\\x23;\\r\")";
+    test!(panic!());
+    let sin = "(foo (foo bar(baz)\"boo\\x23;\\r\"))";
+    let mut cursor = Cursor::new(sin);
     println!("{}", sin);
     use Sexpr::*;
     fn s(s: &str) -> Sexpr { Str(s.to_owned()) }
-    assert_eq!(parse_sexpr(sin),
-        Ok(Box::new(
+    let res = read_sexpr(&mut cursor).unwrap();
+    assert_eq!(cursor.position(), sin.len() as u64);
+    assert_eq!(*res,
             List(vec![s("foo"),
                       List(vec![s("foo"), s("bar"), List(vec![s("baz")]),
-                                s("boo\x23\r")])]))));
+                                s("boo\x23\r")])]));
 
 }
