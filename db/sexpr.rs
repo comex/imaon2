@@ -26,6 +26,10 @@ fn parse_error() -> ReadResult {
     Err(ReadError::ParseError("parse error"))
 }
 
+fn comments_error() -> ReadResult {
+    Err(ReadError::ParseError("inner comments not allowed (because they will be stripped when it's written back out)"))
+}
+
 macro_rules! insert { ($stack:expr, $e:expr) => { {
     let e = $e;
     if let Some(last) = $stack.last_mut() {
@@ -51,13 +55,23 @@ macro_rules! intry_peek { ($it:expr) => {
     }
 } }
 
-pub fn read_sexpr<R: BufRead>(r: R) -> ReadResult {
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommentBehavior {
+    AllowComments,
+    BanInnerComments,
+}
+pub use CommentBehavior::*;
+
+pub fn read_sexpr<R: BufRead>(r: R, cb: CommentBehavior) -> ReadResult {
     let mut it = r.chars().peekable();
     let mut stack: Vec<Vec<Sexpr>> = vec![];
     while let Some(ch) = intry!(it.next()) {
         if ch == '#' {
             if let Some('|') = intry_peek!(it) {
                 // block comment
+                if cb == BanInnerComments && stack.len() > 0 {
+                    return comments_error();
+                }
                 let mut nesting = 1;
                 it.next();
                 let mut s = String::new();
@@ -84,6 +98,9 @@ pub fn read_sexpr<R: BufRead>(r: R) -> ReadResult {
         match ch {
         ';' => {
             // line comment
+            if cb == BanInnerComments && stack.len() > 0 {
+                return comments_error();
+            }
             let mut s = String::new();
             while let Some(ch2) = intry!(it.next()) {
                 if ch2 == '\n' { break; }
@@ -186,7 +203,7 @@ fn test_parse_sexpr() {
     //println!("{}", sin);
     use Sexpr::*;
     fn s(s: &str) -> Sexpr { Str(s.to_owned()) }
-    let res = read_sexpr(&mut cursor).unwrap();
+    let res = read_sexpr(&mut cursor, AllowComments).unwrap();
     assert_eq!(cursor.position(), sin.len() as u64);
     assert_eq!(*res,
             List(vec![s("foo"),
@@ -196,6 +213,6 @@ fn test_parse_sexpr() {
                                           s("baz")]),
                                 s("boo\x23\r")]),
                       LineComment(" comment".to_owned())]));
-    //let mut cursor = Cursor::new(sin);
+    assert!(read_sexpr(&mut Cursor::new(sin), BanInnerComments).is_err());
 
 }
