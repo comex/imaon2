@@ -26,15 +26,14 @@ fn parse_error() -> ReadResult {
     Err(ReadError::ParseError("parse error"))
 }
 
-macro_rules! test { ($foo:expr) => { } }
-
-macro_rules! insert { ($stack:expr, $e:expr) => {
+macro_rules! insert { ($stack:expr, $e:expr) => { {
+    let e = $e;
     if let Some(last) = $stack.last_mut() {
-        last.push($e);
+        last.push(e);
     } else {
-        return Ok(Box::new($e));
+        return Ok(Box::new(e));
     }
-} }
+} } }
 
 // Option<Result<X>> -> Option<X> (+ Chars wrap)
 macro_rules! intry { ($val:expr) => {
@@ -64,12 +63,16 @@ pub fn read_sexpr<R: BufRead>(r: R) -> ReadResult {
                 let mut s = String::new();
                 while let Some(ch2) = intry!(it.next()) {
                     match (ch2, intry_peek!(it)) {
-                        ('#', Some('|')) => { nesting += 1; it.next(); },
+                        ('#', Some('|')) => {
+                            nesting += 1;
+                            it.next();
+                            s.push('#'); s.push('|');
+                        },
                         ('|', Some('#')) => {
                             nesting -= 1;
+                            it.next();
                             if nesting == 0 { break; }
-                            s.push(ch2);
-                            s.push(it.next().unwrap().unwrap());
+                            s.push('|'); s.push('#');
                         },
                         _ => s.push(ch2),
                     }
@@ -178,17 +181,21 @@ pub fn read_sexpr<R: BufRead>(r: R) -> ReadResult {
 
 #[test]
 fn test_parse_sexpr() {
-    test!(panic!());
-    let sin = "(foo (foo bar(baz)\"boo\\x23;\\r\"))";
+    let sin = "(foo (foo bar(#| 1 #| 2 |# |#baz)\"boo\\x23;\\r\") ; comment\n)";
     let mut cursor = Cursor::new(sin);
-    println!("{}", sin);
+    //println!("{}", sin);
     use Sexpr::*;
     fn s(s: &str) -> Sexpr { Str(s.to_owned()) }
     let res = read_sexpr(&mut cursor).unwrap();
     assert_eq!(cursor.position(), sin.len() as u64);
     assert_eq!(*res,
             List(vec![s("foo"),
-                      List(vec![s("foo"), s("bar"), List(vec![s("baz")]),
-                                s("boo\x23\r")])]));
+                      List(vec![s("foo"),
+                                s("bar"),
+                                List(vec![BlockComment(" 1 #| 2 |# ".to_owned()),
+                                          s("baz")]),
+                                s("boo\x23\r")]),
+                      LineComment(" comment".to_owned())]));
+    //let mut cursor = Cursor::new(sin);
 
 }
