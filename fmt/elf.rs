@@ -666,6 +666,26 @@ fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Se
     out
 }
 
+enum SymtabTraverseMode {
+    Hash,
+    GNUHash,
+    BruteForce
+}
+
+struct GNUHashHeader {
+    nbuckets: u32,
+    symbias: u32,
+    bitmask_nwords: u32,
+    shift: u32,
+}
+
+struct GNUHash {
+    header: GNUHashHeader,
+    bitmask: MCRef,
+    buckets: MCRef,
+    chain_addr: VMA,
+}
+
 impl Elf {
     fn new(buf: MCRef) -> ExecResult<Self> {
         let mut res = {
@@ -709,6 +729,114 @@ impl Elf {
             }
         }
         res
+    }
+    fn get_gnu_hash(&self) -> Option<GNUHash> {
+        let addr = some_or!(self.dynamic_info.gnu_hash, { return None });
+        let hdr_size = size_of::<GNUHashHeader>();
+        let hdr_buf = self.eb.read(addr, hdr_size);
+        if hdr_buf.len() != size {
+            errln!("warning: bad DT_GNU_HASH address");
+            return None;
+        }
+        let hdr: GNUHash = util::copy_from_slice(hdr_buf.get(), self.eb.endian);
+        // quick check
+        if !hdr.nbuckets.is_power_of_two() {
+            errln!("warning: DT_GNU_HASH bucket count not power of 2??");
+        }
+        let res = || {
+            let word_size = if self.basics.is64 { 8 } else { 4 }
+            let bitmask_size = try!((hdr.bitmask_nwords as u64).checked_mul(word_size as u64).ok_or(()));
+            let bucket_size = try!((hdr.nbuckets as u64).checked_mul(4).ok_or(()));
+            let total_size = try!(bitmask_size.checked_add(bucket_size).ok_or(()));
+            let buf = self.eb.read(try!(addr.checked_add(hdr_size).ok_or()), total_size);
+            if total_size == !0 || buf.len() < total_size { return Err(()); }
+            GNUHash {
+                header: hdr,
+                bitmask: buf.slice(0, bitmask_size).unwrap(),
+                buckets: buf.slice(bitmask_size, total_size).unwrap(),
+                chain_addr: addr + hdr_size + total_size,
+            }
+        }();
+        let res = res.ok();
+        if res == None {
+            errln!("warning: DT_GNU_HASH header overflow");
+        }
+        res
+    }
+    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<MCRef> {
+        let symtab = some_or!(self.dynamic_info.symtab, { return None });
+        let syment = self.dynamic_info.syment.unwrap_or_else(||
+            errln!("warning: SYMTAB but no SYMENT? (get_full_symtab)");
+            if self.basics.is64 { size_of::<Elf64_Sym>() } else { size_of::<Elf32_Sym>() }
+        );
+        let symcount = match mode {
+            SymtabTraverseMode::Hash => {
+                let dt_hash = some_or!(self.dynamic_info.hash, { return None });
+                some_or!(None, return None);
+                let nchain_buf = self.eb.read(dt_hash + 4, 4);
+                if nchain_buf.len() != 4 {
+                    errln!("warning: invalid DT_HASH address (get_full_symtab)");
+                    return None;
+                }
+                let nchain: u32 = util::copy_from_slice(nchain_buf.get(), self.eb.endian);
+                nchain
+            },
+            SymtabTraverseMode::GNUHash => {
+                let gh = some_or!(self.gnu_hash(), { return None });
+                let buckets = gh.buckets.get();
+                let end = self.eb.endian;
+                let symbias = gh.header.symbias;
+                let max_bucket_num = buckets.chunks(4)
+                                             .map(|s| util::copy_from_slice(s, end))
+                                             .max()
+                                             .unwrap_or(symbias);
+                let chain_count = some_or!(max_bucket_num.checked_sub(symbias)
+                                           .and_then(|v| v.checked_add(1)), {
+                    errln!("warning: DT_GNU_HASH bucket data is weird");
+                    return None;
+                });
+                let chains = self.eb.read(gh.chain_addr, chain_count.saturing_mul(4));
+                if chains.len() / 4 != chain_count {
+                    errln!("warning: DT_GNU_HASH bad chain data");
+                }
+                let max_sym_num = chains.chunks(4)
+                                        .map(|s| {
+                                            let val: u32 = util::copy_from_slice(s, end);
+                                            val >> 1
+                                        })
+                                        .max()
+                                        .unwrap_or(0);
+                // but wait, there may be more
+                chains.chunks(4)
+
+                let chain_size = chain_count.saturating_mul(4).unwrap_or_else(
+                chain_addr, chain_count.wrapping_mul
+                max_bucket
+                    entries <symb
+                let chain_count = if max_bucket_nummax_bucket_num.saturating_sub(symbias);
+                (0..gh.header.nbuckets)
+                    .map(|i| util::copy_from_slice(&buckets[4*i..4*i+4], end))
+                    if val == 0 { 0 } else { gh.header.symbias.saturating_add
+                
+                }
+
+            },
+            SymtabTraverseMode::BruteForce => {
+                let mut x = None;
+                for sect in self.eb.sections {
+                    if sect.vmaddr == VMA(dt_symtab) && sect.vmsize != 0 {
+                        if sect.filesize % syment != 0 || sect.filesize != sect.vmsize {
+                            errln!("warning: odd section filesize {} for (apparent) symbol table section {} (syment={}, vmsize={})",
+                                   sect.filesize sect.pretty_name(), syment, sect.vmsize);
+                        }
+                        x = sect.filesize / syment;
+                        break;
+                    }
+                }
+                some_or!(x, { return None })
+            },
+        };
+        unimplemented!()
     }
 }
 
