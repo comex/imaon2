@@ -212,7 +212,7 @@ fn valid_symbol_inner_char(c: char) -> bool {
         _ => false
     }
 }
-fn niceish_char(c: char) -> bool {
+fn niceish_char(_c: char) -> bool {
     true // TODO (anything but " and \ can go in quotes but only pretty things should)
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -313,12 +313,14 @@ fn read_number(s: &str) -> Result<u64, ReadNumberError> {
 }
 
 
-pub fn write_sexpr<W: Write>(mut w: W, mut sx: &Sexpr) -> std::io::Result<()> {
+pub fn write_sexpr<W: Write>(mut w: W, sx0: &Sexpr) -> std::io::Result<()> {
     let mut need_white = false;
+    let mut stack: Vec<&[Sexpr]> = vec![];
+    let mut sx = sx0;
     loop {
+        println!(">>> {:?}", stack);
         if need_white {
             try!(write!(w, " "));
-            need_white = false;
         }
         match sx {
             &Sexpr::Str(ref s) => {
@@ -355,6 +357,7 @@ pub fn write_sexpr<W: Write>(mut w: W, mut sx: &Sexpr) -> std::io::Result<()> {
             },
             &Sexpr::List(ref v) => {
                 try!(write!(w, "("));
+                stack.push(&v[..]);
                 need_white = false;
             },
             &Sexpr::LineComment(ref s) => {
@@ -364,22 +367,33 @@ pub fn write_sexpr<W: Write>(mut w: W, mut sx: &Sexpr) -> std::io::Result<()> {
             },
             &Sexpr::BlockComment(ref s) => {
                 // todo: check for |# inside?
-                try!(write!(w, "#| {} |#", s));
+                try!(write!(w, "#|{}|#", s));
                 need_white = true;
             },
 
         }
+        {
+            while some_or!(stack.last(), { return Ok(()) }).len() == 0 {
+                try!(write!(w, ")"));
+                need_white = true;
+                stack.pop().unwrap();
+            }
+            let mut last = stack.last_mut().unwrap();
+            let first = &(*last)[0];
+            *last = &(*last)[1..];
+            sx = first;
+        }
     }
-    panic!()
 }
 
+fn s(s: &str) -> Sexpr { Sexpr::Str(s.to_owned()) }
+
 #[test]
-fn test_parse_sexpr() {
+fn test_read_sexpr() {
     let sin = "(foo (foo bar(#| 1 #| 2 |# |#baz)\"boo\\x23;\\r\") ; comment\n)";
     let mut cursor = Cursor::new(sin);
     //println!("{}", sin);
     use Sexpr::*;
-    fn s(s: &str) -> Sexpr { Str(s.to_owned()) }
     let res = read_sexpr(&mut cursor, AllowComments).unwrap();
     assert_eq!(cursor.position(), sin.len() as u64);
     assert_eq!(*res,
@@ -407,3 +421,22 @@ fn test_read_number() {
     assert_eq!(read_number("-1"), Err(ReadNumberError::OutOfRange));
     assert_eq!(read_number("18446744073709551616"), Err(ReadNumberError::OutOfRange));
 }
+
+#[test]
+fn test_write_sexpr() {
+    use Sexpr::*;
+    let foo =
+        List(vec![s("foo"),
+                  List(vec![s("foo"),
+                            LineComment("hi!".to_owned()),
+                            s("bar"),
+                            List(vec![BlockComment(" 1 #| 2 |# ".to_owned()),
+                                      s("baz")]),
+                            s("boo\x23\r")])]);
+    let mut buf: Vec<u8> = Vec::new();
+    assert!(write_sexpr(&mut buf, &foo).is_ok());
+    let res = String::from_utf8(buf).unwrap();
+    assert_eq!(res, "(foo (foo ;hi!\nbar (#| 1 #| 2 |# |# baz) \"boo#\\r\"))");
+
+}
+
