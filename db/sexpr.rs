@@ -4,7 +4,7 @@
 #[macro_use]
 extern crate macros;
 
-use std::io::{BufRead, CharsError, Cursor};
+use std::io::{BufRead, CharsError, Cursor, Write};
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Sexpr {
@@ -196,6 +196,183 @@ pub fn read_sexpr<R: BufRead>(r: R, cb: CommentBehavior) -> ReadResult {
     parse_error()
 }
 
+// based on R6Rs
+fn valid_symbol_initial_char(c: char) -> bool {
+    // this is an underapproximation in not allowing Unicode letters (todo)
+    match c {
+        '!' | '$' | '%' | '&' | '*' | '/' | ':' | '<' | '=' |
+        'a'...'z' | 'A'...'Z' => true,
+        _ => false
+    }
+}
+fn valid_symbol_inner_char(c: char) -> bool {
+    if valid_symbol_initial_char(c) { return true; }
+    match c {
+        '0' ... '9' | '+' | '-' | '.' | '@' => true,
+        _ => false
+    }
+}
+fn niceish_char(c: char) -> bool {
+    true // TODO (anything but " and \ can go in quotes but only pretty things should)
+}
+#[derive(Debug, PartialEq, Eq)]
+enum ReadNumberError {
+    ParseError,
+    OutOfRange,
+}
+const PE: Result<u64, ReadNumberError> = Err(ReadNumberError::ParseError);
+fn read_number(s: &str) -> Result<u64, ReadNumberError> {
+    let mut radix: Option<u8> = None;
+    let mut have_eness = false;
+    let mut it = s.chars();
+    let mut c2 = None;
+    while let Some(c) = it.next() {
+        if c == '#' {
+            let next = some_or!(it.next(), { return PE });
+            match next {
+                'i' | 'I' | 'e' | 'E' => { // exactness
+                    if have_eness { return PE }
+                    have_eness = true;
+                    continue;
+                },
+                _ => ()
+            }
+            // radix
+            if radix.is_some() { return PE }
+            radix = Some(match next {
+                'x' | 'X' => 16,
+                'd' | 'D' => 10,
+                'o' | 'O' => 8,
+                'b' | 'B' => 2,
+                _ => {
+                    // huh?
+                    return PE
+                }
+            });
+        } else {
+            c2 = Some(c);
+            break;
+        }
+    }
+    let mut c2 = if let Some(c2) = c2 { c2 } else { some_or!(it.next(), { return PE }) };
+    let radix = radix.unwrap_or(10);
+    // sign?
+    let mut num = Some(0u64);
+    let mut got_digits = false;
+    match c2 {
+        '+' | '-' => {
+            if c2 == '-' { num = None; }
+            c2 = some_or!(it.next(), { return PE });
+        },
+        _ => (),
+    }
+    // the digits
+    loop {
+        match c2 {
+            'e' | 'E' | 's' | 'S' | 'f' | 'F' | 'd' | 'D' | 'l' | 'L' => {
+                // exponent (integers only)
+                let mut c3 = it.next();
+                match c3 {
+                    Some('+') => { c3 = it.next(); },
+                    Some('-') => { num = None; c3 = it.next(); },
+                    _ => (),
+                }
+                let mut expo = Some(0u32);
+                loop {
+                    match c3 {
+                        Some(cc@'0'...'9') => {
+                            let digit = cc as u32 - '0' as u32;
+                            expo = expo.and_then(|e| e.checked_mul(10)).and_then(|m| m.checked_add(digit));
+                        },
+                        None => { break },
+                        _ => { return PE }
+                    }
+                    c3 = it.next();
+                }
+                num = if let Some(e@0...19) = expo {
+                    num.and_then(|n| n.checked_mul(10u64.pow(e)))
+                } else { None };
+            },
+            _ => {
+                let digit = some_or!(c2.to_digit(radix as u32), { return PE });
+                num = num.and_then(|n| n.checked_mul(radix as u64))
+                         .and_then(|n| n.checked_add(digit as u64));
+                got_digits = true;
+            }
+        }
+        c2 = some_or!(it.next(), { break });
+    }
+    if !got_digits {
+        return PE;
+    }
+    if let Some(num) = num {
+        Ok(num)
+    } else {
+        Err(ReadNumberError::OutOfRange)
+    }
+}
+
+
+pub fn write_sexpr<W: Write>(mut w: W, mut sx: &Sexpr) -> std::io::Result<()> {
+    let mut need_white = false;
+    loop {
+        if need_white {
+            try!(write!(w, " "));
+            need_white = false;
+        }
+        match sx {
+            &Sexpr::Str(ref s) => {
+                let mut cit = s.chars();
+                let first = cit.next();
+                if first.is_some() && (
+                    (valid_symbol_initial_char(first.unwrap()) &&
+                     cit.all(valid_symbol_inner_char)) ||
+                    read_number(s).is_ok()
+                ) {
+                    try!(write!(w, "{}", s));
+                } else {
+                    try!(write!(w, "\""));
+                    for c in s.chars() {
+                        let escape = match c {
+                            '\\' => Some('\\'),
+                            '"'  => Some('"'),
+                            '\r' => Some('r'),
+                            '\n' => Some('n'),
+                            '\t' => Some('t'),
+                            _ => None,
+                        };
+                        if let Some(c) = escape {
+                            try!(write!(w, "\\{}", c));
+                        } else if !niceish_char(c) {
+                            try!(write!(w, "\\x{:x};", c as u32));
+                        } else {
+                            try!(write!(w, "{}", c));
+                        }
+                    }
+                    try!(write!(w, "\""));
+                }
+                need_white = true;
+            },
+            &Sexpr::List(ref v) => {
+                try!(write!(w, "("));
+                need_white = false;
+            },
+            &Sexpr::LineComment(ref s) => {
+                try!(write!(w, ";{}\n", s));
+                need_white = false;
+
+            },
+            &Sexpr::BlockComment(ref s) => {
+                // todo: check for |# inside?
+                try!(write!(w, "#| {} |#", s));
+                need_white = true;
+            },
+
+        }
+    }
+    panic!()
+}
+
 #[test]
 fn test_parse_sexpr() {
     let sin = "(foo (foo bar(#| 1 #| 2 |# |#baz)\"boo\\x23;\\r\") ; comment\n)";
@@ -215,4 +392,18 @@ fn test_parse_sexpr() {
                       LineComment(" comment".to_owned())]));
     assert!(read_sexpr(&mut Cursor::new(sin), BanInnerComments).is_err());
 
+}
+
+#[test]
+fn test_read_number() {
+    assert_eq!(read_number("1234"), Ok(1234));
+    assert_eq!(read_number("#x1234"), Ok(0x1234));
+    assert_eq!(read_number("#x#i1234"), Ok(0x1234));
+    assert_eq!(read_number("#i#x1234"), Ok(0x1234));
+    assert_eq!(read_number("#x#i#x1234"), PE);
+    assert_eq!(read_number("#i#i#x1234"), PE);
+    assert_eq!(read_number("1234e+5"), Ok(123400000));
+    assert_eq!(read_number("1234e-1"), Err(ReadNumberError::OutOfRange));
+    assert_eq!(read_number("-1"), Err(ReadNumberError::OutOfRange));
+    assert_eq!(read_number("18446744073709551616"), Err(ReadNumberError::OutOfRange));
 }
