@@ -14,7 +14,7 @@ use std::mem::replace;
 use std::mem::transmute;
 use std::str::FromStr;
 use std::cmp::min;
-use util::{ByteString, ByteStr, MCRef};
+use util::{ByteString, ByteStr, MCRef, CheckMath};
 
 pub mod arch;
 
@@ -83,20 +83,20 @@ impl std::ops::Sub<VMA> for VMA {
         lhs - rhs
     }
 }
-impl util::CheckMath<u64> for VMA {
+impl util::CheckMath<u64, VMA> for VMA {
     type Output = VMA;
     fn check_add(self, other: u64) -> Option<Self::Output> {
-        VMA(self.0.checked_add(other))
-    fn check_sub(self, other: u64) -> Option<Self::Output> {
-        VMA(self.0.checked_sub(other))
+        self.0.checked_add(other).map(VMA)
     }
-    fn check_mul(self, other: u64) -> Option<Self::Output> {
+    fn check_sub(self, other: u64) -> Option<Self::Output> {
+        self.0.checked_sub(other).map(VMA)
+    }
+    fn check_mul(self, _other: u64) -> Option<Self::Output> {
         panic!("lolwat")
     }
 
 }
-impl util::CheckMathBase<u64> for VMA {}
-impl_check_math_option!(VMA, u64)
+impl_check_math_option!(VMA, u64);
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Prot {

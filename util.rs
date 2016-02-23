@@ -81,7 +81,7 @@ pub trait Swap {
     }
 }
 
-pub trait CheckMath<Other> {
+pub trait CheckMath<Other, Dummy> {
     type Output;
     fn check_add(self, other: Other) -> Option<Self::Output>;
     fn check_sub(self, other: Other) -> Option<Self::Output>;
@@ -100,7 +100,7 @@ macro_rules! impl_int {($ty:ident) => {
             $ty::from_str_radix(src, radix)
         }
     }
-    impl CheckMath<$ty> for $ty {
+    impl CheckMath<$ty, $ty> for $ty {
         type Output = $ty;
         #[inline]
         fn check_add(self, other: $ty) -> Option<Self::Output> {
