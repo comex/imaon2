@@ -182,7 +182,8 @@ impl exec::Exec for MachO {
         &self.eb
     }
 
-    fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
+    fn get_symbol_list(&self, source: exec::SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol> {
+        assert!(specific.is_none());
         if source == exec::SymbolSource::All {
             let mut out = Vec::new();
             let mut skip_redacted = false;

@@ -14,6 +14,7 @@ use std::mem::replace;
 use std::mem::transmute;
 use std::str::FromStr;
 use std::cmp::min;
+use std::any::Any;
 use util::{ByteString, ByteStr, MCRef, CheckMath};
 
 pub mod arch;
@@ -181,7 +182,8 @@ pub trait Exec : 'static {
     fn get_exec_base(&self) -> &ExecBase;
 
     // Todo: add a monomorphizable iterator version of this
-    fn get_symbol_list(&self, _source: SymbolSource) -> Vec<Symbol> {
+    fn get_symbol_list(&self, _source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol> {
+        assert!(specific.is_none());
         vec!()
     }
 

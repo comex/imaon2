@@ -15,6 +15,7 @@ use std::io::Write;
 use std::cmp::min;
 use std::str::FromStr;
 use std::borrow::Cow;
+use std::any::Any;
 
 use util::{VecCopyExt, into_cow};
 use exec::{arch, SymbolValue};
@@ -102,7 +103,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     let eb = ex.get_exec_base();
     let macho = ex.as_any().downcast_ref::<macho::MachO>();
-    //let elf = ex.as_any().downcast_ref::<elf::Elf>();
+    let elf = ex.as_any().downcast_ref::<elf::Elf>();
     if m.opt_present("segs") {
         println!("All segments:");
         for seg in eb.segments.iter() {
@@ -120,9 +121,23 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             println!("{:?}", seg);
         }
     }
-    if m.opt_present("syms") {
-        println!("All symbols:");
-        for sym in ex.get_symbol_list(exec::SymbolSource::All).iter() {
+    let mut elf_specific = elf::ElfGetSymbolListSpecific::default();
+    if m.opt_present("elf-append-version") {
+        assert!(elf.is_some());
+        elf_specific.append_version = true;
+    }
+    const KINDS: &'static [(&'static str, &'static str, exec::SymbolSource)] = &[
+        ("syms", "All symbols", exec::SymbolSource::All),
+        ("imports", "Imported symbols", exec::SymbolSource::Imported),
+        ("exports", "Exported symbols", exec::SymbolSource::Exported),
+    ];
+    for &(name, desc, kind) in KINDS {
+        if !m.opt_present(name) { continue; }
+        let opts = if elf.is_some() {
+            Some(&elf_specific as &Any)
+        } else { None };
+        println!("{}:", desc);
+        for sym in ex.get_symbol_list(kind, opts) {
             let name = sym.name.lossy();
             match sym.val {
                 SymbolValue::Addr(vma) =>     print!("{:<16}", vma),
@@ -221,6 +236,8 @@ fn main() {
         getopts::optflag("",  "segs",  "List segments"),
         getopts::optflag("",  "sects", "List sections"),
         getopts::optflag("",  "syms",  "List symbols"),
+        getopts::optflag("",  "exports","List exported symbols"),
+        getopts::optflag("",  "imports","List imported symbols"),
         getopts::optopt( "",  "o2a",   "Offset to address", "off"),
         getopts::optopt( "",  "a2o",   "Address to offset", "addr"),
         getopts::optopt( "",  "dump",  "Dump address range", "addr+len"),
@@ -231,6 +248,7 @@ fn main() {
         getopts::optflag("",  "macho-filedata-info", "List data areas within the file"),
         getopts::optflag("",  "elf-dynamic", "List ELF .dynamic contents"),
         getopts::optflag("",  "elf-dynamic-raw", "List ELF .dynamic contents (raw)"),
+        getopts::optflag("",  "elf-append-version", "When listing symbols, include @VERSION"),
     );
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1].starts_with("-") {

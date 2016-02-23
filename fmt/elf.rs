@@ -11,6 +11,7 @@ extern crate vec_map;
 use std::mem::size_of;
 use std::fmt::{Display, LowerHex};
 use std::borrow::Cow;
+use std::any::Any;
 use vec_map::VecMap;
 
 use exec::arch::Arch;
@@ -895,13 +896,25 @@ impl Elf {
 
 }
 
+#[derive(Default, Clone)]
+pub struct ElfGetSymbolListSpecific {
+    pub append_version: bool,
+}
+
 impl exec::Exec for Elf {
     fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
         &self.eb
     }
-    fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
+    fn as_any(&self) -> &Any { self as &Any }
 
-    fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol> {
+    fn get_symbol_list(&self, source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol> {
+        let esp = if let Some(sp) = specific {
+            sp.downcast_ref::<ElfGetSymbolListSpecific>().unwrap()
+        } else {
+            static DEFAULT: ElfGetSymbolListSpecific = ElfGetSymbolListSpecific { append_version: false };
+            &DEFAULT
+        };
+
         // try to get the count somehow
         let (symtab, versym, syment) = some_or!(
             self.get_full_symtab(SymtabTraverseMode::BruteForce).or_else(||
@@ -928,22 +941,26 @@ impl exec::Exec for Elf {
                                 ByteString::from_string(format!("<<{}>>", sym.st_name)).into()
                                 });
                 let vs_hidden = vs & 0x8000 != 0;
-                if vs_hidden {
+                let vs_key = vs & 0x7fff;
+                if vs_hidden || (esp.append_version && vs_key != 0) {
                     // only visible with an explicit version number, so... tack on the version
                     // number? (otherwise i don't really want to)
-                    let key = vs & 0x7fff;
-                    let verstr: &ByteStr = if let Some(&(i, j)) =
-                                    verneed_info.vna_other_to_idx.get(key.ext()) {
+                    let verstr: &ByteStr = if vs_key == 0 {
+                        ByteStr::from_str("")
+                    } else if vs_key == 1 {
+                        ByteStr::from_str("Base")
+                    } else if let Some(&(i, j)) =
+                                    verneed_info.vna_other_to_idx.get(vs_key.ext()) {
                         &*verneed_info.verneed[i].aux[j].name
                     } else {
-                        errln!("warning: invalid verneed key 0x{:x}", key);
+                        errln!("warning: invalid verneed key 0x{:x}", vs_key);
                         ByteStr::from_str("?????")
                     };
                     // note: vernum=0 means none, vernum=1 means 'Base' whatever that means, but
                     // for hidden it probably shouldn't be those? so keep the error
                     let n = name.to_mut();
                     n.0.push(b'@');
-                    n.0.push(b'@');
+                    if vs_hidden { n.0.push(b'@'); }
                     n.0.extend_from_slice(verstr);
                 }
                 let st_bind = sym.st_info >> 4;
