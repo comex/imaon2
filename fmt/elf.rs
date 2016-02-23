@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use exec::arch::Arch;
 use exec::ReadVMA;
 use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext};
-use exec::{ExecResult, ErrorKind, Segment, VMA, Prot};
+use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource};
 use elf_bind::*;
 
 macro_rules! convert_each {
@@ -388,6 +388,7 @@ pub struct OffCountSize {
 }
 
 pub struct Ehdr {
+    pub type_: u16,
     pub entry: VMA,
     pub flags: u32,
     pub ph: OffCountSize,
@@ -437,6 +438,7 @@ fn get_ehdr(basics: &ElfBasics, buf: &[u8]) -> ExecResult<Ehdr> {
         let ebytes = some_or!(buf.slice_opt(0, size_of::<ElfX_Ehdr>()), { return exec::err(ErrorKind::BadData, "too small for ehdr") });
         let xeh: ElfX_Ehdr = util::copy_from_slice(ebytes, basics.endian);
         Ehdr {
+            type_: xeh.e_type,
             entry: VMA(xeh.e_entry as u64),
             flags: xeh.e_flags,
             ph: OffCountSize { off: xeh.e_phoff as u64, count: xeh.e_phnum as u64, size: xeh.e_phentsize as u64 },
@@ -819,7 +821,7 @@ impl Elf {
                                                  .unwrap_or(symbias);
                 let max_chain = max_bucket_num.check_sub(symbias);
                 // but wait, there may be more
-                let last_addr = gh.chain_addr.check_add(max_chain.map(u32::ext).check_mul(4));
+                let last_addr = gh.chain_addr.check_add(max_chain.map(Ext::<u64>::ext).check_mul(4));
                 let mut addr = some_or!(last_addr, {
                     errln!("warning: DT_GNU_HASH bucket data is weird");
                     return None;
@@ -857,12 +859,13 @@ impl Elf {
             },
         };
         let syms_length = symcount.saturating_mul(syment);
-        let buf = self.eb.read(syms_length);
+        let buf = self.eb.read(symtab, syms_length);
+        let syment = syment as usize;
         let read_symcount = buf.len() / syment;
-        if read_symcount < symcount {
+        if (read_symcount as u64) < symcount {
             errln!("warning: couldn't read symbols");
         }
-        Some((buf.slice(0, read_symcount * syment).unwrap(), syment as usize))
+        Some((buf.slice(0, read_symcount * syment).unwrap(), syment))
     }
 }
 
@@ -872,7 +875,7 @@ impl exec::Exec for Elf {
     }
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 
-    fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
+    fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol> {
         // try to get the count somehow
         let (symtab, syment) = some_or!(
             self.get_full_symtab(SymtabTraverseMode::BruteForce).or_else(||
@@ -886,12 +889,48 @@ impl exec::Exec for Elf {
         } else {
             type ElfX_Sym = Elf32_Sym;
         } then {
-            for symdat in symtab.chunks(syment) {
+            symtab.chunks(syment).enumerate().map(|(i, symdat)| {
                 let sym: ElfX_Sym = util::copy_from_slice(symdat, end);
+                let name = self.read_dynstr(sym.st_name as u64)
+                               .unwrap_or_else(|| {
+                                errln!("warning: symbol has invalid st_name {}", sym.st_name);
+                                ByteString::from_string(format!("<<{}>>", sym.st_name)).into()
+                                });
+                let st_bind = sym.st_info >> 4;
+                let stval = sym.st_value as u64;
+                let val = match sym.st_shndx as u32 {
+                    SHN_ABS => SymbolValue::Abs(VMA(stval)),
+                    SHN_COMMON | SHN_UNDEF => SymbolValue::Undefined,
+                    SHN_LORESERVE ... SHN_HIRESERVE => {
+                        errln!("warning: unknown special st_shndx 0x{:x} for symbol {}", sym.st_shndx, i);
+                        SymbolValue::Undefined
+                    },
+                    // ugh ugh ugh
+                    _ => if self.ehdr.type_ as u32 != ET_REL {
+                        SymbolValue::Addr(VMA(stval))
+                    } else {
+                        if let Some(sect) = self.eb.sections.get(sym.st_shndx.ext()) {
+                            if stval > sect.vmsize || sym.st_size as u64 > sect.vmsize - stval {
+                                errln!("warning: section offset out of range for symbol {}", i);
+                            }
+                            SymbolValue::Addr(sect.vmaddr + stval)
+                        } else {
+                            errln!("warning: invalid non-special st_shndx {} for symbol {}", sym.st_shndx, i);
+                            SymbolValue::Undefined
+                        }
 
-
-            }
-        });
+                    }
+                };
+                Symbol {
+                    name: name,
+                    is_public: st_bind as u32 != STB_LOCAL,
+                    is_weak: st_bind as u32 == STB_WEAK,
+                    val: val,
+                    size: if sym.st_size == 0 { None } else { Some(sym.st_size as u64) },
+                    private: i,
+                }
+            }).collect::<Vec<Symbol>>()
+        })
     }
 
 }

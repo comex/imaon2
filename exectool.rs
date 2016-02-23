@@ -16,7 +16,7 @@ use std::cmp::min;
 use std::str::FromStr;
 use std::borrow::Cow;
 
-use util::VecCopyExt;
+use util::{VecCopyExt, into_cow};
 use exec::{arch, SymbolValue};
 #[path = "fmt/execall.rs"] mod execall;
 #[path = "dis/disall.rs"] mod disall;
@@ -40,10 +40,6 @@ fn macho_filedata_info(mo: &macho::MachO) {
     entry(&mo.dyld_weak_bind, "dyld weak_bind");
     entry(&mo.dyld_lazy_bind, "dyld lazy_bind");
     entry(&mo.dyld_export,    "dyld export");
-}
-
-fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T> {
-    s.into()
 }
 
 fn elf_dynamic_raw(elf: &elf::Elf) {
@@ -127,12 +123,13 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     if m.opt_present("syms") {
         println!("All symbols:");
         for sym in ex.get_symbol_list(exec::SymbolSource::All).iter() {
-            let name = String::from_utf8_lossy(sym.name);
+            let name = sym.name.lossy();
             match sym.val {
                 SymbolValue::Addr(vma) =>     print!("{:<16}", vma),
-                SymbolValue::Undefined =>     print!("[undef]           "),
+                SymbolValue::Abs(vma) =>      print!("{:<16} [ABS]", vma),
+                SymbolValue::Undefined =>     print!("[undef]         "),
                 SymbolValue::Resolver(vma) => print!("{:<16} [resolver]", vma),
-                SymbolValue::ReExport(..) =>  print!("[re-export]       "),
+                SymbolValue::ReExport(..) =>  print!("[re-export]     "),
             }
             print!(" ");
             if sym.is_public { print!("[pub] ") }

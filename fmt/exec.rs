@@ -53,7 +53,7 @@ pub struct VMA(pub u64);
 
 impl fmt::Debug for VMA {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "0x{:x}", self.0)
+        fmt.pad(&format!("0x{:x}", self.0))
     }
 }
 display_as_debug!(VMA);
@@ -154,17 +154,19 @@ pub struct ExecBase {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SymbolValue<'a> {
     Addr(VMA),
+    Abs(VMA),
     Undefined,
     Resolver(VMA),
-    ReExport(&'a ByteStr),
+    ReExport(Cow<'a, ByteStr>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Symbol<'a> {
-    pub name: &'a ByteStr,
+    pub name: Cow<'a, ByteStr>,
     pub is_public: bool,
     pub is_weak: bool,
     pub val: SymbolValue<'a>,
+    pub size: Option<u64>,
     pub private: usize,
 }
 

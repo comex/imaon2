@@ -16,7 +16,7 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
@@ -483,17 +483,18 @@ impl MachO {
                     } else if n_type == N_INDR {
                         assert!(nl.n_value <= 0xfffffffe);
                         let indr_name = util::from_cstr(&strtab[nl.n_value as usize..]);
-                        SymbolValue::ReExport(indr_name)
+                        SymbolValue::ReExport(into_cow(indr_name))
 
                     } else {
                         SymbolValue::Addr(vma)
                     };
                 if !(skip_redacted && name == ByteStr::from_bytes(b"<redacted>")) {
                     out.push(exec::Symbol {
-                        name: name,
+                        name: into_cow(name),
                         is_public: public,
                         is_weak: weak,
                         val: val,
+                        size: None,
                         private: off,
                     })
                 }

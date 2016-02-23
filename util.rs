@@ -342,6 +342,16 @@ impl ToOwned for ByteStr {
         ByteString(self.0.to_owned())
     }
 }
+impl<'a> From<&'a ByteStr> for Cow<'a, ByteStr> {
+    fn from(s: &'a ByteStr) -> Self {
+        Cow::Borrowed(s)
+    }
+}
+impl<'a> From<ByteString> for Cow<'a, ByteStr> {
+    fn from(s: ByteString) -> Self {
+        Cow::Owned(s)
+    }
+}
 
 pub trait X8 {} //: std::marker::MarkerTrait {}
 impl X8 for u8 {}
@@ -699,3 +709,8 @@ impl XSetMemory for [u8] {
         unsafe { memset(self.as_mut_ptr(), byte as i32, self.len()); }
     }
 }
+
+pub fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T> {
+    s.into()
+}
+
