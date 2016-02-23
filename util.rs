@@ -1,11 +1,8 @@
-#![feature(plugin)]
-#![plugin(regex_macros)]
-#![feature(libc, collections)]
+#![feature(libc, collections, plugin, core_intrinsics)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 
-extern crate regex;
 #[macro_use]
 extern crate macros;
 extern crate collections;
@@ -20,7 +17,7 @@ use std::num::ParseIntError;
 use std::cmp::max;
 use std::slice;
 use std::fmt::{Debug, Display, Formatter};
-use std::borrow::Cow;
+use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
 
 pub use Endian::*;
@@ -84,7 +81,15 @@ pub trait Swap {
     }
 }
 
-macro_rules! impl_swap {($ty:ident) => {
+pub trait CheckMath<Other> {
+    type Output;
+    fn check_add(self, other: Other) -> Option<Self::Output>;
+    fn check_sub(self, other: Other) -> Option<Self::Output>;
+    fn check_mul(self, other: Other) -> Option<Self::Output>;
+}
+
+
+macro_rules! impl_int {($ty:ident) => {
     impl Swap for $ty {
         fn bswap(&mut self) {
             *self = self.swap_bytes();
@@ -95,27 +100,83 @@ macro_rules! impl_swap {($ty:ident) => {
             $ty::from_str_radix(src, radix)
         }
     }
+    impl CheckMath<$ty> for $ty {
+        type Output = $ty;
+        #[inline]
+        fn check_add(self, other: $ty) -> Option<Self::Output> {
+            self.checked_add(other)
+        }
+        #[inline]
+        fn check_sub(self, other: $ty) -> Option<Self::Output> {
+            self.checked_sub(other)
+        }
+        #[inline]
+        fn check_mul(self, other: $ty) -> Option<Self::Output> {
+            self.checked_mul(other)
+        }
+    }
+    impl_check_math_option!($ty, $ty);
 }}
 
+
 macro_rules! impl_signed {($ty:ident) => {
-    impl_swap!($ty);
+    impl_int!($ty);
     impl IntStuffSU for $ty {
         fn neg_if_possible(self) -> Option<Self> { Some(-self) }
     }
 }}
 macro_rules! impl_unsigned {($ty:ident) => {
-    impl_swap!($ty);
+    impl_int!($ty);
     impl IntStuffSU for $ty {
         fn neg_if_possible(self) -> Option<Self> { None }
     }
 }}
 
+impl_unsigned!(usize);
+impl_signed!(isize);
 impl_unsigned!(u64);
 impl_signed!(i64);
 impl_unsigned!(u32);
 impl_signed!(i32);
 impl_unsigned!(u16);
 impl_signed!(i16);
+
+pub trait Ext<Larger> {
+    fn ext(self) -> Larger;
+}
+pub trait Trunc<Smaller> {
+    fn trunc(self) -> Smaller;
+    fn checked_trunc(self) -> Option<Smaller>;
+}
+
+macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
+    impl Ext<$la> for $sm {
+        fn ext(self) -> $la {
+            self as $la
+        }
+    }
+    impl Trunc<$sm> for $la {
+        fn trunc(self) -> $sm {
+            self as $sm
+        }
+        fn checked_trunc(self) -> Option<$sm> {
+            let res = self as $sm;
+            if res as $la == self { Some(res) } else { None }
+        }
+    }
+}}
+
+impl_unsigned_unsigned!(usize, u64);
+impl_unsigned_unsigned!(u32, u64);
+impl_unsigned_unsigned!(u16, u64);
+impl_unsigned_unsigned!(u8, u64);
+impl_unsigned_unsigned!(u32, usize);
+impl_unsigned_unsigned!(u16, usize);
+impl_unsigned_unsigned!(u8, usize);
+impl_unsigned_unsigned!(u16, u32);
+impl_unsigned_unsigned!(u8, u32);
+impl_unsigned_unsigned!(u8, u16);
+
 
 impl Swap for u8 {
     fn bswap(&mut self) {}
@@ -138,31 +199,24 @@ impl<T> Swap for Option<T> {
     fn bswap(&mut self) {}
 }
 
-// TODO remove this
-pub trait ToUi {
-    fn to_ui(&self) -> usize;
-}
-impl ToUi for i32 { fn to_ui(&self) -> usize { *self as usize } }
-impl ToUi for u32 { fn to_ui(&self) -> usize { *self as usize } }
-impl ToUi for i16 { fn to_ui(&self) -> usize { *self as usize } }
-impl ToUi for u16 { fn to_ui(&self) -> usize { *self as usize } }
-impl ToUi for i8 { fn to_ui(&self) -> usize { *self as usize } }
-impl ToUi for u8 { fn to_ui(&self) -> usize { *self as usize } }
-
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteStr([u8]);
 #[derive(Clone, PartialEq, Eq)]
 pub struct ByteString(Vec<u8>);
 impl ByteStr {
+    #[inline]
     pub fn lossy<'a>(&'a self) -> Cow<'a, str> {
         String::from_utf8_lossy(&self.0)
     }
+    #[inline]
     pub fn from_bytes(s: &[u8]) -> &ByteStr {
         unsafe { transmute(s) }
     }
+    #[inline]
     pub fn from_str(s: &str) -> &ByteStr {
         ByteStr::from_bytes(s.as_bytes())
     }
+    #[inline]
     pub fn from_bytes_mut(s: &mut [u8]) -> &mut ByteStr {
         unsafe { transmute(s) }
     }
@@ -197,23 +251,27 @@ impl<T> SomeRange<T> for RangeFull {}
 impl<T> Index<T> for ByteStr
     where T: SomeRange<usize>, [u8]: Index<T> {
     type Output = ByteStr;
+    #[inline]
     fn index(&self, idx: T) -> &Self::Output {
         unsafe { ByteStr::from_bytes(transmute(&self.0[idx])) }
     }
 }
 impl<T> IndexMut<T> for ByteStr
     where T: SomeRange<usize>, [u8]: IndexMut<T> {
+    #[inline]
     fn index_mut(&mut self, idx: T) -> &mut Self::Output {
         unsafe { ByteStr::from_bytes_mut(transmute(&mut self.0[idx])) }
     }
 }
 impl Index<usize> for ByteStr {
     type Output = u8;
+    #[inline]
     fn index(&self, idx: usize) -> &u8 {
         &self.0[idx]
     }
 }
 impl IndexMut<usize> for ByteStr {
+    #[inline]
     fn index_mut(&mut self, idx: usize) -> &mut u8 {
         &mut self.0[idx]
     }
@@ -266,22 +324,45 @@ impl Display for ByteString {
         Display::fmt(&**self, f)
     }
 }
+impl Borrow<ByteStr> for ByteString {
+    #[inline]
+    fn borrow(&self) -> &ByteStr {
+        &**self
+    }
+}
+impl BorrowMut<ByteStr> for ByteString {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut ByteStr {
+        &mut **self
+    }
+}
+impl ToOwned for ByteStr {
+    type Owned = ByteString;
+    fn to_owned(&self) -> ByteString {
+        ByteString(self.0.to_owned())
+    }
+}
 
 pub trait X8 {} //: std::marker::MarkerTrait {}
 impl X8 for u8 {}
 impl X8 for i8 {}
 
-pub fn trim_to_null<T: X8>(chs_: &[T]) -> &[u8] {
-    let chs: &[u8] = unsafe { transmute(chs_) };
-    match chs.iter().position(|c| *c == 0) {
-        None => chs,
-        Some(i) => &chs[..i],
-    }
+#[inline]
+pub fn from_cstr<T: X8>(chs: &[T]) -> &ByteStr {
+    let chs: &[u8] = unsafe { transmute(chs) };
+    let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
+    ByteStr::from_bytes(&chs[..len])
 }
 
-pub fn from_cstr<T: X8>(chs_: &[T]) -> ByteString {
-    let truncated = trim_to_null(chs_);
-    ByteString::from_bytes(truncated)
+#[inline]
+pub fn from_cstr_strict<T: X8>(chs: &[T]) -> Option<&ByteStr> {
+    let chs: &[u8] = unsafe { transmute(chs) };
+    let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
+    if len == chs.len() {
+        None
+    } else {
+        Some(ByteStr::from_bytes(&chs[..len]))
+    }
 }
 
 
@@ -437,12 +518,21 @@ fn isprint(c: char) -> bool {
     if c >= 32 { c < 127 } else { (1 << c) & 0x3e00 != 0 }
 }
 
+fn shell_safe(c: char) -> bool {
+    match c {
+        'a' ... 'z' | 'A' ... 'Z' | '0' ... '9' |
+        '_' | '\\' | '.' | '@' | '/' | '+' | '-'
+          => true,
+        _ => false
+    }
+}
+
 pub fn shell_quote(args: &[String]) -> String {
     let mut sb = std::string::String::new();
     for arg_ in args.iter() {
         let arg = &arg_[..];
         if sb.len() != 0 { sb.push(' ') }
-        if regex!(r"^[a-zA-Z0-9_\.@/+-]+$").is_match(arg) {
+        if arg.chars().all(shell_safe) {
             sb.push_str(arg);
         } else {
             sb.push('"');
@@ -469,11 +559,9 @@ pub fn shell_quote(args: &[String]) -> String {
 
 
 pub trait OptionExt<T> {
-    fn unwrap_ref(&self) -> &T;
     fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)>;
 }
 impl<T> OptionExt<T> for Option<T> {
-    fn unwrap_ref(&self) -> &T { self.as_ref().unwrap() }
     fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)> {
         if let Some(s) = self {
             if let Some(o) = other {
@@ -586,6 +674,15 @@ extern {
     fn memmove(dst: *mut u8, src: *const u8, len: usize);
     fn memset(dst: *mut u8, byte: i32, len: usize);
     fn memchr(src: *const u8, byte: i32, len: usize) -> *mut u8;
+}
+#[inline(always)]
+unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {
+    mod orig {
+        extern { pub fn strnlen(s: *const u8, maxlen: usize) -> usize; }
+    }
+    let res = orig::strnlen(s, maxlen);
+    std::intrinsics::assume(res <= maxlen);
+    res
 }
 #[inline]
 pub fn copy_memory(src: &[u8], dst: &mut [u8]) {

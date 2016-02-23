@@ -79,7 +79,7 @@ impl dis::Disassembler for LLVMDisassembler {
         if res == 0 {
             None
         } else {
-            Some((String::from_utf8_lossy(&*util::trim_to_null(&tmp[..])).to_string(), res as u32))
+            Some((util::from_cstr(&tmp).lossy().into_owned(), res as u32))
         }
     }
 }

@@ -9,10 +9,11 @@ extern crate elf_bind;
 
 use std::mem::size_of;
 use std::fmt::{Display, LowerHex};
+use std::borrow::Cow;
 
 use exec::arch::Arch;
 use exec::ReadVMA;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap};
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot};
 use elf_bind::*;
 
@@ -38,7 +39,7 @@ pub struct DynamicInfo {
     hash: Option<VMA>,
     strtab: Option<OffCountSize>,
     symtab: Option<VMA>,
-    syment: Option<u64>,
+    syment: Option<u32>,
     gnu_hash: Option<VMA>,
     rela: Option<OffCountSize>,
     rel: Option<OffCountSize>,
@@ -134,7 +135,7 @@ impl DynamicInfo {
         ovma(&mut self.hash, DT_HASH) ||
         oocs(&mut self.strtab, &mut temp.strtab, (DT_STRTAB, DT_STRSZ, 0), OCSTotalSize) ||
         ovma(&mut self.symtab, DT_SYMTAB) ||
-        ou64(&mut self.syment, DT_SYMENT) ||
+        ou32(&mut self.syment, DT_SYMENT) ||
         ovma(&mut self.gnu_hash, DT_GNU_HASH) ||
         oocs(&mut self.rela, &mut temp.rela, (DT_RELA, DT_RELASZ, DT_RELAENT), OCSTotalSize) ||
         oocs(&mut self.rel, &mut temp.rel, (DT_REL, DT_RELSZ, DT_RELENT), OCSTotalSize) ||
@@ -228,7 +229,7 @@ impl DynamicInfo {
                                 }
                                 count /= size;
                             }
-                            if count.checked_mul(size).map(|a| a.checked_add(off)).is_none() {
+                            if count.check_mul(size).check_add(off).is_none() {
                                 errln!("warning: {} count({}) * size({}) + off({}) overflows",
                                        d_tag_to_str(otag).unwrap(), count, size, off);
                                 count = (!0u64 - off) / size;
@@ -316,9 +317,6 @@ impl DynamicInfo {
         );
     }
     fn dump_verneed(&self, elf: &Elf) {
-        elf.get_full_symtab(SymtabTraverseMode::Hash);
-        elf.get_full_symtab(SymtabTraverseMode::GNUHash);
-        elf.get_full_symtab(SymtabTraverseMode::BruteForce);
         let vns = self.get_verneed(elf);
         for vn in vns {
             print!(" -> dep '{}' versions:", vn.filename);
@@ -369,11 +367,11 @@ impl DynamicInfo {
                     aux.push(Vernaux {
                         hash: vna.vna_hash as u64,
                         flags: vna.vna_flags,
-                        name: name
+                        name: name.into_owned()
                     });
                 }
                 out.push(Verneed {
-                    filename: filename,
+                    filename: filename.into_owned(),
                     aux: aux
                 });
             });
@@ -407,12 +405,13 @@ pub struct Elf {
     pub shdrs: Vec<Shdr>,
     pub dyns: Vec<Dyn>,
     pub dynamic_info: DynamicInfo,
+    pub dynstr: MCRef,
 }
 
 fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
     // This could be simpler if we just wanted to verify correctness, but may as well diagnose the
     // nature of the problem...
-    let end = cs.count.checked_mul(cs.size).and_then(|x| cs.off.checked_add(x));
+    let end = cs.count.check_mul(cs.size).check_add(cs.off);
     let end = end.unwrap_or_else(|| {
         errln!("warning: integer overflow in {}; off={} count={} size={}",
                what, cs.off, cs.count, cs.size);
@@ -548,7 +547,7 @@ fn get_shdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment
 fn check_start_size(start: u64, size: u64) -> Option<(usize, usize)> {
     if start > (std::usize::MAX as u64) || size > (std::usize::MAX as u64) { return None; }
     let start = start as usize; let size = size as usize;
-    start.checked_add(size).map(|end| (start, end))
+    start.check_add(size).map(|end| (start, end))
 }
 
 fn fill_in_data(segs: &mut [Segment], buf: &MCRef) {
@@ -575,7 +574,7 @@ fn fill_in_sect_names(sects: &mut [Segment], shdrs: &[Shdr], shstrndx: u16) {
     for (i, (sect, shdr)) in sects.into_iter().zip(shdrs).enumerate() {
         let sh_name = shdr.sh_name as usize;
         if let Some(rest) = data.slice_opt(sh_name, data.len()) {
-            sect.name = Some(util::from_cstr(rest));
+            sect.name = Some(util::from_cstr(rest).to_owned());
         } else {
             errln!("warning: sh_name for section {} out of bounds", i);
         }
@@ -726,15 +725,29 @@ impl Elf {
                 shdrs: shdrs,
                 dyns: dyns,
                 dynamic_info: Default::default(),
+                dynstr: Default::default(),
             }
         };
         res.eb.whole_buf = Some(buf);
         res.dynamic_info = DynamicInfo::decode(&res.dyns, &res.eb, res.basics.is64);
+        if let Some(strtab) = res.dynamic_info.strtab {
+            res.dynstr = res.eb.read(VMA(strtab.off), strtab.count);
+        }
         Ok(res)
     }
-    fn read_dynstr(&self, off: u64) -> Option<ByteString> {
+    fn read_dynstr<'a>(&'a self, off: u64) -> Option<Cow<'a, ByteStr>> {
+        let ds = self.dynstr.get();
+        if off < ds.len() as u64 {
+            if let Some(cs) = util::from_cstr_strict(&ds[(off as usize)..]) {
+                return Some(Cow::Borrowed(cs));
+            }
+        }
+        self.read_dynstr_hack(off).map(Cow::Owned)
+    }
+    fn read_dynstr_hack(&self, off: u64) -> Option<ByteString> {
+        // just in case it helps for obfuscated files
         let strtab = some_or!(self.dynamic_info.strtab, { return None; });
-        let xoff = some_or!(strtab.off.checked_add(off), { return None;});
+        let xoff = some_or!(strtab.off.check_add(off), { return None;});
         let res = read_cstr(&self.eb, VMA(xoff));
         if let Some(ref bs) = res {
             let strtab_size = strtab.size * strtab.count;
@@ -759,10 +772,10 @@ impl Elf {
         }
         let res = (|| {
             let word_size = if self.basics.is64 { 8 } else { 4 };
-            let bitmask_size = try!((hdr.bitmask_nwords as u64).checked_mul(word_size as u64).ok_or(()));
-            let bucket_size = try!((hdr.nbuckets as u64).checked_mul(4).ok_or(()));
-            let total_size = try!(bitmask_size.checked_add(bucket_size).ok_or(()));
-            let buf = self.eb.read(try!(addr.checked_add(hdr_size as u64).ok_or(())), total_size);
+            let bitmask_size = try!((hdr.bitmask_nwords as u64).check_mul(word_size as u64).ok_or(()));
+            let bucket_size = try!((hdr.nbuckets as u64).check_mul(4).ok_or(()));
+            let total_size = try!(bitmask_size.check_add(bucket_size).ok_or(()));
+            let buf = self.eb.read(try!(addr.check_add(hdr_size as u64).ok_or(())), total_size);
             if total_size == !0 || (buf.len() as u64) < total_size { return Err(()); }
             Ok(GNUHash {
                 header: hdr,
@@ -777,13 +790,13 @@ impl Elf {
         }
         res
     }
-    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<MCRef> {
+    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<(MCRef, usize /* syment */)> {
         let symtab = some_or!(self.dynamic_info.symtab, { return None });
         let syment = self.dynamic_info.syment.unwrap_or_else(|| {
             errln!("warning: SYMTAB but no SYMENT? (get_full_symtab)");
-            (if self.basics.is64 { size_of::<Elf64_Sym>() } else { size_of::<Elf32_Sym>() }) as u64
-        });
-        let symcount = match mode {
+            (if self.basics.is64 { size_of::<Elf64_Sym>() } else { size_of::<Elf32_Sym>() }) as u32
+        }) as u64;
+        let symcount: u64 = match mode {
             SymtabTraverseMode::Hash => {
                 let dt_hash = some_or!(self.dynamic_info.hash, { return None });
                 some_or!(None, return None);
@@ -800,15 +813,13 @@ impl Elf {
                 let buckets = gh.buckets.get();
                 let end = self.eb.endian;
                 let symbias = gh.header.symbias;
-                let max_bucket_num = buckets.chunks(4)
-                                             .map(|s| util::copy_from_slice(s, end))
-                                             .max()
-                                             .unwrap_or(symbias);
-                let max_chain = max_bucket_num.checked_sub(symbias);
+                let max_bucket_num: u32 = buckets.chunks(4)
+                                                 .map(|s| util::copy_from_slice(s, end))
+                                                 .max()
+                                                 .unwrap_or(symbias);
+                let max_chain = max_bucket_num.check_sub(symbias);
                 // but wait, there may be more
-                let last_addr = max_chain
-                                .and_then(|v| (v as u64).checked_mul(4))
-                                .and_then(|s| gh.chain_addr.checked_add(s));
+                let last_addr = gh.chain_addr.check_add(max_chain.map(u32::ext).check_mul(4));
                 let mut addr = some_or!(last_addr, {
                     errln!("warning: DT_GNU_HASH bucket data is weird");
                     return None;
@@ -823,7 +834,7 @@ impl Elf {
                     let val: u32 = util::copy_from_slice(buf.get(), end);
                     if val & 1 != 0 { break; }
                     extra += 1;
-                    addr = some_or!(addr.checked_add(4), {
+                    addr = some_or!(addr.check_add(4), {
                         errln!("warning: get_full_symtab: overflow");
                         break;
                     });
@@ -845,8 +856,13 @@ impl Elf {
                 some_or!(x, { return None })
             },
         };
-        println!("count = {}", symcount);
-        None
+        let syms_length = symcount.saturating_mul(syment);
+        let buf = self.eb.read(syms_length);
+        let read_symcount = buf.len() / syment;
+        if read_symcount < symcount {
+            errln!("warning: couldn't read symbols");
+        }
+        Some((buf.slice(0, read_symcount * syment).unwrap(), syment as usize))
     }
 }
 
@@ -855,6 +871,28 @@ impl exec::Exec for Elf {
         &self.eb
     }
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
+
+    fn get_symbol_list(&self, source: exec::SymbolSource) -> Vec<exec::Symbol> {
+        // try to get the count somehow
+        let (symtab, syment) = some_or!(
+            self.get_full_symtab(SymtabTraverseMode::BruteForce).or_else(||
+            self.get_full_symtab(SymtabTraverseMode::GNUHash)).or_else(||
+            self.get_full_symtab(SymtabTraverseMode::Hash)),
+            { return Vec::new(); });
+        let symtab = symtab.get();
+        let end = self.eb.endian;
+        branch!(if (self.basics.is64) {
+            type ElfX_Sym = Elf64_Sym;
+        } else {
+            type ElfX_Sym = Elf32_Sym;
+        } then {
+            for symdat in symtab.chunks(syment) {
+                let sym: ElfX_Sym = util::copy_from_slice(symdat, end);
+
+
+            }
+        });
+    }
 
 }
 

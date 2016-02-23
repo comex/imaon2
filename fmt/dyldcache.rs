@@ -121,7 +121,7 @@ impl DyldCache {
                     address: ii.address,
                     mod_time: ii.modTime,
                     inode: ii.inode,
-                    path: util::from_cstr(&buf[ii.pathFileOffset as usize..]),
+                    path: util::from_cstr(&buf[ii.pathFileOffset as usize..]).to_owned(),
                 }
             }).collect()
         };

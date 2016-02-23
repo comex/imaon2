@@ -16,7 +16,7 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{ToUi, VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
@@ -371,7 +371,7 @@ impl MachO {
             let lc_data = some_or!(whole.slice_opt(lc_off, lc_off + 8),
                                    { errln!("warning: load commands truncated (couldn't read LC header)"); return; });
             let lc: load_command = util::copy_from_slice(lc_data, end);
-            let lc_mc = some_or!(mc.slice(lc_off, lc_off + lc.cmdsize.to_ui()),
+            let lc_mc = some_or!(mc.slice(lc_off, lc_off + lc.cmdsize as usize),
                                  { errln!("warning: load commands truncated (cmdsize {} too high?)", lc.cmdsize); return; });
             let lc_buf = lc_mc.get();
             let this_lc_off = lc_off;
@@ -394,7 +394,7 @@ impl MachO {
                         vmsize: sc.vmsize as u64,
                         fileoff: sc.fileoff as u64,
                         filesize: sc.filesize as u64,
-                        name: Some(util::from_cstr(&sc.segname)),
+                        name: Some(util::from_cstr(&sc.segname).to_owned()),
                         prot: segprot,
                         data: data,
                         seg_idx: None,
@@ -409,7 +409,7 @@ impl MachO {
                             vmsize: s.size as u64,
                             fileoff: s.offset as u64,
                             filesize: if s.offset != 0 { s.size as u64 } else { 0 },
-                            name: Some(util::from_cstr(&s.sectname)),
+                            name: Some(util::from_cstr(&s.sectname).to_owned()),
                             prot: segprot,
                             data: None,
                             seg_idx: Some(segi),
@@ -450,7 +450,7 @@ impl MachO {
 
                 _ => ()
             }
-            lc_off += lc.cmdsize.to_ui();
+            lc_off += lc.cmdsize as usize;
             self.load_commands.push(lc_mc.clone()); // unnecessary clone
         }
     }
@@ -472,7 +472,7 @@ impl MachO {
                 let n_type = n_type_field & N_TYPE;
                 let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
                 let public = (n_type_field & N_EXT) != 0;
-                let name = util::trim_to_null(&strtab[nl.n_strx.to_ui()..]);
+                let name = util::from_cstr(&strtab[nl.n_strx as usize..]);
                 let vma = VMA(nl.n_value as u64);
                 let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
                 let val =
@@ -482,13 +482,13 @@ impl MachO {
                         SymbolValue::Undefined
                     } else if n_type == N_INDR {
                         assert!(nl.n_value <= 0xfffffffe);
-                        let indr_name = util::trim_to_null(&strtab[nl.n_value as usize..]);
+                        let indr_name = util::from_cstr(&strtab[nl.n_value as usize..]);
                         SymbolValue::ReExport(indr_name)
 
                     } else {
                         SymbolValue::Addr(vma)
                     };
-                if !(skip_redacted && name == b"<redacted>") {
+                if !(skip_redacted && name == ByteStr::from_bytes(b"<redacted>")) {
                     out.push(exec::Symbol {
                         name: name,
                         is_public: public,
@@ -881,8 +881,8 @@ impl exec::ExecProber for FatMachOProber {
                 Some(desc) => desc.to_string(),
                 None => format!("{}", i),
             };
-            let off = fa.offset.to_ui();
-            let size = fa.size.to_ui();
+            let off = fa.offset as usize;
+            let size = fa.size as usize;
             for pr in exec::probe_all(eps, mc.slice(off, off + size).unwrap()).into_iter() {
                 let npr = exec::ProbeResult {
                     desc: format!("(slice #{}) {}", i, pr.desc),
@@ -918,8 +918,8 @@ impl exec::ExecProber for FatMachOProber {
                 i == slice_i
             }
             {
-                let off = fa.offset.to_ui();
-                let size = fa.size.to_ui();
+                let off = fa.offset as usize;
+                let size = fa.size as usize;
                 result = Some(exec::create(eps, mc.slice(off, off + size).unwrap(), replace(&mut m.free, vec!())));
             }
         });

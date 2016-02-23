@@ -6,8 +6,8 @@ authors = []
 name = "dummy"
 path = "dummy.rs"
 [dependencies]
-regex = "0.1.9"
-regex_macros = "0.1.4"
+#regex = "0.1.9"
+#regex_macros = "0.1.4"
 #[dependencies.bindgen]
 #git = "https://github.com/crabtw/rust-bindgen.git"
 [dependencies.autollvm]
