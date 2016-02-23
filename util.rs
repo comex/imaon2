@@ -9,7 +9,7 @@ extern crate collections;
 
 use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy, null_mut};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
@@ -19,6 +19,7 @@ use std::slice;
 use std::fmt::{Debug, Display, Formatter};
 use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
+use std::cell::UnsafeCell;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -202,7 +203,7 @@ impl<T> Swap for Option<T> {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteStr([u8]);
 #[derive(Clone, PartialEq, Eq)]
-pub struct ByteString(Vec<u8>);
+pub struct ByteString(pub Vec<u8>);
 impl ByteStr {
     #[inline]
     pub fn lossy<'a>(&'a self) -> Cow<'a, str> {
@@ -570,6 +571,8 @@ pub fn shell_quote(args: &[String]) -> String {
 
 pub trait OptionExt<T> {
     fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)>;
+    fn is_some_and<P>(&self, pred: P) -> bool
+        where P: FnOnce(&T) -> bool;
 }
 impl<T> OptionExt<T> for Option<T> {
     fn and_tup<U>(self, other: Option<U>) -> Option<(T, U)> {
@@ -579,6 +582,14 @@ impl<T> OptionExt<T> for Option<T> {
             }
         }
         None
+    }
+    fn is_some_and<P>(&self, pred: P) -> bool
+        where P: FnOnce(&T) -> bool {
+        if let &Some(ref val) = self {
+            pred(val)
+        } else {
+            false
+        }
     }
 }
 
@@ -714,3 +725,36 @@ pub fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T
     s.into()
 }
 
+enum MyOption<T> {
+    None,
+    _Fake(u8), // no optimization please
+    Some(T)
+}
+
+pub struct Lazy<T> {
+    mtx: Mutex<()>,
+    val: UnsafeCell<MyOption<T>>, // bah, this extra wrap shouldn't be necessary
+}
+impl<T> Lazy<T> {
+    pub fn new() -> Lazy<T> {
+        Lazy { mtx: Mutex::new(()), val: UnsafeCell::new(MyOption::None) }
+    }
+    pub fn get<F>(&self, f: F) -> &T where F: FnOnce() -> T {
+        unsafe {
+            let ptr = self.val.get();
+            if let MyOption::Some(ref t) = *ptr {
+                t
+            } else {
+                {
+                    let _guard = self.mtx.lock().unwrap();
+                    *ptr = MyOption::Some(f());
+                }
+                if let MyOption::Some(ref t) = *ptr {
+                    t
+                } else {
+                    panic!("wtf")
+                }
+            }
+        }
+    }
+}

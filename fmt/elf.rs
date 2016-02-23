@@ -6,14 +6,16 @@ extern crate macros;
 extern crate util;
 extern crate exec;
 extern crate elf_bind;
+extern crate vec_map;
 
 use std::mem::size_of;
 use std::fmt::{Display, LowerHex};
 use std::borrow::Cow;
+use vec_map::VecMap;
 
 use exec::arch::Arch;
 use exec::ReadVMA;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext};
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, OptionExt};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource};
 use elf_bind::*;
 
@@ -115,7 +117,13 @@ struct Verneed {
 struct Vernaux {
     hash: u64,
     flags: u16,
+    other: u16,
     name: ByteString,
+}
+
+struct VerneedInfo {
+    verneed: Vec<Verneed>,
+    vna_other_to_idx: VecMap<(usize, usize)>,
 }
 
 impl DynamicInfo {
@@ -298,7 +306,7 @@ impl DynamicInfo {
                     println!("{}: @0x{:x} {} entries of size 0x{:x}", d_tag_to_str(otag).unwrap(), ocs.off, ocs.count, ocs.size);
                     if let Some(e) = elf {
                         match otag {
-                            DT_VERNEED => self.dump_verneed(e),
+                            DT_VERNEED => e.dump_verneed(),
                             _ => (),
 
                         }
@@ -316,21 +324,11 @@ impl DynamicInfo {
             },
         );
     }
-    fn dump_verneed(&self, elf: &Elf) {
-        let vns = self.get_verneed(elf);
-        for vn in vns {
-            print!(" -> dep '{}' versions:", vn.filename);
-            for vna in vn.aux {
-                print!(" '{}'({})", vna.name, vna.flags);
-            }
-            print!("\n");
-        }
-
-    }
-    fn get_verneed(&self, elf: &Elf) -> Vec<Verneed> {
+    fn fetch_verneed_info(&self, elf: &Elf) -> VerneedInfo {
         let ocs = self.verneed.unwrap_or(OffCountSize::default());
         let mut addr = VMA(ocs.off);
-        let mut out = Vec::new();
+        let mut verneed = Vec::new();
+        let mut map = VecMap::new();
         for _i in 0..ocs.count {
             let data = elf.eb.read(addr, ocs.size);
             if (data.len() as u64) < ocs.size {
@@ -364,19 +362,21 @@ impl DynamicInfo {
                     auxaddr = auxaddr + vna.vna_next as u64;
                     let name = some_or!(elf.read_dynstr(vna.vna_name as u64),
                                         { errln!("warning: vernaux name invalid"); continue; });
+                    map.insert(vna.vna_other.ext(), (verneed.len(), aux.len()));
                     aux.push(Vernaux {
                         hash: vna.vna_hash as u64,
                         flags: vna.vna_flags,
+                        other: vna.vna_other,
                         name: name.into_owned()
                     });
                 }
-                out.push(Verneed {
+                verneed.push(Verneed {
                     filename: filename.into_owned(),
                     aux: aux
                 });
             });
         }
-        out
+        VerneedInfo { verneed: verneed, vna_other_to_idx: map }
     }
 }
 
@@ -407,6 +407,7 @@ pub struct Elf {
     pub dyns: Vec<Dyn>,
     pub dynamic_info: DynamicInfo,
     pub dynstr: MCRef,
+    verneed_info_cache: Lazy<VerneedInfo>,
 }
 
 fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
@@ -728,6 +729,7 @@ impl Elf {
                 dyns: dyns,
                 dynamic_info: Default::default(),
                 dynstr: Default::default(),
+                verneed_info_cache: Lazy::new(),
             }
         };
         res.eb.whole_buf = Some(buf);
@@ -792,7 +794,7 @@ impl Elf {
         }
         res
     }
-    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<(MCRef, usize /* syment */)> {
+    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<(MCRef /*symtab*/, MCRef /*versym*/, usize /* syment */)> {
         let symtab = some_or!(self.dynamic_info.symtab, { return None });
         let syment = self.dynamic_info.syment.unwrap_or_else(|| {
             errln!("warning: SYMTAB but no SYMENT? (get_full_symtab)");
@@ -865,8 +867,32 @@ impl Elf {
         if (read_symcount as u64) < symcount {
             errln!("warning: couldn't read symbols");
         }
-        Some((buf.slice(0, read_symcount * syment).unwrap(), syment))
+        let versym_buf = if let Some(versym) = self.dynamic_info.versym {
+            let versym_length = symcount.saturating_mul(2);
+            let buf = self.eb.read(versym, versym_length);
+            if buf.len().ext() < versym_length {
+                errln!("warning: couldn't read versym (got {}/{} bytes)", buf.len(), versym_length);
+            }
+            buf
+        } else { MCRef::default() };
+
+        Some((buf.slice(0, read_symcount * syment).unwrap(), versym_buf, syment))
     }
+    fn get_verneed_info(&self) -> &VerneedInfo {
+        self.verneed_info_cache.get(|| self.dynamic_info.fetch_verneed_info(self))
+    }
+    fn dump_verneed(&self) {
+        let vns = self.get_verneed_info();
+        for vn in &vns.verneed {
+            print!(" -> dep '{}' versions:", vn.filename);
+            for vna in &vn.aux {
+                print!(" '{}'(id={}, flags={})", vna.name, vna.other, vna.flags);
+            }
+            print!("\n");
+        }
+
+    }
+
 }
 
 impl exec::Exec for Elf {
@@ -877,12 +903,14 @@ impl exec::Exec for Elf {
 
     fn get_symbol_list(&self, source: SymbolSource) -> Vec<Symbol> {
         // try to get the count somehow
-        let (symtab, syment) = some_or!(
+        let (symtab, versym, syment) = some_or!(
             self.get_full_symtab(SymtabTraverseMode::BruteForce).or_else(||
             self.get_full_symtab(SymtabTraverseMode::GNUHash)).or_else(||
             self.get_full_symtab(SymtabTraverseMode::Hash)),
             { return Vec::new(); });
         let symtab = symtab.get();
+        let versym = versym.get();
+        let verneed_info = self.get_verneed_info();
         let end = self.eb.endian;
         branch!(if (self.basics.is64) {
             type ElfX_Sym = Elf64_Sym;
@@ -891,13 +919,44 @@ impl exec::Exec for Elf {
         } then {
             symtab.chunks(syment).enumerate().map(|(i, symdat)| {
                 let sym: ElfX_Sym = util::copy_from_slice(symdat, end);
-                let name = self.read_dynstr(sym.st_name as u64)
+                let vs: u16 = if versym.len() >= (2 * i + 2) {
+                    util::copy_from_slice(&versym[2 * i..2 * i + 2], end)
+                } else { 0 };
+                let mut name = self.read_dynstr(sym.st_name as u64)
                                .unwrap_or_else(|| {
                                 errln!("warning: symbol has invalid st_name {}", sym.st_name);
                                 ByteString::from_string(format!("<<{}>>", sym.st_name)).into()
                                 });
+                let vs_hidden = vs & 0x8000 != 0;
+                if vs_hidden {
+                    // only visible with an explicit version number, so... tack on the version
+                    // number? (otherwise i don't really want to)
+                    let key = vs & 0x7fff;
+                    let verstr: &ByteStr = if let Some(&(i, j)) =
+                                    verneed_info.vna_other_to_idx.get(key.ext()) {
+                        &*verneed_info.verneed[i].aux[j].name
+                    } else {
+                        errln!("warning: invalid verneed key 0x{:x}", key);
+                        ByteStr::from_str("?????")
+                    };
+                    // note: vernum=0 means none, vernum=1 means 'Base' whatever that means, but
+                    // for hidden it probably shouldn't be those? so keep the error
+                    let n = name.to_mut();
+                    n.0.push(b'@');
+                    n.0.push(b'@');
+                    n.0.extend_from_slice(verstr);
+                }
                 let st_bind = sym.st_info >> 4;
                 let stval = sym.st_value as u64;
+                if source == SymbolSource::Exported &&
+                   (sym.st_shndx as u32 == SHN_UNDEF ||
+                    vs != 0) {
+                    return None;
+                }
+                if source == SymbolSource::Imported && sym.st_shndx as u32 != SHN_UNDEF {
+                    return None;
+                }
+                // TODO SHN_XINDEX
                 let val = match sym.st_shndx as u32 {
                     SHN_ABS => SymbolValue::Abs(VMA(stval)),
                     SHN_COMMON | SHN_UNDEF => SymbolValue::Undefined,
@@ -921,15 +980,15 @@ impl exec::Exec for Elf {
 
                     }
                 };
-                Symbol {
+                Some(Symbol {
                     name: name,
                     is_public: st_bind as u32 != STB_LOCAL,
                     is_weak: st_bind as u32 == STB_WEAK,
                     val: val,
                     size: if sym.st_size == 0 { None } else { Some(sym.st_size as u64) },
                     private: i,
-                }
-            }).collect::<Vec<Symbol>>()
+                })
+            }).filter_map(|x| x).collect::<Vec<Symbol>>()
         })
     }
 
