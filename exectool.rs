@@ -14,7 +14,6 @@ use std::path::Path;
 use std::io::Write;
 use std::cmp::min;
 use std::str::FromStr;
-use std::borrow::Cow;
 use std::any::Any;
 
 use util::{VecCopyExt, into_cow};

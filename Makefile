@@ -29,7 +29,7 @@ cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
 
 rustc-extern = --extern $(1)=`ls -t target/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
-RUSTC := rustc -Ltarget/$(CARGO_BUILD_TYPE)/deps $(call rustc-extern,regex) $(call rustc-extern,log) $(call rustc-extern,autollvm) -L. -L$(OUT) $(RUSTC)
+RUSTC := rustc -Ltarget/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) -L. -L$(OUT) $(RUSTC)
 
 RUSTC := $(RUSTC) -Z no-landing-pads
 
@@ -60,6 +60,7 @@ $(call define_crate,rlib,macros,macros.rs,)
 $(call define_crate,$(LIB),bsdlike_getopts,bsdlike_getopts.rs,)
 $(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts)
 
+ifneq ($(USE_LLVM),)
 # deps here are wonky
 tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
 	cd tables; ./build-tblgen.sh "$(LLVM)"
@@ -75,6 +76,7 @@ endef
 td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
+endif
 
 $(OUT)/cargo-build: Cargo.toml
 	test -a Cargo.lock && cargo update || true
@@ -105,11 +107,13 @@ $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 $(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
 $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
+ifneq ($(USE_LLVM),)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
+endif
 
 $(call define_crate,$(LIB),db,db/sexpr.rs,util)
 
-$(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis llvmdis)
+$(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
 
 clean:
 	rm -rf $(OUT) target/$(CARGO_BUILD_TYPE)
