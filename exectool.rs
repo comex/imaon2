@@ -1,6 +1,9 @@
 #![allow(non_camel_case_types)]
 #![feature(stmt_expr_attributes)] // disall
 
+#![feature(alloc_system)]
+extern crate alloc_system;
+
 extern crate util;
 extern crate bsdlike_getopts as getopts;
 extern crate exec;

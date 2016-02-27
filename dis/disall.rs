@@ -1,5 +1,3 @@
-#![feature(stmt_expr_attributes)]
-
 extern crate dis;
 #[cfg(use_llvm)]
 extern crate llvmdis;

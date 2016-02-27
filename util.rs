@@ -144,9 +144,9 @@ impl_signed!(i16);
 pub trait Ext<Larger> {
     fn ext(self) -> Larger;
 }
-pub trait Trunc<Smaller> {
+pub trait Narrow<Smaller> {
     fn trunc(self) -> Smaller;
-    fn checked_trunc(self) -> Option<Smaller>;
+    fn narrow(self) -> Option<Smaller>;
 }
 
 macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
@@ -155,11 +155,11 @@ macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
             self as $la
         }
     }
-    impl Trunc<$sm> for $la {
+    impl Narrow<$sm> for $la {
         fn trunc(self) -> $sm {
             self as $sm
         }
-        fn checked_trunc(self) -> Option<$sm> {
+        fn narrow(self) -> Option<$sm> {
             let res = self as $sm;
             if res as $la == self { Some(res) } else { None }
         }
