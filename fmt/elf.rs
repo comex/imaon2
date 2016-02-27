@@ -16,7 +16,7 @@ use vec_map::VecMap;
 
 use exec::arch::Arch;
 use exec::ReadVMA;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, OptionExt};
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource};
 use elf_bind::*;
 

@@ -310,7 +310,7 @@ impl ReadVMA for ExecBase {
             let desired = min(avail, size);
             let end = min(off + desired, data.len() as u64);
             let sl = &data[off as usize..end as usize];
-            res.extend(sl);
+            res.extend_from_slice(sl);
             if sl.len() as u64 != desired { break; }
             size -= desired;
         }

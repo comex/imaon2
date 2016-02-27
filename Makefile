@@ -1,26 +1,36 @@
 # This Makefile is public domain.
 
-
+RUSTC := rustc
+TARGET :=
 
 RUSTSRC := /usr/src/rust
 LLVM := $(RUSTSRC)/src/llvm
 
+override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
 ifeq ($(OPT),1)
 LIB := rlib
-RUSTC := $(RUSTC) -O --cfg opt
-RUSTCFLAGS_bin := -C lto
+override RUSTFLAGS := $(RUSTFLAGS) -O --cfg opt
+RUSTFLAGS_bin := -C lto
 CARGO_BUILD_TYPE := release
-CARGO_BUILD_FLAGS := --release
+override CARGO_BUILD_FLAGS := $(CARGO_BUILD_FLAGS) --release
 OUT := ./outrel
 else
 LIB := dylib
-RUSTC := $(RUSTC) -C codegen-units=1 -C prefer-dynamic
+override RUSTFLAGS := $(RUSTFLAGS) -C codegen-units=1 -C prefer-dynamic
 ifneq ($(NDEBUG),1)
-RUSTC := $(RUSTC) -g
+override RUSTFLAGS := $(RUSTFLAGS) -g
 endif
 CARGO_BUILD_TYPE := debug
-CARGO_BUILD_FLAGS :=
+#CARGO_BUILD_FLAGS :=
 OUT := ./out
+endif
+
+ifneq ($(TARGET),)
+TARGET_DIR := $(CURDIR)/target/x86*# xxx
+override CARGO_BUILD_FLAGS := $(CARGO_BUILD_FLAGS) --target $(TARGET)
+override RUSTFLAGS := $(RUSTFLAGS) --target $(TARGET)
+else
+TARGET_DIR := $(CURDIR)/target
 endif
 
 $(shell mkdir -p $(OUT))
@@ -28,10 +38,9 @@ cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
 
-rustc-extern = --extern $(1)=`ls -t target/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
-RUSTC := rustc -Ltarget/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) -L. -L$(OUT) $(RUSTC)
+rustc-extern = --extern $(1)=`ls -t $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
+XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) -L. -L$(OUT)
 
-RUSTC := $(RUSTC) -Z no-landing-pads
 
 all:
 
@@ -41,12 +50,12 @@ cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 # specify -o explicitly?
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) $(OUT)/cargo-build
-	$(RUSTC) $(RUSTCFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
+	$(XRUSTC) $(RUSTFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
 
 all: $$(cratefile-$(2))
 
 out/test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
-	$(RUSTC) -g --crate-type dylib --test -o $$@ $$<
+	$(XRUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
 do-test-$(2): out/test-$(2)
@@ -81,14 +90,14 @@ endif
 $(OUT)/cargo-build: Cargo.toml
 	test -a Cargo.lock && cargo update || true
 	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
-	cargo build $(CARGO_BUILD_FLAGS)
+	RUSTC=$(RUSTC) cargo build $(CARGO_BUILD_FLAGS)
 	touch $@ # xxx
 
 XC_LIBCLANG_PATH := /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
 externals/rust-bindgen/bindgen: $(OUT)/cargo-build
 	dir=~/.cargo/git/checkouts; \
 	bg=$$(ls -t $$dir | grep '^rust-bindgen-' | head -n 1); \
-	$(RUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L$(XC_LIBCLANG_PATH) -C link-args='-rpath $(XC_LIBCLANG_PATH)'
+	$(XRUSTC) -o $@ $$dir/$$bg/master/src/bin/bindgen.rs -L$(XC_LIBCLANG_PATH) -C link-args='-rpath $(XC_LIBCLANG_PATH)'
 
 $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"
@@ -116,7 +125,7 @@ $(call define_crate,$(LIB),db,db/sexpr.rs,util)
 $(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
 
 clean:
-	rm -rf $(OUT) target/$(CARGO_BUILD_TYPE)
+	rm -rf $(OUT) $(TARGET_DIR)/$(CARGO_BUILD_TYPE)
 
 extraclean: clean
 	rm -rf tables/llvm-tblgen Cargo.lock
