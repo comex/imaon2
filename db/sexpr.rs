@@ -4,7 +4,9 @@
 #[macro_use]
 extern crate macros;
 
-use std::io::{BufRead, CharsError, Cursor, Write};
+use std::io::{BufRead, CharsError, Write};
+#[cfg(test)]
+use std::io::Cursor;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Sexpr {
@@ -386,6 +388,7 @@ pub fn write_sexpr<W: Write>(mut w: W, sx0: &Sexpr) -> std::io::Result<()> {
     }
 }
 
+#[cfg(test)]
 fn s(s: &str) -> Sexpr { Sexpr::Str(s.to_owned()) }
 
 #[test]

@@ -1,11 +1,10 @@
-#![feature(libc, collections, plugin, core_intrinsics)]
+#![feature(libc, plugin, core_intrinsics)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 
 #[macro_use]
 extern crate macros;
-extern crate collections;
 
 use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy, null_mut};
