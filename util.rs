@@ -19,6 +19,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
 use std::cell::UnsafeCell;
+use std::marker::PhantomData;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -755,5 +756,29 @@ impl<T> Lazy<T> {
                 }
             }
         }
+    }
+}
+
+pub struct FieldLens<Outer, Inner> {
+    offset: usize,
+    lol: PhantomData<*const (Outer, Inner)>,
+}
+
+pub unsafe fn __field_lens<Outer, Inner>(offset: *const Inner) -> FieldLens<Outer, Inner> {
+    FieldLens { offset: offset as usize, lol: PhantomData }
+}
+
+impl<Outer, Inner> FieldLens<Outer, Inner> {
+    #[inline]
+    pub fn get_mut(&self, outer: &mut Outer) -> &mut Inner {
+        unsafe { transmute(transmute::<&mut Outer, *mut u8>(outer).offset(self.offset as isize)) }
+    }
+    #[inline]
+    pub fn get(&self, outer: &Outer) -> &Inner {
+        unsafe { transmute(transmute::<&Outer, *const u8>(outer).offset(self.offset as isize)) }
+    }
+    #[inline]
+    pub unsafe fn get_mut_unsafe(&self, outer: *mut Outer) -> &mut Inner {
+        transmute(transmute::<*mut Outer, *mut u8>(outer).offset(self.offset as isize))
     }
 }

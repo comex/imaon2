@@ -147,3 +147,8 @@ macro_rules! impl_check_math_option {($T:ty, $U:ty) => {
     }
 
 }}
+
+#[macro_export]
+macro_rules! field_lens { ($ty:ty, $field:ident) => {
+    unsafe { util::__field_lens::<$ty, _>(&(*(0 as *const $ty)).$field as *const _) }
+} }

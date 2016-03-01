@@ -320,7 +320,6 @@ pub fn write_sexpr<W: Write>(mut w: W, sx0: &Sexpr) -> std::io::Result<()> {
     let mut stack: Vec<&[Sexpr]> = vec![];
     let mut sx = sx0;
     loop {
-        println!(">>> {:?}", stack);
         if need_white {
             try!(write!(w, " "));
         }

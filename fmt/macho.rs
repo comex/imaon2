@@ -22,7 +22,7 @@ use exec::{arch, VMA, SymbolValue};
 use std::{u64, u32, usize};
 use std::collections::HashMap;
 use std::borrow::Cow;
-use util::ByteStr;
+use util::{ByteStr, FieldLens};
 
 pub mod dyldcache;
 
@@ -123,7 +123,7 @@ pub struct MachO {
 
 struct LinkeditBit {
     name: &'static str,
-    self_field_off: usize,
+    self_field: FieldLens<MachO, MCRef>,
     cmd_id: u32,
     cmd_off_field_off: usize,
     cmd_count_field_off: usize,
@@ -135,7 +135,7 @@ macro_rules! lbit {
     ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr, $is_symtab:expr) => {
         LinkeditBit {
             name: stringify!($self_field),
-            self_field_off: offset_of!(MachO, $self_field),
+            self_field: field_lens!(MachO, $self_field),
             cmd_id: $cmd_id,
             cmd_off_field_off: offset_of!($cmd_type, $off_field),
             cmd_count_field_off: offset_of!($cmd_type, $size_field),
@@ -364,6 +364,7 @@ impl MachO {
     }
 
     fn parse_load_commands(&mut self, mut lc_off: usize, mc: &MCRef) {
+        let self_ = self as *mut _;
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
         let whole = mc.get();
@@ -431,7 +432,7 @@ impl MachO {
                 LC_CODE_SIGNATURE => {
                     for fb in &self.linkedit_bits {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
-                            let mcrefp: *mut MCRef = unsafe { transmute((self as *const MachO as usize) + fb.self_field_off) };
+                            let mcref: &mut MCRef = unsafe { fb.self_field.get_mut_unsafe(self_) };
                             let (off_data, count_data) =
                                 some_or!(         lc_buf.slice_opt(fb.cmd_off_field_off, fb.cmd_off_field_off+4)
                                          .and_tup(lc_buf.slice_opt(fb.cmd_count_field_off, fb.cmd_count_field_off+4)),
@@ -444,7 +445,7 @@ impl MachO {
                             } else {
                                 self.eb.whole_buf.as_ref().unwrap()
                             };
-                            unsafe { *mcrefp = file_array(buf, fb.name, off, count, fb.elm_size); }
+                            *mcref = file_array(buf, fb.name, off, count, fb.elm_size);
                         }
                     }
                 },
@@ -590,10 +591,7 @@ impl MachO {
         let mut linkedit: Vec<u8> = Vec::new();
         let mut allocs: Vec<(usize, usize)> = Vec::new();
         for fb in &self.linkedit_bits {
-            let mcref: &MCRef = unsafe {
-                let mcrefp: *const MCRef = transmute((self as *const MachO as usize) + fb.self_field_off);
-                &*mcrefp
-            };
+            let mcref: &MCRef = fb.self_field.get(self);
             let buf = mcref.get();
             if fb.is_symtab {
                 allocs.push((mcref.offset_in(&self.symtab).unwrap(), buf.len()));
