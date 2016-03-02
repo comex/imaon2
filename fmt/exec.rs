@@ -317,3 +317,52 @@ impl ReadVMA for ExecBase {
         MCRef::with_data(&res) // xxx
     }
 }
+
+pub fn read_leb128_inner<It: Iterator<Item=u8>>(it: &mut It, signed: bool) -> Option<(u64, bool /* overflow */ )> {
+    let mut shift = 0;
+    let mut result: u64 = 0;
+    let mut overflow = false;
+    loop {
+        let byte = some_or!(it.next(), { return None; });
+        let (k, cont) = (byte & 0x7f, byte & 0x80 != 0);
+        if shift < 63 {
+            result |= (k as u64) << shift;
+            shift += 7;
+        } else if shift == 63 {
+            result |= ((k & 1) as u64) << shift;
+            if cont || (k > 1 && (!signed || k < 0x7f)) { overflow = true; }
+            shift = 64;
+        }
+        if !cont {
+            if signed && byte & 0x40 != 0 && shift != 64 {
+                result |= !0u64 << shift;
+            }
+            return Some((result, overflow));
+        }
+    }
+}
+
+#[inline]
+pub fn read_uleb128<It: Iterator<Item=u8>>(it: &mut It) -> Option<(u64, bool)> {
+    read_leb128_inner(it, false)
+}
+#[inline]
+pub fn read_sleb128<It: Iterator<Item=u8>>(it: &mut It) -> Option<(i64, bool)> {
+    read_leb128_inner(it, true).map(|(i, o)| (i as i64, o))
+}
+
+pub struct ByteSliceIterator<'a, 'b: 'a>(pub &'a mut &'b [u8]);
+impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
+    type Item = u8;
+    #[inline]
+    fn next(&mut self) -> Option<u8> {
+        if self.0.is_empty() {
+            None
+        } else {
+            let res = self.0[0];
+            *self.0 = &(*self.0)[1..];
+            Some(res)
+        }
+    }
+}
+

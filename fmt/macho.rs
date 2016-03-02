@@ -18,11 +18,12 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator};
 use std::{u64, u32, usize};
 use std::collections::HashMap;
 use std::borrow::Cow;
-use util::{ByteStr, FieldLens};
+use util::{ByteString, ByteStr, FieldLens, Ext};
+use std::cell::Cell;
 
 pub mod dyldcache;
 
@@ -85,12 +86,21 @@ pub struct DscTabs {
     pub count: u32,
 }
 
+pub struct DylibCommand {
+    name: ByteString,
+    timestamp: u32,
+    current_version: u32,
+    compatibility_version: u32,
+}
+
 #[derive(Default)]
 pub struct MachO {
     pub eb: exec::ExecBase,
     pub is64: bool,
     pub mh: mach_header,
     pub load_commands: Vec<MCRef>,
+    pub load_dylib: Vec<DylibCommand>,
+
     // old-style symbol table:
     pub nlist_size: usize,
     pub symtab: MCRef,
@@ -119,6 +129,13 @@ pub struct MachO {
     pub code_signature: MCRef,
     // this should be *static* but :rust:
     linkedit_bits: Vec<LinkeditBit>,
+}
+
+#[derive(PartialEq, Eq, Copy, Clone)]
+enum WhichBind {
+    Bind = 0,
+    WeakBind = 1,
+    LazyBind = 2
 }
 
 struct LinkeditBit {
@@ -182,19 +199,43 @@ impl exec::Exec for MachO {
         &self.eb
     }
 
-    fn get_symbol_list(&self, source: exec::SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol> {
+    fn get_symbol_list<'a>(&'a self, source: exec::SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol<'a>> {
         assert!(specific.is_none());
-        if source == exec::SymbolSource::All {
-            let mut out = Vec::new();
-            let mut skip_redacted = false;
-            if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
-                self.push_nlist_symbols(symtab.get(), strtab.get(), start as usize, count as usize, false, &mut out);
-                skip_redacted = true;
-            }
-            self.push_nlist_symbols(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size, skip_redacted, &mut out);
-            out
-        } else {
-            unimplemented!()
+        match source {
+            exec::SymbolSource::All => {
+                let mut out = Vec::new();
+                let mut skip_redacted = false;
+                if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
+                    self.push_nlist_symbols(symtab.get(), strtab.get(), start as usize, count as usize, false, &mut out);
+                    skip_redacted = true;
+                }
+                self.push_nlist_symbols(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size, skip_redacted, &mut out);
+                out
+            },
+            exec::SymbolSource::Imported => {
+                let mut out = Vec::new();
+                {
+                let which = Cell::new(WhichBind::Bind);
+                let mut cb = |state: &ParseDyldBindState<'a>| {
+                    if state.already_bound_this_symbol { return; }
+                    out.push(exec::Symbol {
+                        name: some_or!(state.symbol, { return; }).into(),
+                        is_public: true,
+                        is_weak: which.get() == WhichBind::WeakBind,
+                        val: exec::SymbolValue::Undefined,
+                        size: None,
+                        private: 0,
+                    });
+                };
+                self.parse_dyld_bind(&self.dyld_bind, which.get(), &mut cb);
+                which.set(WhichBind::WeakBind);
+                self.parse_dyld_bind(&self.dyld_weak_bind, which.get(), &mut cb);
+                which.set(WhichBind::LazyBind);
+                self.parse_dyld_bind(&self.dyld_lazy_bind, which.get(), &mut cb);
+                }
+                out
+            },
+            exec::SymbolSource::Exported => unimplemented!()
         }
     }
 
@@ -293,6 +334,24 @@ impl<T> OKOrTruncated<T> for Option<T> {
     fn ok_or_truncated(self) -> exec::ExecResult<T> {
         if let Some(a) = self { Ok(a) } else { exec::err(exec::ErrorKind::BadData, "truncated") }
     }
+}
+
+enum ParseDyldBindStateSourceDylib {
+    None,
+    Ordinal(u64),
+    Self_,
+    MainExecutable,
+    Flat,
+}
+
+struct ParseDyldBindState<'s> {
+    source_dylib: ParseDyldBindStateSourceDylib,
+    addr: Option<VMA>,
+    seg_end: VMA,
+    addend: i64,
+    typ: u8,
+    symbol: Option<&'s ByteStr>,
+    already_bound_this_symbol: bool,
 }
 
 impl MachO {
@@ -449,7 +508,32 @@ impl MachO {
                         }
                     }
                 },
-
+                LC_LOAD_DYLIB => {
+                    if (lc.cmdsize as usize) < size_of::<dylib_command>() {
+                        errln!("warning: LC_LOAD_DYLIB command too small");
+                    } else {
+                        let dc: dylib_command = util::copy_from_slice(&lc_buf[..size_of::<dylib_command>()], end);
+                        let offset: u32 = unsafe { transmute(dc.dylib.name) };
+                        let offset = offset as usize;
+                        let name = if offset <= lc_buf.len() {
+                            let rest = &lc_buf[offset..];
+                            let n = util::from_cstr(rest);
+                            if n.len() == rest.len() {
+                                errln!("warning: LC_LOAD_DYLIB name runs off end");
+                            }
+                            n
+                        } else {
+                            errln!("warning: LC_LOAD_DYLIB invalid offset");
+                            ByteStr::from_str("<err>")
+                        };
+                        self.load_dylib.push(DylibCommand {
+                            name: ByteString::new(name),
+                            timestamp: dc.dylib.timestamp,
+                            current_version: dc.dylib.current_version,
+                            compatibility_version: dc.dylib.compatibility_version,
+                        });
+                    }
+                },
                 _ => ()
             }
             lc_off += lc.cmdsize as usize;
@@ -812,6 +896,120 @@ impl MachO {
             }
         }
         (existing_segs, extra_segs)
+    }
+    fn parse_dyld_bind<'a>(&'a self, bind: &'a MCRef, which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
+        let pointer_size = if self.is64 { 8 } else { 4 };
+        let mut slice = bind.get();
+        let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
+            let mut it = ByteSliceIterator(slice_);
+            if let Some((num, ovf)) = exec::read_leb128_inner(&mut it, signed) {
+                if ovf {
+                    errln!("parse_dyld_bind: leb128 overflow (signed={})", signed);
+                }
+                Some(num)
+            } else {
+                errln!("parse_dyld_bind: leb128 overflow (signed={})", signed);
+                None
+            }
+        };
+        macro_rules! leb { ($signed:expr) => {
+            if let Some(num) = leb(&mut slice, $signed) { num } else { return }
+        } }
+        let advance = |state: &mut ParseDyldBindState, amount: u64| {
+            if let Some(addr) = state.addr {
+                if amount > state.seg_end - addr {
+                    errln!("warning: parse_dyld_bind: going out of range of segment");
+                    state.addr = Some(addr + amount);
+                } else {
+                    state.addr = None;
+                }
+            }
+        };
+        let mut bind_advance = |state: &mut _, amount: u64| {
+            cb(state);
+            state.already_bound_this_symbol = true;
+            advance(state, amount);
+        };
+        let mut state = ParseDyldBindState {
+            source_dylib: ParseDyldBindStateSourceDylib::None,
+            addr: None,
+            seg_end: VMA::default(),
+            addend: 0,
+            typ: if which == WhichBind::LazyBind { BIND_TYPE_POINTER as u8 } else { 0 },
+            symbol: None,
+            already_bound_this_symbol: false,
+        };
+        let set_dylib_ordinal = |state: &mut ParseDyldBindState, ord: u64| {
+            let count = self.load_dylib.len().ext();
+            state.source_dylib = if ord == 0 || ord > count {
+                errln!("parse_dyld_bind: dylib ordinal out of range (ord={}, count={})", ord, count);
+                ParseDyldBindStateSourceDylib::None
+            } else {
+                ParseDyldBindStateSourceDylib::Ordinal(ord)
+            };
+        };
+        while !slice.is_empty() {
+            let byte = slice[0];
+            slice = &slice[1..];
+            let immediate = byte & (BIND_IMMEDIATE_MASK as u8);
+            let opcode = byte & (BIND_OPCODE_MASK as u8);
+            match opcode as u32 {
+                BIND_OPCODE_DONE => (),
+                BIND_OPCODE_SET_DYLIB_ORDINAL_IMM => set_dylib_ordinal(&mut state, immediate as u64),
+                BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB => set_dylib_ordinal(&mut state, leb!(false)),
+                BIND_OPCODE_SET_DYLIB_SPECIAL_IMM => state.source_dylib = match immediate {
+                    0x0 => ParseDyldBindStateSourceDylib::Self_,
+                    0xf => ParseDyldBindStateSourceDylib::MainExecutable,
+                    0xe => ParseDyldBindStateSourceDylib::Flat,
+                    _ => {
+                        errln!("warning: parse_dyld_bind: unknown special source dylib -{}", 0x10 - immediate);
+                        ParseDyldBindStateSourceDylib::None
+                    },
+                },
+                BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM => {
+                    let name = some_or!(util::from_cstr_strict(slice), {
+                        errln!("parse_dyld_bind: BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM: bad string");
+                        break;
+                    });
+                    state.symbol = Some(name);
+                    state.already_bound_this_symbol = false;
+                    slice = &slice[name.len()+1..];
+                },
+                BIND_OPCODE_SET_TYPE_IMM => {
+                    state.typ = immediate;
+                    if immediate < 1 || immediate > 3 {
+                        errln!("warning: parse_dyld_bind: unknown BIND_OPCODE_SET_TYPE_IMM type {}", immediate);
+                    }
+                },
+                BIND_OPCODE_SET_ADDEND_SLEB => state.addend = leb!(true) as i64,
+                BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB => {
+                    let offset = leb!(false);
+                    let seg = some_or!(self.eb.segments.get(immediate.ext()), {
+                        errln!("parse_dyld_bind: BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: bad segment index {}", immediate);
+                        continue;
+                    });
+                    state.addr = Some(seg.vmaddr);
+                    state.seg_end = seg.vmaddr + seg.vmsize;
+                    advance(&mut state, offset);
+                },
+                BIND_OPCODE_ADD_ADDR_ULEB => advance(&mut state, leb!(false)),
+                BIND_OPCODE_DO_BIND => bind_advance(&mut state, pointer_size),
+                BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB => bind_advance(&mut state, leb!(false)),
+                BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED =>
+                    bind_advance(&mut state, (immediate as u64) * pointer_size + pointer_size),
+                BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB => {
+                    let count = leb!(false);
+                    let skip = leb!(false);
+                    for _ in 0..count {
+                        bind_advance(&mut state, skip);
+                    }
+                },
+                _ => {
+                    errln!("parse_dyld_bind: unknown bind opcode (byte=0x{:x})", byte);
+                    break;
+                }
+            }
+        }
     }
 }
 

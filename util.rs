@@ -278,6 +278,9 @@ impl IndexMut<usize> for ByteStr {
     }
 }
 impl ByteString {
+    pub fn new(s: &ByteStr) -> Self {
+        ByteString(s.0.to_owned())
+    }
     pub fn from_bytes(s: &[u8]) -> Self {
         ByteString(s.to_owned())
     }
