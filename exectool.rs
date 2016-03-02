@@ -140,23 +140,24 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         let opts = if elf.is_some() {
             Some(&elf_specific as &Any)
         } else { None };
-        println!("{}:", desc);
         for sym in ex.get_symbol_list(kind, opts) {
             let name = sym.name.lossy();
             match sym.val {
-                SymbolValue::Addr(vma) =>        print!("{:<27}", vma),
-                SymbolValue::Abs(vma) =>         print!("{:<23} [ABS]", vma),
-                SymbolValue::Undefined =>        print!("[undef]                   "),
-                SymbolValue::Resolver(vma, _) => print!("{:<16} [resolver]", vma),
-                SymbolValue::ReExport(_) =>      print!("[re-export]               "),
-                SymbolValue::ThreadLocal(vma) => print!("{:<18} [thread]", vma),
+                SymbolValue::Addr(vma) =>        print!("{:<16}", vma),
+                SymbolValue::Abs(vma) =>         print!("{:<16}", vma),
+                SymbolValue::Undefined =>        print!("[undef]         "),
+                SymbolValue::Resolver(vma, _) => print!("{:<16}", vma),
+                SymbolValue::ReExport(_) =>      print!("[re-export]     "),
+                SymbolValue::ThreadLocal(vma) => print!("{:<16}", vma),
             }
-            print!(" ");
-            if sym.is_public { print!("[pub] ") }
-            if sym.is_weak   { print!("[weak] ") }
-            print!("{}", name);
+            print!(" {}", name);
+            if sym.is_public { print!(" [pub]") }
+            if sym.is_weak   { print!(" [weak]") }
             match sym.val {
-                SymbolValue::Resolver(_, Some(stub)) => print!(" [stub={:<16}]", stub),
+                SymbolValue::Abs(_) =>                  print!(" [abs]"),
+                SymbolValue::ThreadLocal(..) =>         print!(" [thread]"),
+                SymbolValue::Resolver(_, None) =>       print!(" [resolver]"),
+                SymbolValue::Resolver(_, Some(stub)) => print!(" [resolver stub={:<16}]", stub),
                 SymbolValue::ReExport(ref name) =>      print!(" => {}", name),
                 _ => ()
             }

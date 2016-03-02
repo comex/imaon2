@@ -606,7 +606,7 @@ impl MachO {
                 let vma = VMA(nl.n_value as u64);
                 let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
                 let val =
-                    if n_desc_field & N_SYMBOL_RESOLVER != 0 {
+                    if n_desc_field & N_SYMBOL_RESOLVER != 0 && self.mh.filetype == MH_OBJECT {
                         SymbolValue::Resolver(vma, None)
                     } else if n_type == N_UNDF {
                         SymbolValue::Undefined
