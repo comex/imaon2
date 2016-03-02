@@ -1,8 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc)]
-#![feature(iter_arith)]
+#![feature(collections, libc, iter_arith, const_fn)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -142,8 +141,8 @@ pub struct MachO {
     pub data_in_code: MCRef,
     pub dylib_code_sign_drs: MCRef,
     pub code_signature: MCRef,
-    // this should be *static* but :rust:
-    linkedit_bits: Vec<LinkeditBit>,
+
+    _linkedit_bits: Option<[LinkeditBit; 20]>,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
@@ -178,9 +177,9 @@ macro_rules! lbit {
     ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => { lbit!($self_field, $cmd_id, $cmd_type, $off_field, $size_field, $divi, false) }
 }
 
-fn make_linkedit_bits(is64: bool) -> Vec<LinkeditBit> {
+fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 20] {
     let nlist_size = if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
-    vec![
+    [
         lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, nlist_size), // must be first
         lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
 
@@ -414,7 +413,7 @@ impl MachO {
             // useless 'reserved' field
             if is64 { lc_off += 4; }
         }
-        me.linkedit_bits = make_linkedit_bits(me.is64);
+        me._linkedit_bits = Some(make_linkedit_bits(me.is64)); /* :( */
         me.parse_header();
         me.eb.whole_buf = Some(mc.clone());
         if do_lcs {
@@ -444,6 +443,10 @@ impl MachO {
             None => format!("<unknown cpu {}/{}>", self.mh.cputype, self.mh.cpusubtype).into()
         };
         format!("Mach-O {}/{}", ft_desc, st_desc)
+    }
+
+    fn linkedit_bits(&self) -> &[LinkeditBit] {
+        self._linkedit_bits.as_ref().unwrap()
     }
 
     fn parse_header(&mut self) {
@@ -497,11 +500,11 @@ impl MachO {
                         prot: segprot,
                         data: data,
                         seg_idx: None,
-                        private: lci as usize,
+                        private: lci.ext(),
                     };
                     fixup_segment_overflow(&mut seg, is64);
                     segs.push(seg);
-                    for _ in 0..sc.nsects {
+                    for secti in 0..sc.nsects {
                         let s: section_x = util::copy_from_slice(&lc_buf[off..off + size_of::<section_x>()], end);
                         let mut seg = exec::Segment {
                             vmaddr: VMA(s.addr as u64),
@@ -512,7 +515,7 @@ impl MachO {
                             prot: segprot,
                             data: None,
                             seg_idx: Some(segi),
-                            private: this_lc_off + off,
+                            private: secti.ext(),
                         };
                         fixup_segment_overflow(&mut seg, is64);
                         sects.push(seg);
@@ -527,7 +530,7 @@ impl MachO {
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB | 
                 LC_FUNCTION_STARTS | LC_DATA_IN_CODE | LC_DYLIB_CODE_SIGN_DRS |
                 LC_CODE_SIGNATURE => {
-                    for fb in &self.linkedit_bits {
+                    for fb in self.linkedit_bits() {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcref: &mut MCRef = unsafe { fb.self_field.get_mut_unsafe(self_) };
                             let (off_data, count_data) =
@@ -718,7 +721,7 @@ impl MachO {
     fn reallocate_linkedit(&self) -> (Vec<u8>, Vec<(usize, usize)>) {
         let mut linkedit: Vec<u8> = Vec::new();
         let mut allocs: Vec<(usize, usize)> = Vec::new();
-        for fb in &self.linkedit_bits {
+        for fb in self.linkedit_bits() {
             let mcref: &MCRef = fb.self_field.get(self);
             let buf = mcref.get();
             if fb.is_symtab {
@@ -805,7 +808,7 @@ impl MachO {
                 cmdsize: cmdsize as u32,
             }, end);
             let mut got_any = false;
-            for (fb, &(mut off, len)) in self.linkedit_bits.iter().zip(linkedit_allocs) {
+            for (fb, &(mut off, len)) in self.linkedit_bits().iter().zip(linkedit_allocs) {
                 if cmd == fb.cmd_id {
                     if fb.is_symtab {
                         off /= fb.elm_size;
@@ -900,7 +903,6 @@ impl MachO {
                     }
                 };
                 sc.cmd = cmd;
-                sc.cmdsize = (size_of::<segment_command_x>() + nsects * size_of::<section_x>()) as u32;
                 sc.segname = segname;
                 assert!(seg.vmaddr.0 <= !0 as size_x as u64);
                 sc.vmaddr = seg.vmaddr.0 as size_x;
@@ -912,12 +914,12 @@ impl MachO {
                 if seg.prot.w { sc.initprot |= VM_PROT_WRITE as i32; }
                 if seg.prot.x { sc.initprot |= VM_PROT_EXECUTE as i32; }
 
-                sc.nsects = nsects as u32;
                 util::copy_to_vec(&mut new_cmd, &sc, self.eb.endian);
 
-                for (secti, sect) in sects.into_iter().enumerate() {
+                let mut nsects: usize = 0;
+                for sect in self.eb.sections.iter().filter(|seg| seg.seg_idx == Some(segi)) {
                     let mut snc: section_x = if let Some(ref lcbuf) = olcbuf {
-                        let off = size_of::<segment_command_x>() + secti * size_of::<section_x>();
+                        let off = size_of::<segment_command_x>() + sect.private * size_of::<section_x>();
                         util::copy_from_slice(&lcbuf[off..off+size_of::<section_x>()], self.eb.endian)
                     } else {
                         Default::default()
@@ -931,7 +933,10 @@ impl MachO {
                     }
                     snc.offset = sect.fileoff as u32;
                     util::copy_to_vec(&mut new_cmd, &snc, self.eb.endian);
+                    nsects += 1;
                 }
+                sc.cmdsize = (size_of::<segment_command_x>() + nsects * size_of::<section_x>()) as u32;
+                sc.nsects = nsects.narrow().unwrap();
             });
             if lci == usize::MAX {
                 extra_segs.push(new_cmd);
