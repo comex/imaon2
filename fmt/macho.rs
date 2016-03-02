@@ -11,6 +11,8 @@ extern crate bsdlike_getopts as getopts;
 extern crate collections;
 extern crate libc;
 extern crate macho_bind;
+extern crate deps;
+use deps::vec_map;
 use std::default::Default;
 use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
@@ -20,9 +22,10 @@ use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory,
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, ByteSliceIterator};
 use std::{u64, u32, usize};
-use std::collections::HashMap;
+use deps::vec_map::VecMap;
+use std::collections::HashSet;
 use std::borrow::Cow;
-use util::{ByteString, ByteStr, FieldLens, Ext};
+use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState};
 use std::cell::Cell;
 
 pub mod dyldcache;
@@ -52,6 +55,9 @@ pub struct x_nlist_64 {
 }
 );
 impl Clone for x_nlist_64 { fn clone(&self) -> Self { *self } }
+
+pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u32 = 2;
+
 
 pub fn u32_to_prot(ip: u32) -> exec::Prot {
     exec::Prot {
@@ -100,6 +106,7 @@ pub struct MachO {
     pub mh: mach_header,
     pub load_commands: Vec<MCRef>,
     pub load_dylib: Vec<DylibCommand>,
+    pub dyld_base: Option<VMA>,
 
     // old-style symbol table:
     pub nlist_size: usize,
@@ -221,21 +228,44 @@ impl exec::Exec for MachO {
                     out.push(exec::Symbol {
                         name: some_or!(state.symbol, { return; }).into(),
                         is_public: true,
+                        // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
                         is_weak: which.get() == WhichBind::WeakBind,
                         val: exec::SymbolValue::Undefined,
                         size: None,
                         private: 0,
                     });
                 };
-                self.parse_dyld_bind(&self.dyld_bind, which.get(), &mut cb);
+                self.parse_dyld_bind(self.dyld_bind.get(), which.get(), &mut cb);
                 which.set(WhichBind::WeakBind);
-                self.parse_dyld_bind(&self.dyld_weak_bind, which.get(), &mut cb);
+                self.parse_dyld_bind(self.dyld_weak_bind.get(), which.get(), &mut cb);
                 which.set(WhichBind::LazyBind);
-                self.parse_dyld_bind(&self.dyld_lazy_bind, which.get(), &mut cb);
+                self.parse_dyld_bind(self.dyld_lazy_bind.get(), which.get(), &mut cb);
                 }
                 out
             },
-            exec::SymbolSource::Exported => unimplemented!()
+            exec::SymbolSource::Exported => {
+                let mut out = Vec::new();
+                self.parse_dyld_export(self.dyld_export.get(), &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, &'a ByteStr)>, offset: usize| {
+                    out.push(exec::Symbol {
+                        name: name.to_owned().into(),
+                        is_public: true,
+                        is_weak: flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
+                        val: if let Some((_, name)) = reexport {
+                            exec::SymbolValue::ReExport(name.into())
+                        } else if let Some(resolver) = resolver {
+                            exec::SymbolValue::Resolver(resolver, Some(addr))
+                        } else { match flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
+                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => exec::SymbolValue::Addr(addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => exec::SymbolValue::ThreadLocal(addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => exec::SymbolValue::Abs(addr),
+                            _ => panic!("muri")
+                        } },
+                        size: None,
+                        private: offset,
+                    });
+                });
+                out
+            },
         }
     }
 
@@ -563,7 +593,7 @@ impl MachO {
                 let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
                 let val =
                     if n_desc_field & N_SYMBOL_RESOLVER != 0 {
-                        SymbolValue::Resolver(vma)
+                        SymbolValue::Resolver(vma, None)
                     } else if n_type == N_UNDF {
                         SymbolValue::Undefined
                     } else if n_type == N_INDR {
@@ -788,7 +818,7 @@ impl MachO {
             }
             match cmd_id {
                 LC_SEGMENT | LC_SEGMENT_64 => {
-                    if let Some(new_cmd) = existing_segs.remove(&lci) {
+                    if let Some(new_cmd) = existing_segs.remove(lci) {
                         cmds.push(new_cmd);
                     }
                 },
@@ -827,8 +857,8 @@ impl MachO {
         cmds
     }
 
-    fn update_seg_cmds(&self) -> (HashMap<usize, Vec<u8>>, Vec<Vec<u8>>) {
-        let mut existing_segs = HashMap::new();
+    fn update_seg_cmds(&self) -> (VecMap<Vec<u8>>, Vec<Vec<u8>>) {
+        let mut existing_segs = VecMap::new();
         let mut extra_segs = Vec::new();
         for (segi, seg) in self.eb.segments.iter().enumerate() {
             let lci = seg.private;
@@ -897,20 +927,11 @@ impl MachO {
         }
         (existing_segs, extra_segs)
     }
-    fn parse_dyld_bind<'a>(&'a self, bind: &'a MCRef, which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
+    fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
         let pointer_size = if self.is64 { 8 } else { 4 };
-        let mut slice = bind.get();
         let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
             let mut it = ByteSliceIterator(slice_);
-            if let Some((num, ovf)) = exec::read_leb128_inner(&mut it, signed) {
-                if ovf {
-                    errln!("parse_dyld_bind: leb128 overflow (signed={})", signed);
-                }
-                Some(num)
-            } else {
-                errln!("parse_dyld_bind: leb128 overflow (signed={})", signed);
-                None
-            }
+            exec::read_leb128_inner_noisy(&mut it, signed, "parse_dyld_bind")
         };
         macro_rules! leb { ($signed:expr) => {
             if let Some(num) = leb(&mut slice, $signed) { num } else { return }
@@ -1007,6 +1028,83 @@ impl MachO {
                 _ => {
                     errln!("parse_dyld_bind: unknown bind opcode (byte=0x{:x})", byte);
                     break;
+                }
+            }
+        }
+    }
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, &'a ByteStr)>, usize)) {
+        if dyld_export.is_empty() { return; }
+        let mut seen = HashSet::with_hasher(TrivialState);
+        let mut todo = vec![(0usize, ByteString::from_str(""))];
+        let base_addr = some_or!(self.dyld_base, {
+            errln!("warning: parse_dyld_export: no load command segment, lol");
+            return;
+        });
+        while let Some((offset, prefix)) = todo.pop() {
+            let mut slice = &dyld_export[offset..];
+            let mut it = ByteSliceIterator(&mut slice);
+            macro_rules! leb { () => {some_or!(exec::read_leb128_inner_noisy(&mut it, false, "parse_dyld_export"), { continue; })} }
+            let terminal_size = leb!();
+            if terminal_size > it.0.len() as u64 {
+                errln!("warning: parse_dyld_export: terminal_size too big");
+                continue;
+            }
+            let mut following = &it.0[terminal_size as usize..];
+            *it.0 = &it.0[..terminal_size as usize];
+            if !it.0.is_empty() {
+                let flags = leb!();
+                if flags > std::u32::MAX as u64 {
+                    errln!("warning: parse_dyld_export: way too many flags");
+                    continue;
+                }
+                let flags = flags as u32;
+                let kind = flags & EXPORT_SYMBOL_FLAGS_KIND_MASK;
+                if kind == 3 {
+                    errln!("warning: parse_dyld_export: unexpected symbol kind 3");
+                }
+                if flags > 0x1f {
+                    errln!("warning: parse_dyld_export: unknown flags (flags=0x{:x})", flags);
+                }
+                let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
+                           + leb!();
+                let resolver = if flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
+                    Some(base_addr + leb!())
+                } else { None };
+                let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
+                    if resolver.is_some() {
+                        errln!("warning: parse_dyld_export: resolver /and/ reexport?");
+                        continue;
+                    }
+                    let ord = leb!();
+                    let name = some_or!(util::from_cstr_strict(it.0), {
+                        errln!("warning: parse_dyld_export: invalid reexport name");
+                        continue;
+                    });
+                    *it.0 = &it.0[name.len()..];
+                    Some((ord, name))
+                } else { None };
+                cb(&prefix, addr, flags, resolver, reexport, offset);
+                if !it.0.is_empty() {
+                    errln!("warning: parse_dyld_export: excess terminal data");
+                }
+            }
+            let mut it = ByteSliceIterator(&mut following);
+            let edge_count = some_or!(it.next(), {
+                errln!("warning: parse_dyld_export: ran into end before edge count");
+                continue;
+            });
+            for _ in 0..edge_count {
+                let this_prefix = some_or!(util::from_cstr_strict(it.0), {
+                    errln!("warning: parse_dyld_export: invalid prefix");
+                    continue;
+                });
+                let offset = leb!();
+                if offset > todo.len() as u64 {
+                    errln!("warning: parse_dyld_export: invalid limb offset {}", offset);
+                } else if seen.insert(offset) {
+                    errln!("warning: parse_dyld_export: offset {} already seen, whoa, might loop", offset);
+                } else {
+                    todo.push((offset as usize, prefix.clone() + this_prefix));
                 }
             }
         }

@@ -156,8 +156,9 @@ pub struct ExecBase {
 pub enum SymbolValue<'a> {
     Addr(VMA),
     Abs(VMA),
+    ThreadLocal(VMA),
     Undefined,
-    Resolver(VMA),
+    Resolver(VMA, /* stub */ Option<VMA>),
     ReExport(Cow<'a, ByteStr>),
 }
 
@@ -342,13 +343,16 @@ pub fn read_leb128_inner<It: Iterator<Item=u8>>(it: &mut It, signed: bool) -> Op
     }
 }
 
-#[inline]
-pub fn read_uleb128<It: Iterator<Item=u8>>(it: &mut It) -> Option<(u64, bool)> {
-    read_leb128_inner(it, false)
-}
-#[inline]
-pub fn read_sleb128<It: Iterator<Item=u8>>(it: &mut It) -> Option<(i64, bool)> {
-    read_leb128_inner(it, true).map(|(i, o)| (i as i64, o))
+pub fn read_leb128_inner_noisy<It: Iterator<Item=u8>>(it: &mut It, signed: bool, func_name: &str) -> Option<u64> {
+    if let Some((num, ovf)) = read_leb128_inner(it, signed) {
+        if ovf {
+            errln!("warning: {}: {}leb128 too big, continuing with truncated value", func_name, if signed { 's' } else { 'u' });
+        }
+        Some(num)
+    } else {
+        errln!("{}: invalid {}leb128", func_name, if signed { 's' } else { 'u' });
+        None
+    }
 }
 
 pub struct ByteSliceIterator<'a, 'b: 'a>(pub &'a mut &'b [u8]);

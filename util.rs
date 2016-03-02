@@ -17,12 +17,15 @@ use std::cmp::max;
 use std::slice;
 use std::fmt::{Debug, Display, Formatter};
 use std::borrow::{Cow, Borrow, BorrowMut};
-use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull};
+use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
+
+mod trivial_hasher;
+pub use trivial_hasher::*;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
@@ -354,6 +357,13 @@ impl<'a> From<&'a ByteStr> for Cow<'a, ByteStr> {
 impl<'a> From<ByteString> for Cow<'a, ByteStr> {
     fn from(s: ByteString) -> Self {
         Cow::Owned(s)
+    }
+}
+impl<'a> Add<&'a ByteStr> for ByteString {
+    type Output = ByteString;
+    fn add(mut self, other: &ByteStr) -> ByteString {
+        self.0.extend_from_slice(&other.0);
+        self
     }
 }
 

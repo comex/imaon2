@@ -207,6 +207,9 @@ struct mach_header_64 {
 					   require it. Only used in MH_EXECUTE
 					   filetypes. */
 
+#define MH_APP_EXTENSION_SAFE 0x02000000 /* The code was linked for use in an
+					    application extension. */
+
 /*
  * The load commands directly follow the mach_header.  The total size of all
  * of the commands is given by the sizeofcmds field in the mach_header.  All
@@ -296,7 +299,11 @@ struct load_command {
 #define LC_DYLIB_CODE_SIGN_DRS 0x2B /* Code signing DRs copied from linked dylibs */
 #define	LC_ENCRYPTION_INFO_64 0x2C /* 64-bit encrypted segment information */
 #define LC_LINKER_OPTION 0x2D /* linker options in MH_OBJECT files */
-
+#define LC_LINKER_OPTIMIZATION_HINT 0x2E /* optimization hints in MH_OBJECT files */
+#ifndef __OPEN_SOURCE__
+#define LC_VERSION_MIN_TVOS 0x2F /* build for AppleTV min OS version */
+#endif /* __OPEN_SOURCE__ */
+#define LC_VERSION_MIN_WATCHOS 0x30 /* build for Watch min OS version */
 
 /*
  * A variable length string in a load command is represented by an lc_str
@@ -1157,7 +1164,8 @@ struct rpath_command {
 struct linkedit_data_command {
     uint32_t	cmd;		/* LC_CODE_SIGNATURE, LC_SEGMENT_SPLIT_INFO,
                                    LC_FUNCTION_STARTS, LC_DATA_IN_CODE,
-				   or LC_DYLIB_CODE_SIGN_DRS */
+				   LC_DYLIB_CODE_SIGN_DRS or
+				   LC_LINKER_OPTIMIZATION_HINT. */
     uint32_t	cmdsize;	/* sizeof(struct linkedit_data_command) */
     uint32_t	dataoff;	/* file offset of data in __LINKEDIT segment */
     uint32_t	datasize;	/* file size of data in __LINKEDIT segment  */
@@ -1197,7 +1205,11 @@ struct encryption_info_command_64 {
  */
 struct version_min_command {
     uint32_t	cmd;		/* LC_VERSION_MIN_MACOSX or
-				   LC_VERSION_MIN_IPHONEOS  */
+				   LC_VERSION_MIN_IPHONEOS
+				   LC_VERSION_MIN_WATCHOS */
+#ifndef __OPEN_SOURCE__
+				/* or LC_VERSION_MIN_TVOS */
+#endif /* __OPEN_SOURCE__ */
     uint32_t	cmdsize;	/* sizeof(struct min_version_command) */
     uint32_t	version;	/* X.Y.Z is encoded in nibbles xxxx.yy.zz */
     uint32_t	sdk;		/* X.Y.Z is encoded in nibbles xxxx.yy.zz */

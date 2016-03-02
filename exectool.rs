@@ -144,16 +144,23 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         for sym in ex.get_symbol_list(kind, opts) {
             let name = sym.name.lossy();
             match sym.val {
-                SymbolValue::Addr(vma) =>     print!("{:<16}", vma),
-                SymbolValue::Abs(vma) =>      print!("{:<16} [ABS]", vma),
-                SymbolValue::Undefined =>     print!("[undef]         "),
-                SymbolValue::Resolver(vma) => print!("{:<16} [resolver]", vma),
-                SymbolValue::ReExport(..) =>  print!("[re-export]     "),
+                SymbolValue::Addr(vma) =>        print!("{:<27}", vma),
+                SymbolValue::Abs(vma) =>         print!("{:<23} [ABS]", vma),
+                SymbolValue::Undefined =>        print!("[undef]                   "),
+                SymbolValue::Resolver(vma, _) => print!("{:<16} [resolver]", vma),
+                SymbolValue::ReExport(_) =>      print!("[re-export]               "),
+                SymbolValue::ThreadLocal(vma) => print!("{:<18} [thread]", vma),
             }
             print!(" ");
             if sym.is_public { print!("[pub] ") }
             if sym.is_weak   { print!("[weak] ") }
-            println!("{}", name);
+            print!("{}", name);
+            match sym.val {
+                SymbolValue::Resolver(_, Some(stub)) => print!(" [stub={:<16}]", stub),
+                SymbolValue::ReExport(ref name) =>      print!(" => {}", name),
+                _ => ()
+            }
+            println!("");
         }
     }
     if m.opt_present("macho-filedata-info") {

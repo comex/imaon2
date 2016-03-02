@@ -6,13 +6,13 @@ extern crate macros;
 extern crate util;
 extern crate exec;
 extern crate elf_bind;
-extern crate vec_map;
+extern crate deps;
 
 use std::mem::size_of;
 use std::fmt::{Display, LowerHex};
 use std::borrow::Cow;
 use std::any::Any;
-use vec_map::VecMap;
+use deps::vec_map::VecMap;
 
 use exec::arch::Arch;
 use exec::ReadVMA;

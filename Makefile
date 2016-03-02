@@ -49,7 +49,7 @@ define define_crate_
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 # specify -o explicitly?
-$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) $(OUT)/cargo-build
+$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 	$(XRUSTC) $(RUSTFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
 
 all: $$(cratefile-$(2))
@@ -104,9 +104,13 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
+
+$(call define_crate,$(LIB),deps,deps.rs,)
+$(cratefile-deps): $(OUT)/cargo-build
+
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
-$(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util)
+$(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util deps)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match elf.h \
@@ -114,7 +118,7 @@ $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 		-enum2string 'DT_' 'd_tag_to_str' '' \
 		> "$@"
 $(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
-$(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util)
+$(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 ifneq ($(USE_LLVM),)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
