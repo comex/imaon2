@@ -92,8 +92,16 @@ pub struct DscTabs {
     pub count: u32,
 }
 
-pub struct DylibCommand {
+pub enum LoadDylibKind {
+    Normal = LC_LOAD_DYLIB as isize,
+    Weak = LC_LOAD_WEAK_DYLIB as isize,
+    Reexport = LC_REEXPORT_DYLIB as isize,
+    Upward = LC_LOAD_UPWARD_DYLIB as isize,
+}
+
+pub struct LoadDylib {
     name: ByteString,
+    kind: LoadDylibKind,
     timestamp: u32,
     current_version: u32,
     compatibility_version: u32,
@@ -105,7 +113,7 @@ pub struct MachO {
     pub is64: bool,
     pub mh: mach_header,
     pub load_commands: Vec<MCRef>,
-    pub load_dylib: Vec<DylibCommand>,
+    pub load_dylib: Vec<LoadDylib>,
     pub dyld_base: Option<VMA>,
 
     // old-style symbol table:
@@ -538,7 +546,7 @@ impl MachO {
                         }
                     }
                 },
-                LC_LOAD_DYLIB => {
+                LC_LOAD_DYLIB | LC_LOAD_WEAK_DYLIB | LC_REEXPORT_DYLIB | LC_LOAD_UPWARD_DYLIB => {
                     if (lc.cmdsize as usize) < size_of::<dylib_command>() {
                         errln!("warning: LC_LOAD_DYLIB command too small");
                     } else {
@@ -556,8 +564,9 @@ impl MachO {
                             errln!("warning: LC_LOAD_DYLIB invalid offset");
                             ByteStr::from_str("<err>")
                         };
-                        self.load_dylib.push(DylibCommand {
+                        self.load_dylib.push(LoadDylib {
                             name: ByteString::new(name),
+                            kind: unsafe { transmute(lc.cmd) },
                             timestamp: dc.dylib.timestamp,
                             current_version: dc.dylib.current_version,
                             compatibility_version: dc.dylib.compatibility_version,
@@ -568,6 +577,11 @@ impl MachO {
             }
             lc_off += lc.cmdsize as usize;
             self.load_commands.push(lc_mc.clone()); // unnecessary clone
+        }
+        for seg in &self.eb.segments {
+            if seg.fileoff == 0 && seg.filesize != 0 {
+                self.dyld_base = Some(seg.vmaddr);
+            }
         }
     }
 
@@ -1043,8 +1057,8 @@ impl MachO {
         while let Some((offset, prefix)) = todo.pop() {
             let mut slice = &dyld_export[offset..];
             let mut it = ByteSliceIterator(&mut slice);
-            macro_rules! leb { () => {some_or!(exec::read_leb128_inner_noisy(&mut it, false, "parse_dyld_export"), { continue; })} }
-            let terminal_size = leb!();
+            macro_rules! leb { ($it:expr) => {some_or!(exec::read_leb128_inner_noisy(&mut $it, false, "parse_dyld_export"), { continue; })} }
+            let terminal_size = leb!(it);
             if terminal_size > it.0.len() as u64 {
                 errln!("warning: parse_dyld_export: terminal_size too big");
                 continue;
@@ -1052,7 +1066,7 @@ impl MachO {
             let mut following = &it.0[terminal_size as usize..];
             *it.0 = &it.0[..terminal_size as usize];
             if !it.0.is_empty() {
-                let flags = leb!();
+                let flags = leb!(it);
                 if flags > std::u32::MAX as u64 {
                     errln!("warning: parse_dyld_export: way too many flags");
                     continue;
@@ -1066,21 +1080,21 @@ impl MachO {
                     errln!("warning: parse_dyld_export: unknown flags (flags=0x{:x})", flags);
                 }
                 let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
-                           + leb!();
+                           + leb!(it);
                 let resolver = if flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
-                    Some(base_addr + leb!())
+                    Some(base_addr + leb!(it))
                 } else { None };
                 let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
                     if resolver.is_some() {
                         errln!("warning: parse_dyld_export: resolver /and/ reexport?");
                         continue;
                     }
-                    let ord = leb!();
+                    let ord = leb!(it);
                     let name = some_or!(util::from_cstr_strict(it.0), {
                         errln!("warning: parse_dyld_export: invalid reexport name");
                         continue;
                     });
-                    *it.0 = &it.0[name.len()..];
+                    *it.0 = &it.0[name.len()+1..];
                     Some((ord, name))
                 } else { None };
                 cb(&prefix, addr, flags, resolver, reexport, offset);
@@ -1098,10 +1112,11 @@ impl MachO {
                     errln!("warning: parse_dyld_export: invalid prefix");
                     continue;
                 });
-                let offset = leb!();
-                if offset > todo.len() as u64 {
+                *it.0 = &it.0[this_prefix.len()+1..];
+                let offset = leb!(it);
+                if offset > dyld_export.len() as u64 {
                     errln!("warning: parse_dyld_export: invalid limb offset {}", offset);
-                } else if seen.insert(offset) {
+                } else if !seen.insert(offset) {
                     errln!("warning: parse_dyld_export: offset {} already seen, whoa, might loop", offset);
                 } else {
                     todo.push((offset as usize, prefix.clone() + this_prefix));

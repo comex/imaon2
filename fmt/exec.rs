@@ -350,7 +350,7 @@ pub fn read_leb128_inner_noisy<It: Iterator<Item=u8>>(it: &mut It, signed: bool,
         }
         Some(num)
     } else {
-        errln!("{}: invalid {}leb128", func_name, if signed { 's' } else { 'u' });
+        errln!("{}: {}leb128 runs off end", func_name, if signed { 's' } else { 'u' });
         None
     }
 }
