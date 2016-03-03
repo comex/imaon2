@@ -17,6 +17,7 @@ use std::collections::hash_map::Entry;
 
 use deps::vec_map::VecMap;
 use deps::fnv::FnvHasher;
+use util::SmallVector;
 
 use exec::arch::Arch;
 use exec::ReadVMA;
@@ -131,7 +132,7 @@ struct VerneedInfo {
     verneed: Vec<Verneed>,
     vna_other_to_idx: VecMap<(usize, usize)>,
     dep_libs: Vec<DepLib<'static>>,
-    dep_lib_idx_to_verneed_idxs: Vec<Vec<usize>>, // XXX small vec
+    dep_lib_idx_to_verneed_idxs: Vec<SmallVector<usize>>,
 }
 
 impl DynamicInfo {
@@ -352,7 +353,7 @@ impl DynamicInfo {
                 errln!("warning: duplicate DT_NEEDED entry '{}'; any verneed entries with that filename will match up with an arbitrary one of those", filename);
             }
             dep_libs.push(DepLib { path: filename.to_owned().into(), private: i });
-            dep_lib_idx_to_verneed_idxs.push(Vec::new());
+            dep_lib_idx_to_verneed_idxs.push(SmallVector::zero());
         }
         for vn_idx in 0..ocs.count {
             let data = elf.eb.read(addr, ocs.size);
@@ -412,7 +413,7 @@ impl DynamicInfo {
                 }
                 let res = dep_libs.len();
                 dep_libs.push(DepLib { path: filename.clone().into(), private: res });
-                dep_lib_idx_to_verneed_idxs.push(vec![verneed.len()]);
+                dep_lib_idx_to_verneed_idxs.push(SmallVector::one(verneed.len()));
                 filename_to_dli.insert(filename.clone(), DliEtc { dli: res, seen_vn_idx: true });
                 dli = res;
                 break;
@@ -1070,7 +1071,7 @@ impl exec::Exec for Elf {
         let idx = dl.private;
         let dls = &*self.get_verneed_info();
         let mut out = dl.path.lossy().into_owned();
-        for &vni in &dls.dep_lib_idx_to_verneed_idxs[idx] {
+        for &vni in dls.dep_lib_idx_to_verneed_idxs[idx].as_slice() {
             let vn = &dls.verneed[vni];
             for vna in &vn.aux {
                 write!(&mut out, " '{}'", vna.name).unwrap();
