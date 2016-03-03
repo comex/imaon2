@@ -137,6 +137,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     ];
     for &(name, desc, kind) in KINDS {
         if !m.opt_present(name) { continue; }
+        println!("{}:", desc);
         let opts = if elf.is_some() {
             Some(&elf_specific as &Any)
         } else { None };
@@ -163,6 +164,13 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             }
             println!("");
         }
+    }
+    if m.opt_present("dep-libs") {
+        println!("Library dependencies:");
+        for dl in &*ex.get_dep_libs() {
+            println!("{}", ex.describe_dep_lib(dl));
+        }
+
     }
     if m.opt_present("macho-filedata-info") {
         macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
@@ -248,6 +256,7 @@ fn main() {
         getopts::optflag("",  "segs",  "List segments"),
         getopts::optflag("",  "sects", "List sections"),
         getopts::optflag("",  "syms",  "List symbols"),
+        getopts::optflag("",  "dep-libs", "List library dependencies"),
         getopts::optflag("",  "exports","List exported symbols"),
         getopts::optflag("",  "imports","List imported symbols"),
         getopts::optopt( "",  "o2a",   "Offset to address", "off"),
