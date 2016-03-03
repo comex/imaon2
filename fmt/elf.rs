@@ -13,11 +13,13 @@ use std::fmt::{Display, LowerHex};
 use std::borrow::Cow;
 use std::any::Any;
 use deps::vec_map::VecMap;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use exec::arch::Arch;
 use exec::ReadVMA;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy};
-use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource};
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, TrivialState, Narrow};
+use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib};
 use elf_bind::*;
 
 macro_rules! convert_each {
@@ -37,7 +39,7 @@ pub struct ElfBasics {
 
 #[derive(Default, Debug)]
 pub struct DynamicInfo {
-    needed: Vec<ByteString>,
+    needed: Vec<ByteString>, // dep_lib idx = idx in this vec
     pltgot: Option<VMA>,
     hash: Option<VMA>,
     strtab: Option<OffCountSize>,
@@ -112,6 +114,7 @@ use OCSType::*;
 #[derive(Debug)]
 struct Verneed {
     filename: ByteString,
+    dep_lib_idx: usize,
     aux: Vec<Vernaux>,
 }
 #[derive(Debug)]
@@ -125,6 +128,7 @@ struct Vernaux {
 struct VerneedInfo {
     verneed: Vec<Verneed>,
     vna_other_to_idx: VecMap<(usize, usize)>,
+    dep_libs: Vec<DepLib<'static>>,
 }
 
 impl DynamicInfo {
@@ -329,13 +333,30 @@ impl DynamicInfo {
         let ocs = self.verneed.unwrap_or(OffCountSize::default());
         let mut addr = VMA(ocs.off);
         let mut verneed = Vec::new();
-        let mut map = VecMap::new();
-        for _i in 0..ocs.count {
+        let mut vna_other_to_idx = VecMap::new();
+        struct DliEtc {
+            dli: usize,
+            seen_vn_idx: bool,
+        }
+        let mut filename_to_dli: HashMap<ByteString, DliEtc, _> = HashMap::with_hasher(TrivialState);
+        let mut dep_libs: Vec<DepLib> = Vec::with_capacity(self.needed.len());
+        // todo can we get away with less cloning?
+        for (i, filename) in self.needed.iter().enumerate() {
+            if let Entry::Vacant(ve) = filename_to_dli.entry(filename.clone()) {
+                ve.insert(DliEtc { dli: i, seen_vn_idx: false });
+            } else {
+                errln!("warning: duplicate DT_NEEDED entry '{}'; any verneed entries with that filename will match up with an arbitrary one of those", filename);
+            }
+            dep_libs.push(DepLib { path: filename.to_owned().into(), private: i << 1 });
+        }
+        for vn_idx in 0..ocs.count {
             let data = elf.eb.read(addr, ocs.size);
             if (data.len() as u64) < ocs.size {
                 errln!("warning: verneed data truncated");
                 break;
             }
+            let filename: ByteString;
+            let mut aux;
             branch!(if (elf.basics.is64) {
                 type ElfX_Verneed = Elf64_Verneed;
                 type ElfX_Vernaux = Elf64_Vernaux;
@@ -350,9 +371,10 @@ impl DynamicInfo {
                 }
                 let mut auxaddr = addr + vn.vn_aux as u64;
                 addr = addr + vn.vn_next as u64;
-                let filename = some_or!(elf.read_dynstr(vn.vn_file as u64),
-                                        { errln!("warning: verneed filename invalid"); continue; });
-                let mut aux = Vec::new();
+                filename = some_or!(elf.read_dynstr(vn.vn_file as u64),
+                                    { errln!("warning: verneed filename invalid"); continue; })
+                           .into_owned();
+                aux = Vec::new();
                 for _j in 0..vn.vn_cnt {
                     let data = elf.eb.read(auxaddr, size_of::<ElfX_Vernaux>() as u64);
                     if data.len() < size_of::<ElfX_Vernaux>() {
@@ -363,7 +385,7 @@ impl DynamicInfo {
                     auxaddr = auxaddr + vna.vna_next as u64;
                     let name = some_or!(elf.read_dynstr(vna.vna_name as u64),
                                         { errln!("warning: vernaux name invalid"); continue; });
-                    map.insert(vna.vna_other.ext(), (verneed.len(), aux.len()));
+                    vna_other_to_idx.insert(vna.vna_other.ext(), (verneed.len(), aux.len()));
                     aux.push(Vernaux {
                         hash: vna.vna_hash as u64,
                         flags: vna.vna_flags,
@@ -371,13 +393,30 @@ impl DynamicInfo {
                         name: name.into_owned()
                     });
                 }
-                verneed.push(Verneed {
-                    filename: filename.into_owned(),
-                    aux: aux
-                });
+            });
+            let dli;
+            loop {
+                if let Some(dli_etc) = filename_to_dli.get_mut(&filename) {
+                    if dli_etc.seen_vn_idx {
+                        errln!("warning: duplicate verneed filename '{}'", filename);
+                    }
+                    dli_etc.seen_vn_idx = true;
+                    dli = dli_etc.dli;
+                    break;
+                }
+                let res = dep_libs.len();
+                dep_libs.push(DepLib { path: filename.clone().into(), private: (vn_idx << 1 | 1).narrow().unwrap() });
+                filename_to_dli.insert(filename.clone(), DliEtc { dli: res, seen_vn_idx: true });
+                dli = res;
+                break;
+            }
+            verneed.push(Verneed {
+                filename: filename,
+                dep_lib_idx: dli,
+                aux: aux
             });
         }
-        VerneedInfo { verneed: verneed, vna_other_to_idx: map }
+        VerneedInfo { verneed: verneed, vna_other_to_idx: vna_other_to_idx, dep_libs: dep_libs }
     }
 }
 
@@ -942,6 +981,7 @@ impl exec::Exec for Elf {
                                 });
                 let vs_hidden = vs & 0x8000 != 0;
                 let vs_key = vs & 0x7fff;
+                let mut source_lib = SourceLib::None;
                 if vs_hidden || (esp.append_version && vs_key != 0) {
                     // only visible with an explicit version number, so... tack on the version
                     // number? (otherwise i don't really want to)
@@ -951,7 +991,9 @@ impl exec::Exec for Elf {
                         ByteStr::from_str("Base")
                     } else if let Some(&(i, j)) =
                                     verneed_info.vna_other_to_idx.get(vs_key.ext()) {
-                        &*verneed_info.verneed[i].aux[j].name
+                        let vn = &verneed_info.verneed[i];
+                        source_lib = SourceLib::Ordinal(vn.dep_lib_idx.narrow().unwrap());
+                        &*vn.aux[j].name
                     } else {
                         errln!("warning: invalid verneed key 0x{:x}", vs_key);
                         ByteStr::from_str("?????")
@@ -976,10 +1018,10 @@ impl exec::Exec for Elf {
                 // TODO SHN_XINDEX
                 let val = match sym.st_shndx as u32 {
                     SHN_ABS => SymbolValue::Abs(VMA(stval)),
-                    SHN_COMMON | SHN_UNDEF => SymbolValue::Undefined,
+                    SHN_COMMON | SHN_UNDEF => SymbolValue::Undefined(source_lib),
                     SHN_LORESERVE ... SHN_HIRESERVE => {
                         errln!("warning: unknown special st_shndx 0x{:x} for symbol {}", sym.st_shndx, i);
-                        SymbolValue::Undefined
+                        SymbolValue::Undefined(source_lib)
                     },
                     // ugh ugh ugh
                     _ => if self.ehdr.type_ as u32 != ET_REL {
@@ -992,7 +1034,7 @@ impl exec::Exec for Elf {
                             SymbolValue::Addr(sect.vmaddr + stval)
                         } else {
                             errln!("warning: invalid non-special st_shndx {} for symbol {}", sym.st_shndx, i);
-                            SymbolValue::Undefined
+                            SymbolValue::Undefined(source_lib)
                         }
 
                     }

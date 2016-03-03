@@ -39,7 +39,7 @@ cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
 
 rustc-extern = --extern $(1)=`ls -t $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
-XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) -L. -L$(OUT)
+XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) $(call rustc-extern,nodrop) -L. -L$(OUT)
 
 
 all:
@@ -67,7 +67,7 @@ define_crate = $(eval $(define_crate_))
 
 $(call define_crate,rlib,macros,macros.rs,)
 $(call define_crate,$(LIB),bsdlike_getopts,bsdlike_getopts.rs,)
-$(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts)
+$(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts deps)
 
 ifneq ($(USE_LLVM),)
 # deps here are wonky

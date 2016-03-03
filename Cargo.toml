@@ -6,11 +6,13 @@ authors = []
 name = "dummy"
 path = "dummy.rs"
 [dependencies]
+vec_map = "0.6"
 #regex = "0.1.9"
 #regex_macros = "0.1.4"
-vec_map = "0.6"
 #[dependencies.bindgen]
 #git = "https://github.com/crabtw/rust-bindgen.git"
 [dependencies.autollvm]
 path = "../autollvm"
-
+[dependencies.nodrop]
+version = "0.1"
+features = ["use_needs_drop", "no_drop_flag"]

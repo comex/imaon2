@@ -2,6 +2,7 @@
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
+extern crate deps;
 
 #[macro_use]
 extern crate macros;
@@ -9,6 +10,7 @@ extern crate macros;
 use std::mem::{size_of, uninitialized, transmute};
 use std::ptr::{copy, null_mut};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
@@ -20,6 +22,7 @@ use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use deps::nodrop::NoDrop;
 
 pub use Endian::*;
 //use std::ty::Unsafe;
@@ -205,7 +208,7 @@ impl<T> Swap for Option<T> {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteStr([u8]);
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ByteString(pub Vec<u8>);
 impl ByteStr {
     #[inline]
@@ -738,36 +741,27 @@ pub fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T
     s.into()
 }
 
-enum MyOption<T> {
-    None,
-    _Fake(u8), // no optimization please
-    Some(T)
-}
-
 pub struct Lazy<T> {
     mtx: Mutex<()>,
-    val: UnsafeCell<MyOption<T>>, // bah, this extra wrap shouldn't be necessary
+    val: UnsafeCell<NoDrop<T>>,
+    is_valid: AtomicBool,
 }
 impl<T> Lazy<T> {
     pub fn new() -> Lazy<T> {
-        Lazy { mtx: Mutex::new(()), val: UnsafeCell::new(MyOption::None) }
+        Lazy {
+            mtx: Mutex::new(()),
+            val: unsafe { UnsafeCell::new(NoDrop::new(uninitialized())) },
+            is_valid: AtomicBool::new(false),
+        }
     }
     pub fn get<F>(&self, f: F) -> &T where F: FnOnce() -> T {
         unsafe {
-            let ptr = self.val.get();
-            if let MyOption::Some(ref t) = *ptr {
-                t
-            } else {
-                {
-                    let _guard = self.mtx.lock().unwrap();
-                    *ptr = MyOption::Some(f());
-                }
-                if let MyOption::Some(ref t) = *ptr {
-                    t
-                } else {
-                    panic!("wtf")
-                }
+            if !self.is_valid.load(Ordering::Acquire) {
+                let _guard = self.mtx.lock().unwrap();
+                **self.val.get() = f();
+                self.is_valid.store(true, Ordering::Release);
             }
+            &*self.val.get()
         }
     }
 }

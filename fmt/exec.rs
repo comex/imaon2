@@ -152,15 +152,25 @@ pub struct ExecBase {
     pub whole_buf: Option<util::MCRef>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SymbolValue<'a> {
     Addr(VMA),
     Abs(VMA),
     ThreadLocal(VMA),
-    Undefined,
+    Undefined(SourceLib),
     Resolver(VMA, /* stub */ Option<VMA>),
     ReExport(Cow<'a, ByteStr>),
 }
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SourceLib {
+    None,
+    Ordinal(u32), // starting from 0
+    Self_,
+    MainExecutable,
+    Flat,
+}
+
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Symbol<'a> {
@@ -179,6 +189,12 @@ pub enum SymbolSource {
     Exported,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct DepLib<'a> {
+    pub path: Cow<'a, ByteStr>,
+    pub private: usize,
+}
+
 pub trait Exec : 'static {
     fn get_exec_base(&self) -> &ExecBase;
 
@@ -186,6 +202,14 @@ pub trait Exec : 'static {
     fn get_symbol_list(&self, _source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol> {
         assert!(specific.is_none());
         vec!()
+    }
+
+    fn get_dep_libs(&self) -> Cow<[DepLib]> {
+        static NONE: [DepLib<'static>; 0] = [];
+        (&NONE as &[DepLib]).into()
+    }
+    fn describe_dep_lib(&self, _dl: &DepLib) -> String {
+        panic!("describe_dep_lib must be implemented if get_dep_libs is")
     }
 
     fn as_any(&self) -> &std::any::Any;// { self as &std::any::Any }

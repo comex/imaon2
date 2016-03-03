@@ -19,7 +19,7 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::HashSet;
@@ -91,6 +91,7 @@ pub struct DscTabs {
     pub count: u32,
 }
 
+#[derive(Debug)]
 pub enum LoadDylibKind {
     Normal = LC_LOAD_DYLIB as isize,
     Weak = LC_LOAD_WEAK_DYLIB as isize,
@@ -99,12 +100,20 @@ pub enum LoadDylibKind {
 }
 
 pub struct LoadDylib {
-    name: ByteString,
+    path: ByteString,
     kind: LoadDylibKind,
     timestamp: u32,
-    current_version: u32,
-    compatibility_version: u32,
+    current_version: PackedVersion,
+    compatibility_version: PackedVersion,
 }
+
+struct PackedVersion(u32);
+impl std::fmt::Display for PackedVersion {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(fmt, "{}.{}.{}", self.0 >> 16, (self.0 >> 8) & 255, self.0 & 255)
+    }
+}
+
 
 #[derive(Default)]
 pub struct MachO {
@@ -237,7 +246,7 @@ impl exec::Exec for MachO {
                         is_public: true,
                         // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
                         is_weak: which.get() == WhichBind::WeakBind,
-                        val: exec::SymbolValue::Undefined,
+                        val: exec::SymbolValue::Undefined(state.source_dylib),
                         size: None,
                         private: 0,
                     });
@@ -274,6 +283,27 @@ impl exec::Exec for MachO {
                 out
             },
         }
+    }
+
+    fn get_dep_libs(&self) -> Cow<[DepLib]> {
+        let dls = self.load_dylib.iter().enumerate().map(|(i, ld)| DepLib {
+            path: (&*ld.path).into(),
+            private: i,
+        }).collect::<Vec<_>>();
+        dls.into()
+    }
+    fn describe_dep_lib(&self, dl: &DepLib) -> String {
+        let ld = &self.load_dylib[dl.private];
+        format!("{}{} cur={} compat={}",
+                ld.path,
+                match ld.kind {
+                    LoadDylibKind::Normal   => "",
+                    LoadDylibKind::Weak     => " [weak]",
+                    LoadDylibKind::Reexport => " [reexport]",
+                    LoadDylibKind::Upward   => " [upward]",
+                },
+                ld.current_version,
+                ld.compatibility_version)
     }
 
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
@@ -373,16 +403,8 @@ impl<T> OKOrTruncated<T> for Option<T> {
     }
 }
 
-enum ParseDyldBindStateSourceDylib {
-    None,
-    Ordinal(u64),
-    Self_,
-    MainExecutable,
-    Flat,
-}
-
 struct ParseDyldBindState<'s> {
-    source_dylib: ParseDyldBindStateSourceDylib,
+    source_dylib: SourceLib,
     addr: Option<VMA>,
     seg_end: VMA,
     addend: i64,
@@ -568,11 +590,11 @@ impl MachO {
                             ByteStr::from_str("<err>")
                         };
                         self.load_dylib.push(LoadDylib {
-                            name: ByteString::new(name),
+                            path: ByteString::new(name),
                             kind: unsafe { transmute(lc.cmd) },
                             timestamp: dc.dylib.timestamp,
-                            current_version: dc.dylib.current_version,
-                            compatibility_version: dc.dylib.compatibility_version,
+                            current_version: PackedVersion(dc.dylib.current_version),
+                            compatibility_version: PackedVersion(dc.dylib.compatibility_version),
                         });
                     }
                 },
@@ -592,46 +614,57 @@ impl MachO {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
             let slice = &symtab[off..off + self.nlist_size];
-            branch!(if (self.is64) {
+            let (n_value_field, n_type_field, n_desc_field, n_strx_field) = branch!(if (self.is64) {
                 type nlist_x = x_nlist_64;
             } else {
                 type nlist_x = x_nlist;
             } then {
                 let nl: nlist_x = util::copy_from_slice(slice, self.eb.endian);
-                let n_type_field = nl.n_type as u32;
-                let n_desc_field = nl.n_desc as u32;
-                let _n_pext = (n_type_field & N_PEXT) != 0;
-                let _n_stab = (n_type_field & N_STAB) >> 5;
-                let n_type = n_type_field & N_TYPE;
-                let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
-                let public = (n_type_field & N_EXT) != 0;
-                let name = util::from_cstr(&strtab[nl.n_strx as usize..]);
-                let vma = VMA(nl.n_value as u64);
-                let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
-                let val =
-                    if n_desc_field & N_SYMBOL_RESOLVER != 0 && self.mh.filetype == MH_OBJECT {
-                        SymbolValue::Resolver(vma, None)
-                    } else if n_type == N_UNDF {
-                        SymbolValue::Undefined
-                    } else if n_type == N_INDR {
-                        assert!(nl.n_value <= 0xfffffffe);
-                        let indr_name = util::from_cstr(&strtab[nl.n_value as usize..]);
-                        SymbolValue::ReExport(into_cow(indr_name))
-
-                    } else {
-                        SymbolValue::Addr(vma)
-                    };
-                if !(skip_redacted && name == ByteStr::from_bytes(b"<redacted>")) {
-                    out.push(exec::Symbol {
-                        name: into_cow(name),
-                        is_public: public,
-                        is_weak: weak,
-                        val: val,
-                        size: None,
-                        private: off,
-                    })
-                }
+                (nl.n_value as u64, nl.n_type as u32, nl.n_desc as u32, nl.n_strx as usize)
             });
+
+            let _n_pext = (n_type_field & N_PEXT) != 0;
+            let _n_stab = (n_type_field & N_STAB) >> 5;
+            let n_type = n_type_field & N_TYPE;
+            let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
+            let public = (n_type_field & N_EXT) != 0;
+            let name = util::from_cstr(&strtab[n_strx_field..]);
+            let vma = VMA(n_value_field as u64);
+            let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
+            let is_obj = self.mh.filetype == MH_OBJECT;
+            let ord = n_desc_field >> 8;
+            let val =
+                if n_desc_field & N_SYMBOL_RESOLVER != 0 && is_obj {
+                    SymbolValue::Resolver(vma, None)
+                } else if n_type == N_UNDF {
+                    SymbolValue::Undefined(if is_obj {
+                        SourceLib::None
+                    } else if (n_desc_field & N_REF_TO_WEAK != 0) || ord == DYNAMIC_LOOKUP_ORDINAL {
+                        SourceLib::Flat
+                    } else if ord == SELF_LIBRARY_ORDINAL {
+                        SourceLib::Self_
+                    } else if ord == EXECUTABLE_ORDINAL {
+                        SourceLib::MainExecutable
+                    } else {
+                        SourceLib::Ordinal((ord - 1) as u32)
+                    })
+                } else if n_type == N_INDR {
+                    assert!(n_value_field <= 0xfffffffe);
+                    let indr_name = util::from_cstr(&strtab[n_value_field as usize..]);
+                    SymbolValue::ReExport(into_cow(indr_name))
+                } else {
+                    SymbolValue::Addr(vma)
+                };
+            if !(skip_redacted && name == ByteStr::from_bytes(b"<redacted>")) {
+                out.push(exec::Symbol {
+                    name: into_cow(name),
+                    is_public: public,
+                    is_weak: weak,
+                    val: val,
+                    size: None,
+                    private: off,
+                })
+            }
             off += self.nlist_size;
         }
     }
@@ -971,7 +1004,7 @@ impl MachO {
             advance(state, amount);
         };
         let mut state = ParseDyldBindState {
-            source_dylib: ParseDyldBindStateSourceDylib::None,
+            source_dylib: SourceLib::None,
             addr: None,
             seg_end: VMA::default(),
             addend: 0,
@@ -983,9 +1016,9 @@ impl MachO {
             let count = self.load_dylib.len().ext();
             state.source_dylib = if ord == 0 || ord > count {
                 errln!("parse_dyld_bind: dylib ordinal out of range (ord={}, count={})", ord, count);
-                ParseDyldBindStateSourceDylib::None
+                SourceLib::None
             } else {
-                ParseDyldBindStateSourceDylib::Ordinal(ord)
+                SourceLib::Ordinal((ord - 1).narrow().unwrap())
             };
         };
         while !slice.is_empty() {
@@ -998,12 +1031,12 @@ impl MachO {
                 BIND_OPCODE_SET_DYLIB_ORDINAL_IMM => set_dylib_ordinal(&mut state, immediate as u64),
                 BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB => set_dylib_ordinal(&mut state, leb!(false)),
                 BIND_OPCODE_SET_DYLIB_SPECIAL_IMM => state.source_dylib = match immediate {
-                    0x0 => ParseDyldBindStateSourceDylib::Self_,
-                    0xf => ParseDyldBindStateSourceDylib::MainExecutable,
-                    0xe => ParseDyldBindStateSourceDylib::Flat,
+                    0x0 => SourceLib::Self_,
+                    0xf => SourceLib::MainExecutable,
+                    0xe => SourceLib::Flat,
                     _ => {
                         errln!("warning: parse_dyld_bind: unknown special source dylib -{}", 0x10 - immediate);
-                        ParseDyldBindStateSourceDylib::None
+                        SourceLib::None
                     },
                 },
                 BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM => {
