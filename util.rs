@@ -803,14 +803,3 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
         transmute(transmute::<*mut Outer, *mut u8>(outer).offset(self.offset as isize))
     }
 }
-
-pub struct BuildDefaultHasher<H: Hasher + Default>(PhantomData<H>);
-impl<H: Hasher + Default> BuildDefaultHasher<H> {
-    pub fn new() -> Self {
-        BuildDefaultHasher(PhantomData)
-    }
-}
-impl<H: Hasher + Default> BuildHasher for BuildDefaultHasher<H> {
-    type Hasher = H;
-    fn build_hasher(&self) -> H { H::default() }
-}

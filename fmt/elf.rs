@@ -14,6 +14,7 @@ use std::borrow::Cow;
 use std::any::Any;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::hash::BuildHasherDefault;
 
 use deps::vec_map::VecMap;
 use deps::fnv::FnvHasher;
@@ -342,7 +343,7 @@ impl DynamicInfo {
             dli: usize,
             seen_vn_idx: bool,
         }
-        let mut filename_to_dli: HashMap<ByteString, DliEtc, _> = HashMap::with_hasher(util::BuildDefaultHasher::<FnvHasher>::new());
+        let mut filename_to_dli: HashMap<ByteString, DliEtc, _> = HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default());
         let mut dep_libs: Vec<DepLib> = Vec::with_capacity(self.needed.len());
         let mut dep_lib_idx_to_verneed_idxs: Vec<_> = Vec::with_capacity(self.needed.len());
         // todo can we get away with less cloning?
