@@ -9,16 +9,18 @@ extern crate elf_bind;
 extern crate deps;
 
 use std::mem::size_of;
-use std::fmt::{Display, LowerHex};
+use std::fmt::{Display, LowerHex, Write};
 use std::borrow::Cow;
 use std::any::Any;
-use deps::vec_map::VecMap;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+use deps::vec_map::VecMap;
+use deps::fnv::FnvHasher;
+
 use exec::arch::Arch;
 use exec::ReadVMA;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, TrivialState, Narrow};
+use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, Narrow};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib};
 use elf_bind::*;
 
@@ -129,6 +131,7 @@ struct VerneedInfo {
     verneed: Vec<Verneed>,
     vna_other_to_idx: VecMap<(usize, usize)>,
     dep_libs: Vec<DepLib<'static>>,
+    dep_lib_idx_to_verneed_idxs: Vec<Vec<usize>>, // XXX small vec
 }
 
 impl DynamicInfo {
@@ -338,8 +341,9 @@ impl DynamicInfo {
             dli: usize,
             seen_vn_idx: bool,
         }
-        let mut filename_to_dli: HashMap<ByteString, DliEtc, _> = HashMap::with_hasher(TrivialState);
+        let mut filename_to_dli: HashMap<ByteString, DliEtc, _> = HashMap::with_hasher(util::BuildDefaultHasher::<FnvHasher>::new());
         let mut dep_libs: Vec<DepLib> = Vec::with_capacity(self.needed.len());
+        let mut dep_lib_idx_to_verneed_idxs: Vec<_> = Vec::with_capacity(self.needed.len());
         // todo can we get away with less cloning?
         for (i, filename) in self.needed.iter().enumerate() {
             if let Entry::Vacant(ve) = filename_to_dli.entry(filename.clone()) {
@@ -347,7 +351,8 @@ impl DynamicInfo {
             } else {
                 errln!("warning: duplicate DT_NEEDED entry '{}'; any verneed entries with that filename will match up with an arbitrary one of those", filename);
             }
-            dep_libs.push(DepLib { path: filename.to_owned().into(), private: i << 1 });
+            dep_libs.push(DepLib { path: filename.to_owned().into(), private: i });
+            dep_lib_idx_to_verneed_idxs.push(Vec::new());
         }
         for vn_idx in 0..ocs.count {
             let data = elf.eb.read(addr, ocs.size);
@@ -402,10 +407,12 @@ impl DynamicInfo {
                     }
                     dli_etc.seen_vn_idx = true;
                     dli = dli_etc.dli;
+                    dep_lib_idx_to_verneed_idxs[dli].push(verneed.len());
                     break;
                 }
                 let res = dep_libs.len();
-                dep_libs.push(DepLib { path: filename.clone().into(), private: (vn_idx << 1 | 1).narrow().unwrap() });
+                dep_libs.push(DepLib { path: filename.clone().into(), private: res });
+                dep_lib_idx_to_verneed_idxs.push(vec![verneed.len()]);
                 filename_to_dli.insert(filename.clone(), DliEtc { dli: res, seen_vn_idx: true });
                 dli = res;
                 break;
@@ -416,7 +423,12 @@ impl DynamicInfo {
                 aux: aux
             });
         }
-        VerneedInfo { verneed: verneed, vna_other_to_idx: vna_other_to_idx, dep_libs: dep_libs }
+        VerneedInfo {
+            verneed: verneed,
+            vna_other_to_idx: vna_other_to_idx,
+            dep_libs: dep_libs,
+            dep_lib_idx_to_verneed_idxs: dep_lib_idx_to_verneed_idxs,
+        }
     }
 }
 
@@ -1051,6 +1063,21 @@ impl exec::Exec for Elf {
         })
     }
 
+    fn get_dep_libs(&self) -> Cow<[DepLib]> {
+        (&*self.get_verneed_info().dep_libs).into()
+    }
+    fn describe_dep_lib(&self, dl: &DepLib) -> String {
+        let idx = dl.private;
+        let dls = &*self.get_verneed_info();
+        let mut out = dl.path.lossy().into_owned();
+        for &vni in &dls.dep_lib_idx_to_verneed_idxs[idx] {
+            let vn = &dls.verneed[vni];
+            for vna in &vn.aux {
+                write!(&mut out, " '{}'", vna.name).unwrap();
+            }
+        }
+        out
+    }
 }
 
 fn check_elf_basics(buf: &[u8], warn: bool) -> Result<ElfBasics, &'static str> {

@@ -8,6 +8,7 @@ extern crate deps;
 extern crate macros;
 
 use std::mem::{size_of, uninitialized, transmute};
+use std::ptr;
 use std::ptr::{copy, null_mut};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,8 @@ use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use std::hash::{Hasher, BuildHasher};
+
 use deps::nodrop::NoDrop;
 
 pub use Endian::*;
@@ -29,6 +32,10 @@ pub use Endian::*;
 
 mod trivial_hasher;
 pub use trivial_hasher::*;
+
+#[path="forks/small_vector.rs"]
+mod small_vector;
+pub use small_vector::SmallVector;
 
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
@@ -758,10 +765,17 @@ impl<T> Lazy<T> {
         unsafe {
             if !self.is_valid.load(Ordering::Acquire) {
                 let _guard = self.mtx.lock().unwrap();
-                **self.val.get() = f();
+                ptr::write(&mut **self.val.get(), f());
                 self.is_valid.store(true, Ordering::Release);
             }
             &*self.val.get()
+        }
+    }
+}
+impl<T> Drop for Lazy<T> {
+    fn drop(&mut self) {
+        if self.is_valid.load(Ordering::Acquire) {
+            unsafe { ptr::read(&mut **self.val.get()); }
         }
     }
 }
@@ -788,4 +802,15 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
     pub unsafe fn get_mut_unsafe(&self, outer: *mut Outer) -> &mut Inner {
         transmute(transmute::<*mut Outer, *mut u8>(outer).offset(self.offset as isize))
     }
+}
+
+pub struct BuildDefaultHasher<H: Hasher + Default>(PhantomData<H>);
+impl<H: Hasher + Default> BuildDefaultHasher<H> {
+    pub fn new() -> Self {
+        BuildDefaultHasher(PhantomData)
+    }
+}
+impl<H: Hasher + Default> BuildHasher for BuildDefaultHasher<H> {
+    type Hasher = H;
+    fn build_hasher(&self) -> H { H::default() }
 }

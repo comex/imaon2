@@ -39,7 +39,7 @@ cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
 
 rustc-extern = --extern $(1)=`ls -t $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
-XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) $(call rustc-extern,nodrop) -L. -L$(OUT)
+XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) $(call rustc-extern,nodrop) $(call rustc-extern,fnv) -L. -L$(OUT)
 
 
 all:
@@ -54,7 +54,9 @@ $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
 
 all: $$(cratefile-$(2))
 
-out/test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
+out/test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(if $$(cratefile-$$(dep)),\
+													   $$(cratefile-$$(dep)),\
+													   $$(error undeclared dep $$(dep))))
 	$(XRUSTC) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
@@ -66,8 +68,12 @@ endef
 define_crate = $(eval $(define_crate_))
 
 $(call define_crate,rlib,macros,macros.rs,)
-$(call define_crate,$(LIB),bsdlike_getopts,bsdlike_getopts.rs,)
-$(call define_crate,$(LIB),util,util.rs,macros bsdlike_getopts deps)
+$(call define_crate,$(LIB),bsdlike_getopts,forks/bsdlike_getopts.rs,)
+
+$(call define_crate,$(LIB),deps,deps.rs,)
+$(cratefile-deps): $(OUT)/cargo-build
+
+$(call define_crate,$(LIB),util,util.rs trivial_hasher.rs forks/small_vector.rs,macros bsdlike_getopts deps)
 
 ifneq ($(USE_LLVM),)
 # deps here are wonky
@@ -104,9 +110,6 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
 	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
-
-$(call define_crate,$(LIB),deps,deps.rs,)
-$(cratefile-deps): $(OUT)/cargo-build
 
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
