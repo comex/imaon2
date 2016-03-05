@@ -23,7 +23,7 @@ use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::hash::{Hasher, BuildHasher};
+use std::hash::{Hasher};
 
 use deps::nodrop::NoDrop;
 
@@ -306,6 +306,19 @@ impl ByteString {
     pub fn from_string(s: String) -> ByteString {
         ByteString(s.into_bytes())
     }
+    pub fn with_capacity(c: usize) -> ByteString {
+        ByteString(Vec::with_capacity(c))
+    }
+    pub fn concat2(left: &ByteStr, right: &ByteStr) -> ByteString {
+        let mut result = ByteString::with_capacity(left.len() + right.len());
+        result.push_bstr(left);
+        result.push_bstr(right);
+        result
+
+    }
+    fn push_bstr(&mut self, bs: &ByteStr) {
+        self.0.extend_from_slice(&bs.0);
+    }
 }
 impl Deref for ByteString {
     type Target = ByteStr;
@@ -369,10 +382,15 @@ impl<'a> From<ByteString> for Cow<'a, ByteStr> {
         Cow::Owned(s)
     }
 }
+impl<'a> From<&'a str> for &'a ByteStr {
+    fn from(s: &'a str) -> Self {
+        ByteStr::from_bytes(s.as_bytes())
+    }
+}
 impl<'a> Add<&'a ByteStr> for ByteString {
     type Output = ByteString;
     fn add(mut self, other: &ByteStr) -> ByteString {
-        self.0.extend_from_slice(&other.0);
+        self.push_bstr(other);
         self
     }
 }

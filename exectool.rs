@@ -172,6 +172,17 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         }
 
     }
+    if m.opt_present("relocs") {
+        println!("Relocations:");
+        for rel in ex.get_reloc_list(None) {
+            print!("addr={} kind={:?}", rel.address, rel.kind);
+            if let Some(add) = rel.addend {
+                println!(" addend=0x{:x}", add);
+            } else {
+                println!("");
+            }
+        }
+    }
     if m.opt_present("macho-filedata-info") {
         macho_filedata_info(macho.expect("macho-filedata-info: not mach-o"));
     }
@@ -256,9 +267,10 @@ fn main() {
         getopts::optflag("",  "segs",  "List segments"),
         getopts::optflag("",  "sects", "List sections"),
         getopts::optflag("",  "syms",  "List symbols"),
-        getopts::optflag("",  "dep-libs", "List library dependencies"),
         getopts::optflag("",  "exports","List exported symbols"),
         getopts::optflag("",  "imports","List imported symbols"),
+        getopts::optflag("",  "dep-libs", "List library dependencies"),
+        getopts::optflag("",  "relocs", "List relocs"),
         getopts::optopt( "",  "o2a",   "Offset to address", "off"),
         getopts::optopt( "",  "a2o",   "Address to offset", "addr"),
         getopts::optopt( "",  "dump",  "Dump address range", "addr+len"),

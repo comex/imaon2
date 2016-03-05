@@ -171,7 +171,6 @@ pub enum SourceLib {
     Flat,
 }
 
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct Symbol<'a> {
     pub name: Cow<'a, ByteStr>,
@@ -189,6 +188,20 @@ pub enum SymbolSource {
     Exported,
 }
 
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum RelocKind {
+    Pointer,
+    _32Bit,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Reloc {
+    pub address: VMA,
+    pub kind: RelocKind,
+    pub addend: Option<u64>,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct DepLib<'a> {
     pub path: Cow<'a, ByteStr>,
@@ -200,6 +213,11 @@ pub trait Exec : 'static {
 
     // Todo: add a monomorphizable iterator version of this
     fn get_symbol_list(&self, _source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol> {
+        assert!(specific.is_none());
+        vec!()
+    }
+
+    fn get_reloc_list(&self, specific: Option<&Any>) -> Vec<Reloc> {
         assert!(specific.is_none());
         vec!()
     }
