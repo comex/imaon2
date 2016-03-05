@@ -231,7 +231,8 @@ impl DyldCache {
                 // todo better 
                 let prefix = ByteString::concat2(get_basename(ii), ":".into());
                 if let Ok(mut mo) = dc.load_single_image(ii) {
-                    for sect in mo.eb.sections.into_iter() {
+                    for sect in mo.eb.sections.into_iter()
+                         .chain(mo.eb.segments.into_iter()) {
                         dc.eb.sections.push(
                             exec::Segment { name: Some(ByteString::concat2(&prefix, sect.name.as_ref().unwrap())),
                                             ..sect }

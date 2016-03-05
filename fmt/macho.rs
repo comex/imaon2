@@ -120,6 +120,7 @@ pub struct MachO {
     pub eb: exec::ExecBase,
     pub is64: bool,
     pub mh: mach_header,
+    pub hdr_offset: usize,
     pub load_commands: Vec<MCRef>,
     pub load_dylib: Vec<LoadDylib>,
     pub dyld_base: Option<VMA>,
@@ -416,6 +417,7 @@ struct ParseDyldBindState<'s> {
 impl MachO {
     pub fn new(mc: MCRef, do_lcs: bool, hdr_offset: usize) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
+        me.hdr_offset = hdr_offset;
         let mut lc_off = try!(hdr_offset.checked_add(size_of::<mach_header>()).ok_or_truncated());
         {
             let buf = mc.get();
@@ -489,6 +491,7 @@ impl MachO {
         let self_ = self as *mut _;
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
+        let hdr_offset = self.hdr_offset as u64;
         let whole = mc.get();
         let mut segi: usize = 0;
         for lci in 0..self.mh.ncmds {
@@ -524,6 +527,7 @@ impl MachO {
                         seg_idx: None,
                         private: lci.ext(),
                     };
+                    if seg.fileoff == 0 { seg.fileoff = hdr_offset; }
                     fixup_segment_overflow(&mut seg, is64);
                     segs.push(seg);
                     for secti in 0..sc.nsects {
@@ -539,6 +543,7 @@ impl MachO {
                             seg_idx: Some(segi),
                             private: secti.ext(),
                         };
+                        if seg.fileoff == 0 { seg.fileoff = hdr_offset; }
                         fixup_segment_overflow(&mut seg, is64);
                         sects.push(seg);
                         off += size_of::<section_x>();

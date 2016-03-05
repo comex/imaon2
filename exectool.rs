@@ -104,26 +104,32 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
     Ok(ret)
 }
 
+fn print_segs(segs: &[exec::Segment]) {
+    let pretty_names: Vec<_> = segs.iter().map(|s| s.pretty_name()).collect();
+    let maxlen = pretty_names.iter().map(|pn| pn.len()).max().unwrap_or(0);
+    let mut sorted: Vec<_> = segs.iter().collect();
+    sorted.sort_by_key(|seg| (seg.vmaddr, !seg.vmsize));
+    for seg in sorted.into_iter() {
+        println!("{:<6$} @ {:<#18x} sz {:<#12x}  off {:<#12x} filesz {:<#8x} {}",
+                 seg.pretty_name(),
+                 seg.vmaddr.0, seg.vmsize,
+                 seg.fileoff, seg.filesize,
+                 seg.prot,
+                 maxlen);
+    }
+}
+
 fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     let eb = ex.get_exec_base();
     let macho = ex.as_any().downcast_ref::<macho::MachO>();
     let elf = ex.as_any().downcast_ref::<elf::Elf>();
     if m.opt_present("segs") {
         println!("All segments:");
-        for seg in eb.segments.iter() {
-            println!("{:<16} @ {:<#18x} sz {:<#12x}  off {:<#12x} filesz {:<#8x} {}",
-                seg.pretty_name(),
-                seg.vmaddr.0, seg.vmsize,
-                seg.fileoff, seg.filesize,
-                seg.prot,
-            );
-        }
+        print_segs(&eb.segments);
     }
     if m.opt_present("sects") {
         println!("All sections:");
-        for seg in eb.sections.iter() {
-            println!("{:?}", seg);
-        }
+        print_segs(&eb.sections);
     }
     let mut elf_specific = elf::ElfGetSymbolListSpecific::default();
     if m.opt_present("elf-append-version") {
