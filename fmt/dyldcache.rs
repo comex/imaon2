@@ -34,6 +34,56 @@ pub struct DyldCache {
     local_symbols: Option<LocalSymbols>,
 }
 
+fn iter_slide_info<F>(blob: &[u8], end: util::Endian, mut func: F) -> bool where F: FnMut(u64) {
+    let size = size_of::<dyld_cache_slide_info>();
+    if blob.len() < size {
+        errln!("iter_slide_info: slide info blob too small for header");
+        return false;
+    }
+    let slide_info: dyld_cache_slide_info =  util::copy_from_slice(&blob[..size], end);
+    if slide_info.version > 1 {
+        errln!("iter_slide_info: slide info blob version > 1");
+        return false;
+    }
+    let toc_offset = slide_info.toc_offset as usize;
+    let toc_end = toc_offset.check_add((slide_info.toc_count as usize).check_mul(2));
+    if !toc_end.is_some_and(|e| e <= blob.size()) {
+        errln("iter_slide_info: toc out of bounds");
+        return false;
+    }
+    let toc = &blob[toc_offset..toc_end.unwrap()].chunks(2);
+    let entries_offset = slide_info.entries_offset as usize;
+    let entries_size = slide_info.entries_size as usize;
+    let entries_count = slide_info.entries_count as usize;
+    let granularity = 4;
+    let entry_bytes = some_or!(entries_size.check_mul(8).check_mul(granularity), {
+        errln("iter_slide_info: entries_size {} too big (should be 128)", entries_size);
+        return false;
+    });
+    if entry_bytes.check_mul(entries_count).is_none() {
+        errln("iter_slide_info: entries_count {} way too big", entries_count);
+        return false;
+    }
+    let entries_end = entries_offset.check_add(entries_count.check_mul(entries_size));
+    if !entries_end.is_some_and(|e| e <= blob.size()) {
+        errln("iter_slide_info: entries out of bounds");
+        return false;
+    }
+    let entries = &blob[entries_offset..entries_end.unwrap()];
+    for (i, idx_blob) in toc.enumerate() {
+        let idx: u16 = util::copy_from_slice(idx_blob, end);
+        if idx >= entries_count {
+            errln("iter_slide_info: toc entry {} out of bounds ({})", i, idx);
+            continue;
+        }
+        let mut addr = + granularity * 8 * entries_size
+        addr_base
+
+
+    }
+}
+
+
 trait RangeCast {
     fn range_cast(self) -> Range<usize>;
 }
@@ -165,6 +215,7 @@ impl DyldCache {
             image_info: image_info,
             uuid: uuid,
             slide_info_blob: slide_info,
+            TODO use slide info to guess the objc data etc
             cs_blob: cs_blob,
             local_symbols: local_symbols,
         })

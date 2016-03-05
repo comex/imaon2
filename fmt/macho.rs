@@ -896,7 +896,7 @@ impl MachO {
             if let Some(cmd) = cmd.take() { cmds.push(cmd); }
         }
         let mut insert_extra_segs_idx = insert_extra_segs_idx.unwrap_or(cmds.len());
-        for (_, new_cmd) in existing_segs.drain() {
+        for (_, new_cmd) in existing_segs.into_iter() {
             cmds.insert(insert_extra_segs_idx, new_cmd);
             insert_extra_segs_idx += 1;
         }
@@ -915,7 +915,7 @@ impl MachO {
             let cmd = if self.is64 { LC_SEGMENT_64 } else { LC_SEGMENT };
             let sects: Vec<&exec::Segment> = self.eb.sections.iter().filter(|seg| seg.seg_idx == Some(segi)).collect();
             let nsects = sects.len();
-            let segname = seg_name_to_macho(&seg, "MachO::reallocate: segment");
+            let segname = seg_name_to_macho(&seg, "update_seg_cmds: segment");
             let mut new_cmd = Vec::<u8>::new();
             let olcbuf = if lci != usize::MAX { Some(self.load_commands[lci].get()) } else { None };
             branch!(if (self.is64) {
@@ -958,11 +958,11 @@ impl MachO {
                         Default::default()
                     };
                     snc.segname = segname;
-                    snc.sectname = seg_name_to_macho(&sect, "MachO::reallocate: section");
+                    snc.sectname = seg_name_to_macho(&sect, "update_seg_cmds: section");
                     snc.addr = sect.vmaddr.0 as size_x;
                     snc.size = sect.vmsize as size_x;
                     if sect.filesize != sect.vmsize && sect.filesize != 0 {
-                        errln!("warning: MachO::reallocate: section {} filesize != vmsize, using vmsize", sect.pretty_name());
+                        errln!("warning: update_seg_cmds: section {} filesize != vmsize, using vmsize", sect.pretty_name());
                     }
                     snc.offset = sect.fileoff as u32;
                     util::copy_to_vec(&mut new_cmd, &snc, self.eb.endian);
