@@ -385,7 +385,7 @@ impl exec::Exec for MachO {
             },
             SymbolSource::Exported => {
                 let mut out = Vec::new();
-                self.parse_dyld_export(self.dyld_export.get(), &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, &'a ByteStr)>, offset: usize| {
+                self.parse_dyld_export(self.dyld_export.get(), &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, Cow<'a, ByteStr>)>, offset: usize| {
                     out.push(exec::Symbol {
                         name: name.to_owned().into(),
                         is_public: true,
@@ -1245,7 +1245,7 @@ impl MachO {
             }
         }
     }
-    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, &'a ByteStr)>, usize)) {
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, Cow<'a, ByteStr>)>, usize)) {
         if dyld_export.is_empty() { return; }
         let mut seen = HashSet::with_hasher(TrivialState);
         let mut todo = vec![(0usize, ByteString::from_str(""))];
@@ -1289,11 +1289,18 @@ impl MachO {
                         continue;
                     }
                     let ord = leb!(it);
-                    let name = some_or!(util::from_cstr_strict(it.0), {
-                        errln!("warning: parse_dyld_export: invalid reexport name");
-                        continue;
-                    });
-                    *it.0 = &it.0[name.len()+1..];
+                    let name;
+                    if it.0.len() == 0 {
+                        name = ByteStr::from_str("");
+                    } else {
+                        name = some_or!(util::from_cstr_strict(it.0), {
+                            errln!("warning: parse_dyld_export: invalid reexport name");
+                            continue;
+                        });
+                        *it.0 = &it.0[name.len()+1..];
+                    };
+                    // export same?
+                    let name = if name.len() == 0 { prefix.to_owned().into() } else { name.into() };
                     Some((ord, name))
                 } else { None };
                 cb(&prefix, addr, flags, resolver, reexport, offset);
