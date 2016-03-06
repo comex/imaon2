@@ -22,6 +22,7 @@ use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKi
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
+use std::collections::hash_map::Entry;
 use std::borrow::Cow;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState};
 use std::cell::Cell;
@@ -79,8 +80,9 @@ fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
           else if len == size_of::<x_nlist>() { false }
           else { panic!() };
     unsafe {
-        let source32: *const x_nlist = std::mem::transmute(slice);
-        let source64: *const x_nlist_64 = std::mem::transmute(slice);
+        let ptr = slice.as_ptr();
+        let source32: *const x_nlist = std::mem::transmute(ptr);
+        let source64: *const x_nlist_64 = std::mem::transmute(ptr);
         let (mut strx, mut typ, mut sect, mut desc) =
             ((*source64).n_strx, (*source64).n_type,
              (*source64).n_sect, (*source64).n_desc);
@@ -130,18 +132,18 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
     if sym.is_public {
         res.n_type |= N_EXT as u8;
     }
-    match sym.val {
-        SymbolValue::Addr(vma) => {
+    match &sym.val {
+        &SymbolValue::Addr(vma) => {
             res.n_value = vma.0;
         },
-        SymbolValue::Abs(vma) => {
+        &SymbolValue::Abs(vma) => {
             res.n_value = vma.0;
             res.n_type |= N_ABS as u8;
         },
-        SymbolValue::ThreadLocal(vma) => {
+        &SymbolValue::ThreadLocal(_) => {
             return Err("can't handle thread loval");
         },
-        SymbolValue::Undefined(source) => {
+        &SymbolValue::Undefined(source) => {
             res.n_value = 0;
             res.n_type |= N_UNDF as u8;
             let ord = match source {
@@ -156,14 +158,14 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
             };
             res.n_desc |= (ord << 8) as u16;
         },
-        SymbolValue::Resolver(vma, None) => {
+        &SymbolValue::Resolver(vma, None) => {
             res.n_value = vma.0;
             res.n_desc |= N_SYMBOL_RESOLVER as u16;
         },
-        SymbolValue::Resolver(vma, Some(_)) => {
+        &SymbolValue::Resolver(_, Some(_)) => {
             return Err("can't handle resolver with stub");
         },
-        SymbolValue::ReExport(name) => {
+        &SymbolValue::ReExport(_) => {
             res.n_value = ind_strx.unwrap().ext();
             res.n_type |= N_INDR as u8;
         },
@@ -172,6 +174,7 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
         res.n_value -= 1;
         res.n_desc |= N_ARM_THUMB_DEF as u16;
     }
+    res.n_strx = strx;
     Ok(res)
 }
 
@@ -1321,7 +1324,7 @@ impl MachO {
         }
     }
 
-    pub fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> Result<ReaggregatedSyms, &'static str> {
+    fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> Result<ReaggregatedSyms, &'static str> {
         // Three sources: the localSymbol section of the cache (dsc_tabs), our own symtab, and the export table
         let end = self.eb.endian;
         let is64 = self.is64;
@@ -1341,8 +1344,7 @@ impl MachO {
         //    list, but it's more robust to manually check for overlap.
         let mut seen_symbols_by_addr: HashMap<u64, Vec<ByteString>, _> = util::new_fnv_hashmap();
         {
-        let strtab = &mut res.strtab;
-        let add_string = |s: &ByteStr| -> u32 {
+        let mut add_string = |strtab: &mut Vec<u8>, s: &ByteStr| -> u32 {
             *str_to_strtab_pos.entry(s.to_owned()).or_insert_with(|| {
                 let pos = strtab.len();
                 if pos >= (std::u32::MAX as usize) - s.len() {
@@ -1354,56 +1356,6 @@ impl MachO {
                 pos as u32
             })
         };
-        {
-            // this whole thing is similar to get_symbol_list, but i want to copy directly
-            let strx_to_name = |strtab: &'a [u8], strx: u64| -> &ByteStr {
-                // todo: fix push_nlist_symbols to use this kind of logic
-                if strx == 0 {
-                    ByteStr::from_str("")
-                } else if strx >= strtab.len() as u64 {
-                    errln!("reaggregate_nlist_syms_from_cache: strx out of range");
-                    ByteStr::from_str("<?>")
-                } else {
-                    util::from_cstr(&strtab[strx as usize..])
-                }
-            };
-
-            let do_nlist = |symtab: &[u8], strtab: &[u8], start, count| {
-                let input = &symtab[start..start+(count*self.nlist_size)];
-                for nlb in input.chunks(self.nlist_size) {
-                    let nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
-                    let mut addr = nl.n_value;
-                    if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { addr |= 1; }
-                    let name = strx_to_name(strtab, nl.n_strx as u64);
-                    if let Some(names) = seen_symbols_by_addr.get_mut(&addr) {
-                        // so there are existing symbols here...
-                        if name == ByteStr::from_str("<redacted>") ||
-                           names.iter().any(|n| &**n == name) {
-                            continue;
-                        }
-                    }
-                    nl.n_strx = add_string(name);
-                    let n_type = nl.n_type as u32 & N_TYPE;
-                    if n_type == N_INDR {
-                        let imp_name = strx_to_name(strtab, nl.n_value);
-                        nl.n_value = add_string(imp_name) as u64;
-                    }
-                    let which = if n_type == N_UNDF {
-                        &mut res.undefsym
-                    } else if nl.n_type as u32 & N_EXT != 0 {
-                        &mut res.extdefsym
-                    } else {
-                        &mut res.localsym
-                    };
-                    copy_nlist_to_vec(which, &nl, end, is64);
-                }
-            };
-            do_nlist(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size);
-            // must come second due to redacted check
-            if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
-                do_nlist(symtab.get(), strtab.get(), start as usize, count as usize);
-            }
-        }
         // for the conversion I may as well just use it
         for sym in self.get_symbol_list(SymbolSource::Exported, None) {
             let name = &*sym.name;
@@ -1415,17 +1367,24 @@ impl MachO {
                 SymbolValue::Resolver(vma, _) => Some(vma.0),
                 _ => None
             } {
-                if let Some(names) = seen_symbols_by_addr.get_mut(&addr) {
-                    if names.iter().any(|n| &**n == name) {
-                        continue;
-                    }
+                match seen_symbols_by_addr.entry(addr) {
+                    Entry::Occupied(mut oc) => {
+                        let names = oc.get_mut();
+                        if names.iter().any(|n| &**n == name) {
+                            continue;
+                        }
+                        names.push(name.to_owned());
+                    },
+                    Entry::Vacant(va) => {
+                        va.insert(vec![name.to_owned()]);
+                    },
                 }
             }
             let nl = try!(exec_sym_to_nlist_64(
                 &sym,
-                add_string(name),
+                add_string(&mut res.strtab, name),
                 if let SymbolValue::ReExport(ref imp_name) = sym.val {
-                    Some(add_string(imp_name))
+                    Some(add_string(&mut res.strtab, imp_name))
                 } else { None },
                 arch,
                 &mut || { // is_text
@@ -1440,6 +1399,65 @@ impl MachO {
             } else {
                 &mut res.localsym
             }, &nl, end, is64);
+        }
+        {
+            // nlist-to-nlist part: this whole thing is similar to get_symbol_list, but i want to copy directly
+            let strx_to_name = |strtab: &'a [u8], strx: u64| -> &'a ByteStr {
+                // todo: fix push_nlist_symbols to use this kind of logic
+                if strx == 0 {
+                    ByteStr::from_str("")
+                } else if strx >= strtab.len() as u64 {
+                    errln!("reaggregate_nlist_syms_from_cache: strx out of range ({}/{})", strx, strtab.len());
+                    ByteStr::from_str("<?>")
+                } else {
+                    util::from_cstr(&strtab[strx as usize..])
+                }
+            };
+
+            let mut do_nlist = |symtab: &[u8], strtab: &'a [u8], start, count| {
+                let input = &symtab[start*self.nlist_size..(start+count)*self.nlist_size];
+                for nlb in input.chunks(self.nlist_size) {
+                    let mut nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
+                    let mut addr = nl.n_value;
+                    if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { addr |= 1; }
+                    let name = strx_to_name(strtab, nl.n_strx as u64);
+                    if addr != 0 {
+                        match seen_symbols_by_addr.entry(addr) {
+                            Entry::Occupied(mut oc) => {
+                                let names = oc.get_mut();
+                                // so there are existing symbols here...
+                                if name == ByteStr::from_str("<redacted>") ||
+                                   names.iter().any(|n| &**n == name) {
+                                    continue;
+                                }
+                                names.push(name.to_owned());
+                            },
+                            Entry::Vacant(va) => {
+                                va.insert(vec![name.to_owned()]);
+                            },
+                        }
+                    }
+                    nl.n_strx = add_string(&mut res.strtab, name);
+                    let n_type = nl.n_type as u32 & N_TYPE;
+                    if n_type == N_INDR {
+                        let imp_name = strx_to_name(strtab, nl.n_value);
+                        nl.n_value = add_string(&mut res.strtab, imp_name) as u64;
+                    }
+                    let which = if n_type == N_UNDF {
+                        &mut res.undefsym
+                    } else if nl.n_type as u32 & N_EXT != 0 {
+                        &mut res.extdefsym
+                    } else {
+                        &mut res.localsym
+                    };
+                    copy_nlist_to_vec(which, &nl, end, is64);
+                }
+            };
+            if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
+                do_nlist(symtab.get(), strtab.get(), start as usize, count as usize);
+            }
+            // must come last due to redacted check
+            do_nlist(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size);
         }
         } // release str_to_strtab_pos
         Ok(res)
@@ -1456,13 +1474,13 @@ impl MachO {
         if self.hdr_offset != 0 {
             // we're in a cache...
             let res = try!(self.reaggregate_nlist_syms_from_cache()
-                           .map_err(|e| err(ErrorKind::other, e)));
+                           .map_err(|e| exec::err_only(ErrorKind::Other, e)));
             self.localsym = MCRef::with_data(&res.localsym);
             self.extdefsym = MCRef::with_data(&res.extdefsym);
             self.undefsym = MCRef::with_data(&res.undefsym);
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
-            let dc = DyldCache::new(self.eb.whole_buf.clone(), false).unwrap();
+            let dc = DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), false).unwrap();
             self.fix_objc_from_cache(&dc);
             self.unbind();
         }
