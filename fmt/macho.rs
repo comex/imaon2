@@ -16,17 +16,18 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::borrow::Cow;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState};
 use std::cell::Cell;
 
 pub mod dyldcache;
+use dyldcache::DyldCache;
 
 // dont bother with the unions
 deriving_swap!(
@@ -53,6 +54,11 @@ pub struct x_nlist_64 {
 }
 );
 impl Clone for x_nlist_64 { fn clone(&self) -> Self { *self } }
+impl Default for x_nlist_64 {
+    fn default() -> Self {
+        x_nlist_64 { n_strx: 0, n_type: 0, n_sect: 0, n_desc: 0, n_value: 0 }
+    }
+}
 
 pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u32 = 2;
 
@@ -63,6 +69,110 @@ pub fn u32_to_prot(ip: u32) -> exec::Prot {
         w: (ip & VM_PROT_WRITE) != 0,
         x: (ip & VM_PROT_EXECUTE) != 0,
     }
+}
+
+#[inline(always)]
+// probably 100% pointless optimization
+fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
+    let len = slice.len();
+    let is64 = if len == size_of::<x_nlist_64>() { true }
+          else if len == size_of::<x_nlist>() { false }
+          else { panic!() };
+    unsafe {
+        let source32: *const x_nlist = std::mem::transmute(slice);
+        let source64: *const x_nlist_64 = std::mem::transmute(slice);
+        let (mut strx, mut typ, mut sect, mut desc) =
+            ((*source64).n_strx, (*source64).n_type,
+             (*source64).n_sect, (*source64).n_desc);
+        let value;
+        if end.needs_swap() {
+            strx.bswap(); typ.bswap(); sect.bswap(); desc.bswap();
+            value = if is64 {
+                let mut v = (*source64).n_value; v.bswap(); v
+            } else {
+                let mut v = (*source32).n_value; v.bswap(); v as u64
+            }
+        } else {
+            value = if is64 { (*source64).n_value } else { (*source32).n_value as u64 }
+        }
+        x_nlist_64 {
+            n_strx: strx,
+            n_type: typ,
+            n_sect: sect,
+            n_desc: desc,
+            n_value: value,
+        }
+    }
+}
+
+fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool) {
+    if is64 {
+        util::copy_to_vec(vec, nl, end);
+    } else {
+        let nl32 = x_nlist {
+            n_strx: nl.n_strx,
+            n_type: nl.n_type,
+            n_sect: nl.n_sect,
+            n_desc: nl.n_desc as i16,
+            n_value: nl.n_value.narrow().unwrap(),
+        };
+        util::copy_to_vec(vec, &nl32, end);
+    }
+}
+
+
+fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, arch: arch::Arch, is_text: &mut FnMut() -> bool) -> Result<x_nlist_64, &'static str> {
+    // some stuff is missing, like common symbols
+    let mut res: x_nlist_64 = Default::default();
+    if sym.is_weak {
+        res.n_type |= if let SymbolValue::Undefined = sym.val { N_WEAK_REF } else { N_WEAK_DEF } as u8
+    }
+    if sym.is_public {
+        res.n_type |= N_EXT as u8;
+    }
+    match sym.val {
+        SymbolValue::Addr(vma) => {
+            res.n_value = vma.0;
+        },
+        SymbolValue::Abs(vma) => {
+            res.n_value = vma.0;
+            res.n_type |= N_ABS as u8;
+        },
+        SymbolValue::ThreadLocal(vma) => {
+            return Err("can't handle thread loval");
+        },
+        SymbolValue::Undefined(source) => {
+            res.n_value = 0;
+            res.n_type |= N_UNDF as u8;
+            let ord = match source {
+                SourceLib::None => 0,
+                SourceLib::Flat => {
+                    res.n_desc |= N_REF_TO_WEAK as u16;
+                    DYNAMIC_LOOKUP_ORDINAL
+                },
+                SourceLib::Self_ => SELF_LIBRARY_ORDINAL,
+                SourceLib::MainExecutable => EXECUTABLE_ORDINAL,
+                SourceLib::Ordinal(xord) => xord + 1,
+            };
+            res.n_desc |= (ord << 8) as u16;
+        },
+        SymbolValue::Resolver(vma, None) => {
+            res.n_value = vma.0;
+            res.n_desc |= N_SYMBOL_RESOLVER as u16;
+        },
+        SymbolValue::Resolver(vma, Some(_)) => {
+            return Err("can't handle resolver with stub");
+        },
+        SymbolValue::ReExport(name) => {
+            res.n_value = ind_strx.unwrap().ext();
+            res.n_type |= N_INDR as u8;
+        },
+    }
+    if res.n_value & 1 != 0 && arch == arch::ARM && is_text() {
+        res.n_value -= 1;
+        res.n_desc |= N_ARM_THUMB_DEF as u16;
+    }
+    Ok(res)
 }
 
 fn file_array(buf: &MCRef, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
@@ -146,13 +256,14 @@ pub struct MachO {
     pub dyld_lazy_bind: MCRef,
     pub dyld_export: MCRef,
     // linkedit_data_commands
+    pub segment_split_info: MCRef,
     pub function_starts: MCRef,
     pub data_in_code: MCRef,
     pub linker_optimization_hint: MCRef,
     pub dylib_code_sign_drs: MCRef,
     pub code_signature: MCRef,
 
-    _linkedit_bits: Option<[LinkeditBit; 21]>,
+    _linkedit_bits: Option<[LinkeditBit; 22]>,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
@@ -187,7 +298,7 @@ macro_rules! lbit {
     ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => { lbit!($self_field, $cmd_id, $cmd_type, $off_field, $size_field, $divi, false) }
 }
 
-fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 21] {
+fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 22] {
     let nlist_size = if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
     [
         // section relocations here?
@@ -198,7 +309,7 @@ fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 21] {
         lbit!(dyld_export, LC_DYLD_INFO, dyld_info_command, export_off, export_size, 1),
 
         lbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
-        // splitseg
+        lbit!(segment_split_info, LC_SEGMENT_SPLIT_INFO, linkedit_data_command, dataoff, datasize, 1),
         lbit!(function_starts, LC_FUNCTION_STARTS, linkedit_data_command, dataoff, datasize, 1),
         lbit!(data_in_code, LC_DATA_IN_CODE, linkedit_data_command, dataoff, datasize, 1),
 
@@ -232,10 +343,10 @@ impl exec::Exec for MachO {
         &self.eb
     }
 
-    fn get_symbol_list<'a>(&'a self, source: exec::SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol<'a>> {
+    fn get_symbol_list<'a>(&'a self, source: SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol<'a>> {
         assert!(specific.is_none());
         match source {
-            exec::SymbolSource::All => {
+            SymbolSource::All => {
                 let mut out = Vec::new();
                 let mut skip_redacted = false;
                 if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
@@ -245,7 +356,7 @@ impl exec::Exec for MachO {
                 self.push_nlist_symbols(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size, skip_redacted, &mut out);
                 out
             },
-            exec::SymbolSource::Imported => {
+            SymbolSource::Imported => {
                 let mut out = Vec::new();
                 {
                 let which = Cell::new(WhichBind::Bind);
@@ -256,7 +367,7 @@ impl exec::Exec for MachO {
                         is_public: true,
                         // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
                         is_weak: which.get() == WhichBind::WeakBind,
-                        val: exec::SymbolValue::Undefined(state.source_dylib),
+                        val: SymbolValue::Undefined(state.source_dylib),
                         size: None,
                         private: 0,
                     });
@@ -269,7 +380,7 @@ impl exec::Exec for MachO {
                 }
                 out
             },
-            exec::SymbolSource::Exported => {
+            SymbolSource::Exported => {
                 let mut out = Vec::new();
                 self.parse_dyld_export(self.dyld_export.get(), &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, &'a ByteStr)>, offset: usize| {
                     out.push(exec::Symbol {
@@ -277,13 +388,13 @@ impl exec::Exec for MachO {
                         is_public: true,
                         is_weak: flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
                         val: if let Some((_, name)) = reexport {
-                            exec::SymbolValue::ReExport(name.into())
+                            SymbolValue::ReExport(name.into())
                         } else if let Some(resolver) = resolver {
-                            exec::SymbolValue::Resolver(resolver, Some(addr))
+                            SymbolValue::Resolver(resolver, Some(addr))
                         } else { match flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
-                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => exec::SymbolValue::Addr(addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => exec::SymbolValue::ThreadLocal(addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => exec::SymbolValue::Abs(addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => SymbolValue::Addr(addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => SymbolValue::ThreadLocal(addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => SymbolValue::Abs(addr),
                             _ => panic!("muri")
                         } },
                         size: None,
@@ -398,9 +509,9 @@ fn fixup_segment_overflow(seg: &mut exec::Segment, sixtyfour: bool) {
 
 fn seg_name_to_macho(seg: &exec::Segment, error_pfx: &str) -> [libc::c_char; 16] {
     let mut name: &ByteStr = if let Some(ref name) = seg.name { &**name } else { ByteStr::from_str("") };
-    if name.len() > 15 {
+    if name.len() > 16 {
         errln!("warning: {} name '{}' is too long, truncating", error_pfx, name);
-        name = &name[..15];
+        name = &name[..16];
     }
     let mut segname: [libc::c_char; 16] = [0; 16];
     for (i, b) in name.iter().enumerate() { segname[i] = *b as i8; }
@@ -422,6 +533,13 @@ struct ParseDyldBindState<'s> {
     typ: u8,
     symbol: Option<&'s ByteStr>,
     already_bound_this_symbol: bool,
+}
+
+struct ReaggregatedSyms {
+    localsym: Vec<u8>,
+    extdefsym: Vec<u8>,
+    undefsym: Vec<u8>,
+    strtab: Vec<u8>,
 }
 
 impl MachO {
@@ -565,7 +683,7 @@ impl MachO {
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB | 
                 LC_FUNCTION_STARTS | LC_DATA_IN_CODE | LC_DYLIB_CODE_SIGN_DRS |
-                LC_LINKER_OPTIMIZATION_HINT | LC_CODE_SIGNATURE => {
+                LC_SEGMENT_SPLIT_INFO | LC_LINKER_OPTIMIZATION_HINT | LC_CODE_SIGNATURE => {
                     for fb in self.linkedit_bits() {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcref: &mut MCRef = unsafe { fb.self_field.get_mut_unsafe(self_) };
@@ -617,9 +735,14 @@ impl MachO {
             lc_off += lc.cmdsize as usize;
             self.load_commands.push(lc_mc.clone()); // unnecessary clone
         }
+        self.update_dyld_base();
+    }
+
+    pub fn update_dyld_base(&mut self) {
         for seg in &self.eb.segments {
-            if seg.fileoff == 0 && seg.filesize != 0 {
+            if seg.fileoff == self.hdr_offset.ext() && seg.filesize != 0 {
                 self.dyld_base = Some(seg.vmaddr);
+                break;
             }
         }
     }
@@ -628,32 +751,26 @@ impl MachO {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
             let slice = &symtab[off..off + self.nlist_size];
-            let (n_value_field, n_type_field, n_desc_field, n_strx_field) = branch!(if (self.is64) {
-                type nlist_x = x_nlist_64;
-            } else {
-                type nlist_x = x_nlist;
-            } then {
-                let nl: nlist_x = util::copy_from_slice(slice, self.eb.endian);
-                (nl.n_value as u64, nl.n_type as u32, nl.n_desc as u32, nl.n_strx as usize)
-            });
+            let nl = copy_nlist_from_slice(slice, self.eb.endian);
 
-            let _n_pext = (n_type_field & N_PEXT) != 0;
-            let _n_stab = (n_type_field & N_STAB) >> 5;
-            let n_type = n_type_field & N_TYPE;
-            let weak = (n_desc_field & (N_WEAK_REF | N_WEAK_DEF)) != 0;
-            let public = (n_type_field & N_EXT) != 0;
-            let name = util::from_cstr(&strtab[n_strx_field..]);
-            let vma = VMA(n_value_field as u64);
-            let vma = if n_desc_field & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
+            let _n_pext = (nl.n_type as u32 & N_PEXT) != 0;
+            let _n_stab = (nl.n_type as u32 & N_STAB) >> 5;
+            let n_type = nl.n_type as u32 & N_TYPE;
+            let weak = (nl.n_desc as u32 & (N_WEAK_REF | N_WEAK_DEF)) != 0;
+            let public = (nl.n_type as u32 & N_EXT) != 0;
+            let name = if nl.n_strx == 0 { ByteStr::from_str("") }
+                                    else { util::from_cstr(&strtab[nl.n_strx as usize..]) };
+            let vma = VMA(nl.n_value as u64);
+            let vma = if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
             let is_obj = self.mh.filetype == MH_OBJECT;
-            let ord = n_desc_field >> 8;
+            let ord = (nl.n_desc >> 8) as u32;
             let val =
-                if n_desc_field & N_SYMBOL_RESOLVER != 0 && is_obj {
+                if nl.n_desc as u32 & N_SYMBOL_RESOLVER != 0 && is_obj {
                     SymbolValue::Resolver(vma, None)
                 } else if n_type == N_UNDF {
                     SymbolValue::Undefined(if is_obj {
                         SourceLib::None
-                    } else if (n_desc_field & N_REF_TO_WEAK != 0) || ord == DYNAMIC_LOOKUP_ORDINAL {
+                    } else if (nl.n_desc as u32 & N_REF_TO_WEAK != 0) || ord == DYNAMIC_LOOKUP_ORDINAL {
                         SourceLib::Flat
                     } else if ord == SELF_LIBRARY_ORDINAL {
                         SourceLib::Self_
@@ -663,9 +780,11 @@ impl MachO {
                         SourceLib::Ordinal((ord - 1) as u32)
                     })
                 } else if n_type == N_INDR {
-                    assert!(n_value_field <= 0xfffffffe);
-                    let indr_name = util::from_cstr(&strtab[n_value_field as usize..]);
+                    assert!(nl.n_value <= 0xfffffffe); // XXX why?
+                    let indr_name = util::from_cstr(&strtab[nl.n_value as usize..]);
                     SymbolValue::ReExport(into_cow(indr_name))
+                } else if n_type == N_ABS {
+                    SymbolValue::Abs(vma)
                 } else {
                     SymbolValue::Addr(vma)
                 };
@@ -716,7 +835,7 @@ impl MachO {
                 seg.vmsize = (linkedit.len() as u64).align_to(page_size);
                 seg.filesize = linkedit.len() as u64;
                 seg.data = Some(MCRef::with_data(&linkedit[..]));
-            } else if seg.fileoff == 0 && seg.filesize > 0 {
+            } else if seg.fileoff == self.hdr_offset.ext() && seg.filesize > 0 {
                 text_idx = Some(i);
             }
         }
@@ -729,12 +848,20 @@ impl MachO {
 
         let initial_cmds = self.update_cmds(0, &linkedit_allocs);
         let cmds_len: usize = initial_cmds.iter().map(Vec::len).sum();
+        let (text_fileoff, text_filesize) = {
+            let text_seg = &self.eb.segments[text_idx];
+            (text_seg.fileoff, text_seg.filesize)
+        };
         // do we have enough space for the LCs?
         let cmds_space_end = max(self.mh.sizeofcmds as usize,
                                  self.eb.sections.iter()
-                                                 .filter(|sect| sect.filesize != 0)
-                                                 .map(|sect| sect.fileoff)
+                                                 .filter(|sect| sect.filesize != 0 &&
+                                                                sect.seg_idx == Some(text_idx))
+                                                 .map(|sect| sect.fileoff - text_fileoff)
                                                  .min().unwrap_or(0).narrow().unwrap());
+        if cmds_space_end as u64 > text_filesize {
+            return err(ErrorKind::BadData, "load commands go past __TEXT");
+        }
         let header_size = if self.is64 { size_of::<mach_header_64>() } else { size_of::<mach_header>() };
         let cmds_space = some_or!(cmds_space_end.check_sub(header_size),
                                   return err(ErrorKind::BadData,
@@ -856,6 +983,7 @@ impl MachO {
             (LC_SYMTAB, size_of::<symtab_command>()),
             (LC_DYSYMTAB, size_of::<dysymtab_command>()),
             (LC_DYLIB_CODE_SIGN_DRS, size_of::<linkedit_data_command>()),
+            (LC_SEGMENT_SPLIT_INFO, size_of::<linkedit_data_command>()),
             (LC_FUNCTION_STARTS, size_of::<linkedit_data_command>()),
             (LC_DATA_IN_CODE, size_of::<linkedit_data_command>()),
             (LC_LINKER_OPTIMIZATION_HINT, size_of::<linkedit_data_command>()),
@@ -907,10 +1035,11 @@ impl MachO {
                         LC_SYMTAB => Some(1),
                         LC_DYSYMTAB => Some(2),
                         LC_DYLIB_CODE_SIGN_DRS => Some(3),
-                        LC_FUNCTION_STARTS => Some(4),
-                        LC_DATA_IN_CODE => Some(5),
-                        LC_LINKER_OPTIMIZATION_HINT => Some(6),
-                        LC_CODE_SIGNATURE => Some(7),
+                        LC_SEGMENT_SPLIT_INFO => Some(4),
+                        LC_FUNCTION_STARTS => Some(5),
+                        LC_DATA_IN_CODE => Some(6),
+                        LC_LINKER_OPTIMIZATION_HINT => Some(7),
+                        LC_CODE_SIGNATURE => Some(8),
                         _ => None
                     } {
                         if let Some(new_cmd) = bit_cmds[idx].take() {
@@ -1190,6 +1319,156 @@ impl MachO {
                 }
             }
         }
+    }
+
+    pub fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> Result<ReaggregatedSyms, &'static str> {
+        // Three sources: the localSymbol section of the cache (dsc_tabs), our own symtab, and the export table
+        let end = self.eb.endian;
+        let is64 = self.is64;
+        let arch = self.eb.arch;
+        let mut res = ReaggregatedSyms {
+            localsym: Vec::new(),
+            extdefsym: Vec::new(),
+            undefsym: Vec::new(),
+            strtab: vec![b'\0'],
+        };
+        let mut str_to_strtab_pos: HashMap<ByteString, u32, _> = util::new_fnv_hashmap();
+        // Why have this map?
+        // 1. just in case a <redacted> is the only symbol we have for something, which shouldn't
+        //    ever happen, but...
+        // 2. to account for exports that are still in the symbol table.  dsc_extractor assumes it
+        //    only needs to care about reexports; I think absolute symbols should also be in that
+        //    list, but it's more robust to manually check for overlap.
+        let mut seen_symbols_by_addr: HashMap<u64, Vec<ByteString>, _> = util::new_fnv_hashmap();
+        {
+        let strtab = &mut res.strtab;
+        let add_string = |s: &ByteStr| -> u32 {
+            *str_to_strtab_pos.entry(s.to_owned()).or_insert_with(|| {
+                let pos = strtab.len();
+                if pos >= (std::u32::MAX as usize) - s.len() {
+                    errln!("add_string: strtab way too big");
+                    return 0;
+                }
+                strtab.extend_from_slice(&*s);
+                strtab.push(b'\0');
+                pos as u32
+            })
+        };
+        {
+            // this whole thing is similar to get_symbol_list, but i want to copy directly
+            let strx_to_name = |strtab: &'a [u8], strx: u64| -> &ByteStr {
+                // todo: fix push_nlist_symbols to use this kind of logic
+                if strx == 0 {
+                    ByteStr::from_str("")
+                } else if strx >= strtab.len() as u64 {
+                    errln!("reaggregate_nlist_syms_from_cache: strx out of range");
+                    ByteStr::from_str("<?>")
+                } else {
+                    util::from_cstr(&strtab[strx as usize..])
+                }
+            };
+
+            let do_nlist = |symtab: &[u8], strtab: &[u8], start, count| {
+                let input = &symtab[start..start+(count*self.nlist_size)];
+                for nlb in input.chunks(self.nlist_size) {
+                    let nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
+                    let mut addr = nl.n_value;
+                    if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { addr |= 1; }
+                    let name = strx_to_name(strtab, nl.n_strx as u64);
+                    if let Some(names) = seen_symbols_by_addr.get_mut(&addr) {
+                        // so there are existing symbols here...
+                        if name == ByteStr::from_str("<redacted>") ||
+                           names.iter().any(|n| &**n == name) {
+                            continue;
+                        }
+                    }
+                    nl.n_strx = add_string(name);
+                    let n_type = nl.n_type as u32 & N_TYPE;
+                    if n_type == N_INDR {
+                        let imp_name = strx_to_name(strtab, nl.n_value);
+                        nl.n_value = add_string(imp_name) as u64;
+                    }
+                    let which = if n_type == N_UNDF {
+                        &mut res.undefsym
+                    } else if nl.n_type as u32 & N_EXT != 0 {
+                        &mut res.extdefsym
+                    } else {
+                        &mut res.localsym
+                    };
+                    copy_nlist_to_vec(which, &nl, end, is64);
+                }
+            };
+            do_nlist(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size);
+            // must come second due to redacted check
+            if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
+                do_nlist(symtab.get(), strtab.get(), start as usize, count as usize);
+            }
+        }
+        // for the conversion I may as well just use it
+        for sym in self.get_symbol_list(SymbolSource::Exported, None) {
+            let name = &*sym.name;
+            // this is not quite right due to different types
+            if let Some(addr) = match sym.val {
+                SymbolValue::Addr(vma) => Some(vma.0),
+                SymbolValue::Abs(vma) => Some(vma.0),
+                SymbolValue::ThreadLocal(vma) => Some(vma.0),
+                SymbolValue::Resolver(vma, _) => Some(vma.0),
+                _ => None
+            } {
+                if let Some(names) = seen_symbols_by_addr.get_mut(&addr) {
+                    if names.iter().any(|n| &**n == name) {
+                        continue;
+                    }
+                }
+            }
+            let nl = try!(exec_sym_to_nlist_64(
+                &sym,
+                add_string(name),
+                if let SymbolValue::ReExport(ref imp_name) = sym.val {
+                    Some(add_string(imp_name))
+                } else { None },
+                arch,
+                &mut || { // is_text
+                    // cheat because absolute symbols are probably not text :$
+                    false
+                }
+            ));
+            copy_nlist_to_vec(if let SymbolValue::Undefined(_) = sym.val {
+                &mut res.undefsym
+            } else if sym.is_public {
+                &mut res.extdefsym
+            } else {
+                &mut res.localsym
+            }, &nl, end, is64);
+        }
+        } // release str_to_strtab_pos
+        Ok(res)
+    }
+
+    pub fn unbind(&mut self) {
+        // helps IDA
+
+    }
+    pub fn fix_objc_from_cache(&mut self, dc: &DyldCache) {
+
+    }
+    pub fn extract_as_necessary(&mut self) -> exec::ExecResult<()> {
+        if self.hdr_offset != 0 {
+            // we're in a cache...
+            let res = try!(self.reaggregate_nlist_syms_from_cache()
+                           .map_err(|e| err(ErrorKind::other, e)));
+            self.localsym = MCRef::with_data(&res.localsym);
+            self.extdefsym = MCRef::with_data(&res.extdefsym);
+            self.undefsym = MCRef::with_data(&res.undefsym);
+            self.strtab = MCRef::with_data(&res.strtab);
+            self.xsym_to_symtab();
+            let dc = DyldCache::new(self.eb.whole_buf.clone(), false).unwrap();
+            self.fix_objc_from_cache(&dc);
+            self.unbind();
+        }
+        try!(self.reallocate());
+        self.rewhole();
+        Ok(())
     }
 }
 

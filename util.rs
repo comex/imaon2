@@ -23,8 +23,10 @@ use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::hash::{Hasher};
+use std::hash::{Hasher, Hash, BuildHasherDefault};
+use std::collections::HashMap;
 
+use deps::fnv::FnvHasher;
 use deps::nodrop::NoDrop;
 
 pub use Endian::*;
@@ -37,6 +39,7 @@ pub use trivial_hasher::*;
 mod small_vector;
 pub use small_vector::SmallVector;
 
+#[inline]
 pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
@@ -88,8 +91,16 @@ impl Default for Endian {
     fn default() -> Endian { BigEndian }
 }
 
+impl Endian {
+    #[inline(always)]
+    pub fn needs_swap(self) -> bool {
+        self == BigEndian
+    }
+}
+
 pub trait Swap {
     fn bswap(&mut self);
+    #[inline]
     fn bswap_from(&mut self, end: Endian) {
         if end == BigEndian { self.bswap() }
     }
@@ -105,6 +116,7 @@ pub trait CheckMath<Other, Dummy> {
 
 macro_rules! impl_int {($ty:ident) => {
     impl Swap for $ty {
+        #[inline]
         fn bswap(&mut self) {
             *self = self.swap_bytes();
         }
@@ -480,6 +492,7 @@ impl Debug for MCRef {
 
 impl MCRef {
     pub fn with_data(data: &[u8]) -> MCRef {
+        // XXX make this more efficient (vec version)
         let mut mm = MemoryMap::with_fd_size(None, data.len());
         copy_memory(data, mm.get_mut());
         MCRef::with_mm(mm)
@@ -825,4 +838,8 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
     pub unsafe fn get_mut_unsafe(&self, outer: *mut Outer) -> &mut Inner {
         transmute(transmute::<*mut Outer, *mut u8>(outer).offset(self.offset as isize))
     }
+}
+
+pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, BuildHasherDefault<FnvHasher>> {
+    HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default())
 }
