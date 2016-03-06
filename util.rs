@@ -113,6 +113,10 @@ macro_rules! impl_int {($ty:ident) => {
         fn from_str_radix(src: &str, radix: u32) -> Result<$ty, ParseIntError> {
             $ty::from_str_radix(src, radix)
         }
+        fn align_to(self, size: $ty) -> $ty {
+            let mask = size - 1;
+            (self + mask) & !mask
+        }
     }
     impl CheckMath<$ty, $ty> for $ty {
         type Output = $ty;
@@ -677,6 +681,7 @@ pub trait IntStuffSU : Sized {
 
 pub trait IntStuff : IntStuffSU {
     fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError>;
+    fn align_to(self, size: Self) -> Self;
 }
 
 

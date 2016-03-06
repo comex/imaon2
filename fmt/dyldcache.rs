@@ -228,9 +228,9 @@ impl DyldCache {
         };
         if inner_sects {
             for ii in &dc.image_info {
-                // todo better 
+                // todo better
                 let prefix = ByteString::concat2(get_basename(ii), ":".into());
-                if let Ok(mut mo) = dc.load_single_image(ii) {
+                if let Ok(mo) = dc.load_single_image(ii) {
                     for sect in mo.eb.sections.into_iter()
                          .chain(mo.eb.segments.into_iter()) {
                         dc.eb.sections.push(

@@ -245,7 +245,7 @@ fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {
     if let Some(out_file) = m.opt_str("extract") {
         // TODO generic
         let macho = get_macho(ex);
-        macho.reallocate();
+        macho.reallocate().unwrap();
         macho.rewhole();
         let mut fp = fs::File::create(&Path::new(&out_file)).unwrap();
         fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();

@@ -11,15 +11,14 @@ extern crate collections;
 extern crate libc;
 extern crate macho_bind;
 extern crate deps;
-use deps::vec_map;
 use std::default::Default;
 use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::HashSet;
@@ -149,10 +148,11 @@ pub struct MachO {
     // linkedit_data_commands
     pub function_starts: MCRef,
     pub data_in_code: MCRef,
+    pub linker_optimization_hint: MCRef,
     pub dylib_code_sign_drs: MCRef,
     pub code_signature: MCRef,
 
-    _linkedit_bits: Option<[LinkeditBit; 20]>,
+    _linkedit_bits: Option<[LinkeditBit; 21]>,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
@@ -187,34 +187,43 @@ macro_rules! lbit {
     ($self_field:ident, $cmd_id:ident, $cmd_type:ty, $off_field:ident, $size_field:ident, $divi:expr) => { lbit!($self_field, $cmd_id, $cmd_type, $off_field, $size_field, $divi, false) }
 }
 
-fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 20] {
+fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 21] {
     let nlist_size = if is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
     [
-        lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, nlist_size), // must be first
-        lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
-
+        // section relocations here?
         lbit!(dyld_rebase, LC_DYLD_INFO, dyld_info_command, rebase_off, rebase_size, 1),
         lbit!(dyld_bind, LC_DYLD_INFO, dyld_info_command, bind_off, bind_size, 1),
         lbit!(dyld_weak_bind, LC_DYLD_INFO, dyld_info_command, weak_bind_off, weak_bind_size, 1),
         lbit!(dyld_lazy_bind, LC_DYLD_INFO, dyld_info_command, lazy_bind_off, lazy_bind_size, 1),
         lbit!(dyld_export, LC_DYLD_INFO, dyld_info_command, export_off, export_size, 1),
 
-        lbit!(localsym, LC_DYSYMTAB, dysymtab_command, ilocalsym, nlocalsym, nlist_size, /* is_symtab */ true),
-        lbit!(extdefsym, LC_DYSYMTAB, dysymtab_command, iextdefsym, nextdefsym, nlist_size, /* is_symtab */ true),
-        lbit!(undefsym, LC_DYSYMTAB, dysymtab_command, iundefsym, nundefsym, nlist_size, /* is_symtab */ true),
+        lbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
+        // splitseg
+        lbit!(function_starts, LC_FUNCTION_STARTS, linkedit_data_command, dataoff, datasize, 1),
+        lbit!(data_in_code, LC_DATA_IN_CODE, linkedit_data_command, dataoff, datasize, 1),
 
+        lbit!(linker_optimization_hint, LC_LINKER_OPTIMIZATION_HINT, linkedit_data_command, dataoff, datasize, 1),
+        lbit!(dylib_code_sign_drs, LC_DYLIB_CODE_SIGN_DRS, linkedit_data_command, dataoff, datasize, 1),
+
+        lbit!(symtab, LC_SYMTAB, symtab_command, symoff, nsyms, nlist_size), // ...not first anymore?
+        lbit!(extrel, LC_DYSYMTAB, dysymtab_command, extreloff, nextrel, size_of::<relocation_info>()),
+        lbit!(indirectsym, LC_DYSYMTAB, dysymtab_command, indirectsymoff, nindirectsyms, 4),
+        lbit!(strtab, LC_SYMTAB, symtab_command, stroff, strsize, 1),
+
+
+        // ld doesn't actually generate these anymore, so can't tell where it should go
         lbit!(modtab, LC_DYSYMTAB, dysymtab_command, modtaboff, nmodtab,
               if is64 { size_of::<dylib_module_64>() } else { size_of::<dylib_module>() }),
         lbit!(toc, LC_DYSYMTAB, dysymtab_command, tocoff, ntoc, size_of::<dylib_table_of_contents>()),
         lbit!(extrefsym, LC_DYSYMTAB, dysymtab_command, extrefsymoff, nextrefsyms, size_of::<dylib_reference>()),
-        lbit!(indirectsym, LC_DYSYMTAB, dysymtab_command, indirectsymoff, nindirectsyms, 4),
-        lbit!(extrel, LC_DYSYMTAB, dysymtab_command, extreloff, nextrel, size_of::<relocation_info>()),
-        lbit!(locrel, LC_DYSYMTAB, dysymtab_command, locreloff, nlocrel, size_of::<relocation_info>()),
 
-        lbit!(function_starts, LC_FUNCTION_STARTS, linkedit_data_command, dataoff, datasize, 1),
-        lbit!(data_in_code, LC_DATA_IN_CODE, linkedit_data_command, dataoff, datasize, 1),
-        lbit!(dylib_code_sign_drs, LC_DYLIB_CODE_SIGN_DRS, linkedit_data_command, dataoff, datasize, 1),
+        // added at the end by codesign
         lbit!(code_signature, LC_CODE_SIGNATURE, linkedit_data_command, dataoff, datasize, 1),
+
+        // order of these compared to the rest doesn't affect anything
+        lbit!(localsym, LC_DYSYMTAB, dysymtab_command, ilocalsym, nlocalsym, nlist_size, /* is_symtab */ true),
+        lbit!(extdefsym, LC_DYSYMTAB, dysymtab_command, iextdefsym, nextdefsym, nlist_size, /* is_symtab */ true),
+        lbit!(undefsym, LC_DYSYMTAB, dysymtab_command, iundefsym, nundefsym, nlist_size, /* is_symtab */ true),
     ]
 }
 
@@ -295,7 +304,7 @@ impl exec::Exec for MachO {
     }
     fn describe_dep_lib(&self, dl: &DepLib) -> String {
         let ld = &self.load_dylib[dl.private];
-        format!("{}{} cur={} compat={}",
+        format!("{}{} timestamp={} cur={} compat={}",
                 ld.path,
                 match ld.kind {
                     LoadDylibKind::Normal   => "",
@@ -303,6 +312,7 @@ impl exec::Exec for MachO {
                     LoadDylibKind::Reexport => " [reexport]",
                     LoadDylibKind::Upward   => " [upward]",
                 },
+                ld.timestamp,
                 ld.current_version,
                 ld.compatibility_version)
     }
@@ -400,7 +410,7 @@ fn seg_name_to_macho(seg: &exec::Segment, error_pfx: &str) -> [libc::c_char; 16]
 trait OKOrTruncated<T> { fn ok_or_truncated(self) -> exec::ExecResult<T>; }
 impl<T> OKOrTruncated<T> for Option<T> {
     fn ok_or_truncated(self) -> exec::ExecResult<T> {
-        if let Some(a) = self { Ok(a) } else { exec::err(exec::ErrorKind::BadData, "truncated") }
+        if let Some(a) = self { Ok(a) } else { err(ErrorKind::BadData, "truncated") }
     }
 }
 
@@ -421,7 +431,7 @@ impl MachO {
         let mut lc_off = try!(hdr_offset.checked_add(size_of::<mach_header>()).ok_or_truncated());
         {
             let buf = mc.get();
-            if buf.len() < lc_off { return exec::err(exec::ErrorKind::BadData, "truncated"); }
+            if buf.len() < lc_off { return err(ErrorKind::BadData, "truncated"); }
             let magic: u32 = util::copy_from_slice(&buf[hdr_offset..hdr_offset+4], util::BigEndian);
             let is64; let end;
             match magic {
@@ -429,7 +439,7 @@ impl MachO {
                 0xfeedfacf => { end = util::BigEndian; is64 = true; }
                 0xcefaedfe => { end = util::LittleEndian; is64 = false; }
                 0xcffaedfe => { end = util::LittleEndian; is64 = true; }
-                _ => return exec::err(exec::ErrorKind::BadData, "bad magic")
+                _ => return err(ErrorKind::BadData, "bad magic")
             }
             me.eb.endian = end;
             me.is64 = is64;
@@ -501,7 +511,6 @@ impl MachO {
             let lc_mc = some_or!(mc.slice(lc_off, lc_off + lc.cmdsize as usize),
                                  { errln!("warning: load commands truncated (cmdsize {} too high?)", lc.cmdsize); return; });
             let lc_buf = lc_mc.get();
-            let this_lc_off = lc_off;
             let mut do_segment = |is64: bool, segs: &mut Vec<exec::Segment>, sects: &mut Vec<exec::Segment>| {
                 branch!(if (is64) {
                     type segment_command_x = segment_command_64;
@@ -556,7 +565,7 @@ impl MachO {
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections),
                 LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB | 
                 LC_FUNCTION_STARTS | LC_DATA_IN_CODE | LC_DYLIB_CODE_SIGN_DRS |
-                LC_CODE_SIGNATURE => {
+                LC_LINKER_OPTIMIZATION_HINT | LC_CODE_SIGNATURE => {
                     for fb in self.linkedit_bits() {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
                             let mcref: &mut MCRef = unsafe { fb.self_field.get_mut_unsafe(self_) };
@@ -674,59 +683,71 @@ impl MachO {
         }
     }
 
+    pub fn page_size(&self) -> u64 {
+        0x1000 // XXX
+    }
+
     pub fn rewhole(&mut self) {
         let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
         let mut mm = util::MemoryMap::with_fd_size(None, new_size as usize);
         {
             let buf = mm.get_mut();
             for seg in &self.eb.segments {
-                copy_memory(seg.get_data(), &mut buf[seg.fileoff as usize..]);
+                let data = seg.get_data();
+                assert_eq!(seg.filesize, data.len() as u64);
+                copy_memory(data, &mut buf[seg.fileoff as usize..seg.fileoff as usize + seg.filesize as usize]);
             }
         }
         self.eb.whole_buf = Some(MCRef::with_mm(mm));
     }
 
-    pub fn reallocate(&mut self) {
+    pub fn reallocate(&mut self) -> exec::ExecResult<()> {
+        self.code_signature = MCRef::default();
         self.xsym_to_symtab();
+        let page_size = self.page_size();
 
         let (linkedit, linkedit_allocs) = self.reallocate_linkedit();
 
-        let mut linkedit_idx: usize = !0;
-        let mut text_idx: usize = !0;
+        let mut linkedit_idx: Option<usize> = None;
+        let mut text_idx: Option<usize> = None;
         for (i, seg) in self.eb.segments.iter_mut().enumerate() {
             if seg.name.as_ref().map(|s| &s[..]) == Some(ByteStr::from_str("__LINKEDIT")) {
-                linkedit_idx = i;
-                seg.vmsize = linkedit.len() as u64;
+                linkedit_idx = Some(i);
+                seg.vmsize = (linkedit.len() as u64).align_to(page_size);
                 seg.filesize = linkedit.len() as u64;
                 seg.data = Some(MCRef::with_data(&linkedit[..]));
             } else if seg.fileoff == 0 && seg.filesize > 0 {
-                text_idx = i;
+                text_idx = Some(i);
             }
         }
-        if text_idx == !0 {
-            panic!("no text segment?");
-        }
-        if linkedit_idx == !0 && linkedit.len() > 0 {
-            panic!("allocating new segments in VM space not supported yet");
+        let text_idx = some_or!(text_idx, {
+            return err(ErrorKind::BadData, "no text segment?");
+        });
+        if linkedit_idx.is_none() && linkedit.len() > 0 {
+            return err(ErrorKind::Other, "allocating new segments in VM space not supported yet");
         }
 
         let initial_cmds = self.update_cmds(0, &linkedit_allocs);
         let cmds_len: usize = initial_cmds.iter().map(Vec::len).sum();
         // do we have enough space for the LCs?
-        let mut cmds_space = self.mh.sizeofcmds as usize;
-        if let Some(sect) = self.eb.sections.get(0) {
-            if sect.seg_idx == Some(text_idx) {
-                cmds_space = sect.fileoff as usize;
-            }
-        }
+        let cmds_space_end = max(self.mh.sizeofcmds as usize,
+                                 self.eb.sections.iter()
+                                                 .filter(|sect| sect.filesize != 0)
+                                                 .map(|sect| sect.fileoff)
+                                                 .min().unwrap_or(0).narrow().unwrap());
         let header_size = if self.is64 { size_of::<mach_header_64>() } else { size_of::<mach_header>() };
-        cmds_space -= header_size;
-        let cmds_push = max(0, cmds_len as isize - cmds_space as isize) as usize;
+        let cmds_space = some_or!(cmds_space_end.check_sub(header_size),
+                                  return err(ErrorKind::BadData,
+                                             "sizeofcmds too small"));
+        let cmds_push = cmds_len.check_sub(cmds_space).unwrap_or(0);
+        if cmds_push > 0 {
+            return err(ErrorKind::Other, "need to slide in this case; not supported yet");
+        }
         self.eb.segments[0].filesize += cmds_push as u64;
 
         self.reallocate_seg_offsets();
 
-        let cmds = self.update_cmds(if linkedit_idx == !0 { 0 } else { self.eb.segments[linkedit_idx].fileoff as usize }, &linkedit_allocs);
+        let cmds = self.update_cmds(if let Some(li) = linkedit_idx { self.eb.segments[li].fileoff as usize } else { 0 }, &linkedit_allocs);
         assert_eq!(cmds_len, cmds.iter().map(Vec::len).sum());
 
         self.mh.ncmds = cmds.len() as u32;
@@ -741,7 +762,7 @@ impl MachO {
             util::copy_to_slice(&mut sbuf[..size_of::<mach_header>()], &self.mh, self.eb.endian);
             let mut off = header_size;
             for cmd in &cmds {
-                copy_memory(&cmd[..], &mut sbuf[off..]);
+                copy_memory(&cmd[..], &mut sbuf[off..off+cmd.len()]);
                 off += cmd.len();
             }
             let smc = MCRef::with_data(&sbuf[..]);
@@ -754,6 +775,7 @@ impl MachO {
                 off += cmd.len();
             }
         }
+        Ok(())
     }
 
     fn reallocate_linkedit(&self) -> (Vec<u8>, Vec<(usize, usize)>) {
@@ -773,6 +795,7 @@ impl MachO {
     }
 
     fn reallocate_seg_offsets(&mut self) {
+        let page_size = self.page_size();
         for sect in &mut self.eb.sections {
             if sect.filesize != 0 {
                 sect.fileoff -= self.eb.segments[sect.seg_idx.expect("sect not belonging to seg?")].fileoff;
@@ -781,7 +804,7 @@ impl MachO {
         let mut off: u64 = 0;
         for seg in &mut self.eb.segments {
             seg.fileoff = off;
-            off += (seg.filesize + 0xfff) & !0xfff;
+            off += seg.filesize.align_to(page_size);
         }
         for sect in &mut self.eb.sections {
             if sect.filesize == 0 {
@@ -828,17 +851,17 @@ impl MachO {
             }
         }
 
-        let mut bit_cmds: [Option<Vec<u8>>; 7] = [None, None, None, None, None, None, None];
-
-        for (i, &(cmd, cmdsize)) in [
+        let mut bit_cmds = [
             (LC_DYLD_INFO, size_of::<dyld_info_command>()),
             (LC_SYMTAB, size_of::<symtab_command>()),
             (LC_DYSYMTAB, size_of::<dysymtab_command>()),
-            (LC_DATA_IN_CODE, size_of::<linkedit_data_command>()),
             (LC_DYLIB_CODE_SIGN_DRS, size_of::<linkedit_data_command>()),
-            (LC_CODE_SIGNATURE, size_of::<linkedit_data_command>()),
             (LC_FUNCTION_STARTS, size_of::<linkedit_data_command>()),
-        ].iter().enumerate() {
+            (LC_DATA_IN_CODE, size_of::<linkedit_data_command>()),
+            (LC_LINKER_OPTIMIZATION_HINT, size_of::<linkedit_data_command>()),
+            // for consistency, code_signature is here, but reallocate() nukes it
+            (LC_CODE_SIGNATURE, size_of::<linkedit_data_command>()),
+        ].iter().map(|&(cmd, cmdsize)| {
             let mut buf: Vec<u8> = Vec::new();
             buf.resize(cmdsize, 0);
             util::copy_to_slice(&mut buf[0..8], &load_command {
@@ -848,7 +871,9 @@ impl MachO {
             let mut got_any = false;
             for (fb, &(mut off, len)) in self.linkedit_bits().iter().zip(linkedit_allocs) {
                 if cmd == fb.cmd_id {
-                    if fb.is_symtab {
+                    if len == 0 {
+                        off = 0;
+                    } else if fb.is_symtab {
                         off /= fb.elm_size;
                     } else {
                         off += linkedit_off;
@@ -860,9 +885,8 @@ impl MachO {
                     }
                 }
             }
-            if !got_any { continue; }
-            bit_cmds[i] = Some(buf);
-        }
+            if got_any { Some(buf) } else { None }
+        }).collect::<Vec<_>>();
 
 
         for (lci, cmd) in self.load_commands.iter().enumerate() {
@@ -882,10 +906,11 @@ impl MachO {
                         LC_DYLD_INFO | LC_DYLD_INFO_ONLY => Some(0),
                         LC_SYMTAB => Some(1),
                         LC_DYSYMTAB => Some(2),
-                        LC_DATA_IN_CODE => Some(3),
-                        LC_DYLIB_CODE_SIGN_DRS => Some(4),
-                        LC_CODE_SIGNATURE => Some(5),
-                        LC_FUNCTION_STARTS => Some(6),
+                        LC_DYLIB_CODE_SIGN_DRS => Some(3),
+                        LC_FUNCTION_STARTS => Some(4),
+                        LC_DATA_IN_CODE => Some(5),
+                        LC_LINKER_OPTIMIZATION_HINT => Some(6),
+                        LC_CODE_SIGNATURE => Some(7),
                         _ => None
                     } {
                         if let Some(new_cmd) = bit_cmds[idx].take() {
@@ -897,8 +922,8 @@ impl MachO {
                 },
             }
         }
-        for cmd in &mut bit_cmds { // XXX into_iter is borked
-            if let Some(cmd) = cmd.take() { cmds.push(cmd); }
+        for cmd in bit_cmds {
+            if let Some(cmd) = cmd { cmds.push(cmd); }
         }
         let mut insert_extra_segs_idx = insert_extra_segs_idx.unwrap_or(cmds.len());
         for (_, new_cmd) in existing_segs.into_iter() {
@@ -918,8 +943,6 @@ impl MachO {
         for (segi, seg) in self.eb.segments.iter().enumerate() {
             let lci = seg.private;
             let cmd = if self.is64 { LC_SEGMENT_64 } else { LC_SEGMENT };
-            let sects: Vec<&exec::Segment> = self.eb.sections.iter().filter(|seg| seg.seg_idx == Some(segi)).collect();
-            let nsects = sects.len();
             let segname = seg_name_to_macho(&seg, "update_seg_cmds: segment");
             let mut new_cmd = Vec::<u8>::new();
             let olcbuf = if lci != usize::MAX { Some(self.load_commands[lci].get()) } else { None };
@@ -955,10 +978,10 @@ impl MachO {
                 util::copy_to_vec(&mut new_cmd, &sc, self.eb.endian);
 
                 let mut nsects: usize = 0;
-                for sect in self.eb.sections.iter().filter(|seg| seg.seg_idx == Some(segi)) {
-                    let mut snc: section_x = if let Some(ref lcbuf) = olcbuf {
+                for sect in self.eb.sections.iter().filter(|sect| sect.seg_idx == Some(segi)) {
+                    let mut snc: section_x = if sect.private != usize::MAX {
                         let off = size_of::<segment_command_x>() + sect.private * size_of::<section_x>();
-                        util::copy_from_slice(&lcbuf[off..off+size_of::<section_x>()], self.eb.endian)
+                        util::copy_from_slice(&olcbuf.unwrap()[off..off+size_of::<section_x>()], self.eb.endian)
                     } else {
                         Default::default()
                     };
@@ -984,6 +1007,7 @@ impl MachO {
         }
         (existing_segs, extra_segs)
     }
+
     fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
         let pointer_size = if self.is64 { 8 } else { 4 };
         let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
@@ -1278,11 +1302,11 @@ impl exec::ExecProber for FatMachOProber {
             }
         });
         if !ok {
-            return exec::err(exec::ErrorKind::BadData, "invalid fat mach-o");
+            return err(ErrorKind::BadData, "invalid fat mach-o");
         }
         match result {
             Some(e) => e,
-            None => exec::err(exec::ErrorKind::Other, "no fat arch matched the arguments specified")
+            None => err(ErrorKind::Other, "no fat arch matched the arguments specified")
         }
     }
 }
