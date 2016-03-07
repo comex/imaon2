@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::collections::HashSet;
 use std::any::Any;
 use std;
-use util::ByteStr;
+use util::{ByteStr, CheckMath};
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
 pub struct ImageInfo {
     pub address: u64,
@@ -43,7 +43,8 @@ fn range_check(big: (usize, usize), little: (usize, usize)) {
 }
 */
 
-fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, mut func: F) -> bool where F: FnMut(u64) {
+pub fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, range: Option<(u64, u64)>,
+                          mut func: F) -> bool where F: FnMut(u64) {
     let slice = blob.get();
     let size = size_of::<dyld_cache_slide_info>();
     if blob.len() < size {
@@ -58,7 +59,6 @@ fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, mut func: F) -> bool wher
     let toc = ::file_array_64(blob, "toc", slide_info.toc_offset as u64,
                                            slide_info.toc_count as u64,
                                            2);
-    let toc_iter = toc.get().chunks(2);
     let entries_size = slide_info.entries_size as usize;
     let entries = ::file_array_64(blob, "entries", slide_info.entries_offset as u64,
                                                    slide_info.entries_count as u64,
@@ -69,8 +69,27 @@ fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, mut func: F) -> bool wher
     }
     let entries = entries.get();
     let granularity = 4;
-    let true_entries_count = entries.len() / entries_size;
     let entry_bytes = entries_size * 8 * granularity;
+
+
+    let mut toc = toc.get();
+    let (base_off, range_size) = if let Some((start, size)) = range {
+        let eb = entry_bytes as u64;
+        let s = start / eb * 2;
+        let e = some_or!(start.check_add(size).check_add(eb - 1),
+                         { errln!("iter_slide_info: range overflow"); return false; })
+                / eb * 2;
+        println!("{} {} {}", s, e, toc.len());
+        let e = min(e, toc.len() as u64);
+        let s = min(s, e);
+        toc = &toc[s as usize..e as usize];
+        (start % eb, size)
+    } else {
+        (0, !0)
+    };
+    let toc_iter = toc.chunks(2);
+
+    let true_entries_count = entries.len() / entries_size;
     for (i, idx_blob) in toc_iter.enumerate() {
         let idx: u16 = util::copy_from_slice(idx_blob, end);
         if idx as usize >= true_entries_count {
@@ -79,11 +98,12 @@ fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, mut func: F) -> bool wher
         }
         let off = (idx as usize) * entries_size;
         let subblob = &entries[off..off+entries_size];
-        let mut addr_off = entry_bytes * (idx as usize);
+        let mut addr_off = (entry_bytes * i) as u64;
         for &c in subblob.iter() {
             for j in 0..8 {
-                if (c >> j) & 1 != 0 {
-                    func(addr_off as u64);
+                if (c >> j) & 1 != 0 &&
+                    addr_off.wrapping_sub(base_off) < range_size {
+                    func(addr_off - base_off);
                 }
                 addr_off += 4;
             }
@@ -144,7 +164,9 @@ impl DyldCache {
             let ls_mc = ::file_array_64(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1);
             let so = size_of::<dyld_cache_local_symbols_info>() as u64;
             if hdr.localSymbolsSize < so {
-                errln!("local symbols blob too small for header");
+                if hdr.localSymbolsSize > 0 {
+                    errln!("local symbols blob too small for header");
+                }
                 None
             } else {
                 let ls_hdr: dyld_cache_local_symbols_info = util::copy_from_slice(&ls_mc.get()[..so as usize], end);
@@ -285,8 +307,9 @@ impl exec::Exec for DyldCache {
             return ret;
         });
         let (data_addr, data_size) = (data_seg.vmaddr, data_seg.vmsize);
-        iter_slide_info(&slide_info_blob,
+        iter_slide_info(slide_info_blob,
                         self.eb.endian,
+                        None,
                         |offset| {
             if offset > data_size {
                 errln!("DyldCache::get_reloc_list: reloc out of bounds ({} data_size={})",

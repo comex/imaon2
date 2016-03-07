@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn)]
+#![feature(collections, libc, iter_arith, const_fn, copy_from_slice)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -24,8 +24,7 @@ use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
 use std::borrow::Cow;
-use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState};
-use std::cell::Cell;
+use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
 
 pub mod dyldcache;
 use dyldcache::DyldCache;
@@ -269,7 +268,7 @@ pub struct MachO {
     _linkedit_bits: Option<[LinkeditBit; 22]>,
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
 enum WhichBind {
     Bind = 0,
     WeakBind = 1,
@@ -347,6 +346,7 @@ impl exec::Exec for MachO {
     }
 
     fn get_symbol_list<'a>(&'a self, source: SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol<'a>> {
+        let _sw = stopwatch("get_symbol_list");
         assert!(specific.is_none());
         match source {
             SymbolSource::All => {
@@ -361,26 +361,18 @@ impl exec::Exec for MachO {
             },
             SymbolSource::Imported => {
                 let mut out = Vec::new();
-                {
-                let which = Cell::new(WhichBind::Bind);
-                let mut cb = |state: &ParseDyldBindState<'a>| {
+                self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
                     if state.already_bound_this_symbol { return; }
                     out.push(exec::Symbol {
                         name: some_or!(state.symbol, { return; }).into(),
                         is_public: true,
                         // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
-                        is_weak: which.get() == WhichBind::WeakBind,
+                        is_weak: state.which == WhichBind::WeakBind,
                         val: SymbolValue::Undefined(state.source_dylib),
                         size: None,
                         private: 0,
                     });
-                };
-                self.parse_dyld_bind(self.dyld_bind.get(), which.get(), &mut cb);
-                which.set(WhichBind::WeakBind);
-                self.parse_dyld_bind(self.dyld_weak_bind.get(), which.get(), &mut cb);
-                which.set(WhichBind::LazyBind);
-                self.parse_dyld_bind(self.dyld_lazy_bind.get(), which.get(), &mut cb);
-                }
+                });
                 out
             },
             SymbolSource::Exported => {
@@ -530,12 +522,15 @@ impl<T> OKOrTruncated<T> for Option<T> {
 
 struct ParseDyldBindState<'s> {
     source_dylib: SourceLib,
-    addr: Option<VMA>,
-    seg_end: VMA,
+    seg: Option<&'s exec::Segment>,
+    seg_idx: usize,
+    seg_off: Option<u64>,
+    seg_size: u64,
     addend: i64,
     typ: u8,
     symbol: Option<&'s ByteStr>,
     already_bound_this_symbol: bool,
+    which: WhichBind,
 }
 
 struct ReaggregatedSyms {
@@ -810,6 +805,7 @@ impl MachO {
     }
 
     pub fn rewhole(&mut self) {
+        let _sw = stopwatch("rewhole");
         let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
         let mut mm = util::MemoryMap::with_fd_size(None, new_size as usize);
         {
@@ -824,6 +820,7 @@ impl MachO {
     }
 
     pub fn reallocate(&mut self) -> exec::ExecResult<()> {
+        let _sw = stopwatch("reallocate");
         self.code_signature = MCRef::default();
         self.xsym_to_symtab();
         let page_size = self.page_size();
@@ -857,10 +854,15 @@ impl MachO {
         };
         // do we have enough space for the LCs?
         let cmds_space_end = max(self.mh.sizeofcmds as usize,
-                                 self.eb.sections.iter()
+                                 self.eb.sections.iter_mut()
                                                  .filter(|sect| sect.filesize != 0 &&
                                                                 sect.seg_idx == Some(text_idx))
-                                                 .map(|sect| sect.fileoff - text_fileoff)
+                                                 .map(|sect| {
+                                                    if sect.fileoff < text_fileoff {
+                                                        sect.fileoff += text_fileoff; // ???
+                                                    }
+                                                   sect.fileoff - text_fileoff
+                                                 })
                                                  .min().unwrap_or(0).narrow().unwrap());
         if cmds_space_end as u64 > text_filesize {
             return err(ErrorKind::BadData, "load commands go past __TEXT");
@@ -1140,6 +1142,12 @@ impl MachO {
         (existing_segs, extra_segs)
     }
 
+    fn parse_each_dyld_bind<'a>(&'a self, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
+        self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, cb);
+        self.parse_dyld_bind(self.dyld_weak_bind.get(), WhichBind::WeakBind, cb);
+        self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, cb);
+    }
+
     fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
         let pointer_size = if self.is64 { 8 } else { 4 };
         let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
@@ -1150,28 +1158,45 @@ impl MachO {
             if let Some(num) = leb(&mut slice, $signed) { num } else { return }
         } }
         let advance = |state: &mut ParseDyldBindState, amount: u64| {
-            if let Some(addr) = state.addr {
-                if amount > state.seg_end - addr {
-                    errln!("warning: parse_dyld_bind: going out of range of segment");
-                    state.addr = Some(addr + amount);
+            if let Some(off) = state.seg_off {
+                // This seems to be a bug in whatever is generating these files - we get 'negative'
+                // values which are actually high ulebs, not real negative slebs
+                let new = off.wrapping_add(amount);
+                //println!("amount={:x} now={:x} name={:?}", amount, state.seg.unwrap().vmaddr.0.wrapping_add(new), state.symbol);
+                if new > state.seg_size {
+                    errln!("warning: parse_dyld_bind: going out of range of segment (off={:x}, size={:x}, adv={:x}), addr={}",
+                           off, state.seg_size, amount, state.seg.unwrap().vmaddr);
+                    state.seg_off = None;
                 } else {
-                    state.addr = None;
+                    state.seg_off = Some(new);
                 }
             }
         };
-        let mut bind_advance = |state: &mut _, amount: u64| {
+        let mut bind_advance = |state: &mut ParseDyldBindState<'a>, amount: u64| {
+            if let Some(off) = state.seg_off {
+                let bind_size = if state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
+                                   state.typ == (BIND_TYPE_TEXT_PCREL32 as u8)
+                                   { 4 } else { pointer_size };
+                if state.seg_size - off < bind_size {
+                    errln!("warning: parse_dyld_bind: bind reaches off end");
+                    state.seg_off = None;
+                }
+            }
             cb(state);
             state.already_bound_this_symbol = true;
             advance(state, amount);
         };
         let mut state = ParseDyldBindState {
             source_dylib: SourceLib::None,
-            addr: None,
-            seg_end: VMA::default(),
+            seg: None,
+            seg_idx: 0,
+            seg_off: None,
+            seg_size: 0,
             addend: 0,
             typ: if which == WhichBind::LazyBind { BIND_TYPE_POINTER as u8 } else { 0 },
             symbol: None,
             already_bound_this_symbol: false,
+            which: which,
         };
         let set_dylib_ordinal = |state: &mut ParseDyldBindState, ord: u64| {
             let count = self.load_dylib.len().ext();
@@ -1222,18 +1247,21 @@ impl MachO {
                         errln!("parse_dyld_bind: BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: bad segment index {}", immediate);
                         continue;
                     });
-                    state.addr = Some(seg.vmaddr);
-                    state.seg_end = seg.vmaddr + seg.vmsize;
+                    state.seg = Some(seg);
+                    state.seg_idx = immediate.ext();
+                    state.seg_off = Some(0);
+                    state.seg_size = seg.vmsize;
                     advance(&mut state, offset);
                 },
                 BIND_OPCODE_ADD_ADDR_ULEB => advance(&mut state, leb!(false)),
                 BIND_OPCODE_DO_BIND => bind_advance(&mut state, pointer_size),
-                BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB => bind_advance(&mut state, leb!(false)),
+                BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB =>
+                    bind_advance(&mut state, leb!(false) + pointer_size),
                 BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED =>
                     bind_advance(&mut state, (immediate as u64) * pointer_size + pointer_size),
                 BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB => {
                     let count = leb!(false);
-                    let skip = leb!(false);
+                    let skip = leb!(false) + pointer_size;
                     for _ in 0..count {
                         bind_advance(&mut state, skip);
                     }
@@ -1278,8 +1306,10 @@ impl MachO {
                 if flags > 0x1f {
                     errln!("warning: parse_dyld_export: unknown flags (flags=0x{:x})", flags);
                 }
+                let read_addr = leb!(it);
+                //println!("{} {:x}", base_addr, read_addr);
                 let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
-                           + leb!(it);
+                           .wrapping_add(read_addr);
                 let resolver = if flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
                     Some(base_addr + leb!(it))
                 } else { None };
@@ -1332,6 +1362,7 @@ impl MachO {
     }
 
     fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> Result<ReaggregatedSyms, &'static str> {
+        let stopw = stopwatch("reaggregate_nlist_syms_from_cache: sym-to-nl");
         // Three sources: the localSymbol section of the cache (dsc_tabs), our own symtab, and the export table
         let end = self.eb.endian;
         let is64 = self.is64;
@@ -1407,6 +1438,7 @@ impl MachO {
                 &mut res.localsym
             }, &nl, end, is64);
         }
+        stopw.stop();
         {
             // nlist-to-nlist part: this whole thing is similar to get_symbol_list, but i want to copy directly
             let strx_to_name = |strtab: &'a [u8], strx: u64| -> &'a ByteStr {
@@ -1421,7 +1453,8 @@ impl MachO {
                 }
             };
 
-            let mut do_nlist = |symtab: &[u8], strtab: &'a [u8], start, count| {
+            let mut do_nlist = |symtab: &[u8], strtab: &'a [u8], start, count, label| {
+                let sw = stopwatch(label);
                 let input = &symtab[start*self.nlist_size..(start+count)*self.nlist_size];
                 for nlb in input.chunks(self.nlist_size) {
                     let mut nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
@@ -1461,24 +1494,98 @@ impl MachO {
                 }
             };
             if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
-                do_nlist(symtab.get(), strtab.get(), start as usize, count as usize);
+                do_nlist(symtab.get(), strtab.get(), start as usize, count as usize,
+                         "reaggregate_nlist_syms_from_cache: dsctabs");
             }
             // must come last due to redacted check
-            do_nlist(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size);
+            do_nlist(self.symtab.get(), self.strtab.get(), 0, self.symtab.len() / self.nlist_size,
+                     "reaggregate_nlist_syms_from_cache: own");
         }
         } // release str_to_strtab_pos
         Ok(res)
     }
 
     pub fn unbind(&mut self) {
-        // helps IDA
-
+        let _sw = stopwatch("unbind");
+        // helps IDA, because it treats these as 'rel' (addend = whatever's in that slot already)
+        // when they're actually 'rela' (explicit addend).
+        let mut new_contents: Vec<Option<Vec<u8>>> = Vec::new();
+        new_contents.resize(self.eb.segments.len(), None);
+        self.parse_each_dyld_bind(&mut |state| {
+            let seg_off = some_or!(state.seg_off, { return; }) as usize;
+            let mut ncp = &mut new_contents[state.seg_idx];
+            if ncp.is_none() {
+                *ncp = Some(state.seg.as_ref().unwrap().data.as_ref().unwrap().get().to_owned());
+            }
+            let nc = ncp.as_mut().unwrap();
+            if !self.is64 ||
+               state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
+               state.typ == (BIND_TYPE_TEXT_PCREL32 as u8) {
+                   nc[seg_off..seg_off+4].copy_from_slice(&[0; 4]);
+            } else {
+                   nc[seg_off..seg_off+8].copy_from_slice(&[0; 8]);
+            }
+        });
+        for (seg, nc) in self.eb.segments.iter_mut().zip(new_contents.into_iter()) {
+            if let Some(nc) = nc {
+                seg.data = Some(MCRef::with_vec(nc));
+            }
+        }
     }
     pub fn fix_objc_from_cache(&mut self, dc: &DyldCache) {
+        let _sw = stopwatch("fix_objc_from_cache");
+        let slide_info_blob = some_or!(dc.slide_info_blob.as_ref(), {
+            errln!("fix_objc_from_cache: no slide info");
+            return;
+        });
+        let data_name = Some(ByteStr::from_str("__DATA"));
+        let segments = &self.eb.segments[..];
+        let data = some_or!(
+                    segments.iter()
+                    .filter(|seg| seg.name.as_ref().map(|s| &**s) == data_name)
+                    .next(),
+                    { return; });
+        let content = data.get_data();
+        let dvmaddr = data.vmaddr;
+        let (is64, end) = (self.is64, self.eb.endian);
+        let dc_data = some_or!(dc.eb.segments.get(1), {
+            errln!("fix_objc_from_cache: no dyldcache data segment");
+            return;
+        });
+        if !(data.vmaddr >= dc_data.vmaddr &&
+             data.vmsize <= (dc_data.vmaddr + dc_data.vmsize - data.vmaddr)) {
+            errln!("fix_objc_from_cache: little data not contained in big data");
+            return;
+        }
+        dyldcache::iter_slide_info(slide_info_blob, self.eb.endian,
+                                   Some((data.vmaddr - dc_data.vmaddr, data.vmsize)),
+                                   |offset| {
+            let ptr = dvmaddr + offset;
+            let offset = offset as usize;
+            let val: u64 = if is64 {
+                util::copy_from_slice(&content[offset..offset+8], end)
+            } else {
+                util::copy_from_slice::<u32>(&content[offset..offset+4], end) as u64
+            };
+            if val == 0 { return; }
+            let val = VMA(val);
+            if exec::addr_to_seg_off_range(segments, val).is_none() {
+                println!("odd {} -> {}", ptr, val);
+
+            } else {
+                println!("ok {} -> {}", ptr, val);
+            }
+        });
 
     }
-    pub fn extract_as_necessary(&mut self) -> exec::ExecResult<()> {
+    pub fn extract_as_necessary(&mut self, mut dc: Option<&DyldCache>) -> exec::ExecResult<()> {
+        let _sw = stopwatch("extract_as_necessary");
         if self.hdr_offset != 0 {
+            let mut x: Option<DyldCache> = None;
+            let dc = if let Some(dc) = dc { dc } else {
+                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), false)));
+                x.as_ref().unwrap()
+            };
             // we're in a cache...
             let res = try!(self.reaggregate_nlist_syms_from_cache()
                            .map_err(|e| exec::err_only(ErrorKind::Other, e)));
@@ -1487,9 +1594,8 @@ impl MachO {
             self.undefsym = MCRef::with_data(&res.undefsym);
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
-            let dc = DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), false).unwrap();
-            self.fix_objc_from_cache(&dc);
             self.unbind();
+            self.fix_objc_from_cache(dc);
         }
         try!(self.reallocate());
         self.rewhole();

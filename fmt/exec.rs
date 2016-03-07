@@ -75,6 +75,9 @@ impl VMA {
         assert!(lo <= hi);
         VMA(lo + (hi - lo) / 2)
     }
+    pub fn wrapping_add(self, addend: u64) -> VMA {
+        VMA(self.0.wrapping_add(addend))
+    }
 }
 // TODO - should this be signed or something?
 impl std::ops::Sub<VMA> for VMA {
@@ -130,7 +133,7 @@ pub struct Segment {
     pub name: Option<ByteString>,
     pub prot: Prot,
     pub data: Option<util::MCRef>,
-    pub seg_idx: Option<usize>, // for sections
+    pub seg_idx: Option<usize>, // for sections, which seg it belongs to
     pub private: usize,
 }
 

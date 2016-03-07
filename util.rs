@@ -1,4 +1,4 @@
-#![feature(libc, plugin, core_intrinsics, const_fn)]
+#![feature(libc, plugin, core_intrinsics, const_fn, time2)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -21,10 +21,11 @@ use std::slice;
 use std::fmt::{Debug, Display, Formatter};
 use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
-use std::cell::UnsafeCell;
+use std::cell::{UnsafeCell, Cell};
 use std::marker::PhantomData;
 use std::hash::{Hasher, Hash, BuildHasherDefault};
 use std::collections::HashMap;
+use std::time::Instant;
 
 use deps::fnv::FnvHasher;
 use deps::nodrop::NoDrop;
@@ -886,4 +887,31 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
 
 pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, BuildHasherDefault<FnvHasher>> {
     HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default())
+}
+
+thread_local!(static STOPWATCH_INDENT: Cell<usize> = Cell::new(0));
+
+pub struct Stopwatch<'a> {
+    pub desc: &'a str,
+    pub start_time: Instant,
+    pub indent: usize,
+}
+pub fn stopwatch(desc: &str) -> Stopwatch {
+    let indent = STOPWATCH_INDENT.with(|cell| {
+        let indent = cell.get();
+        cell.set(indent + 4);
+        indent
+    });
+    Stopwatch { desc: desc, start_time: Instant::now(), indent: indent }
+}
+impl<'a> Stopwatch<'a> {
+    pub fn stop(self) {}
+}
+impl<'a> Drop for Stopwatch<'a> {
+    fn drop(&mut self) {
+        let duration = Instant::now().duration_from_earlier(self.start_time);
+        println!("{blank:spaces$}{desc}: {duration:?}", blank="", spaces=self.indent,
+                 desc=self.desc, duration=duration);
+        STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
+    }
 }
