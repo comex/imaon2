@@ -78,6 +78,9 @@ impl VMA {
     pub fn wrapping_add(self, addend: u64) -> VMA {
         VMA(self.0.wrapping_add(addend))
     }
+    pub fn wrapping_sub(self, other: VMA) -> u64 {
+        self.0.wrapping_sub(other.0)
+    }
 }
 // TODO - should this be signed or something?
 impl std::ops::Sub<VMA> for VMA {

@@ -640,11 +640,13 @@ impl MachO {
                                            { errln!("warning: segment command too small; skipping"); return; });
                     let sc: segment_command_x = util::copy_from_slice(sc_data, end);
                     let segprot = u32_to_prot(sc.initprot as u32);
-                    let data: Option<MCRef> = mc.slice(sc.fileoff as usize, (sc.fileoff+sc.filesize) as usize);
+                    let was_0 = sc.fileoff == 0;
+                    let fileoff = if was_0 { hdr_offset as u64 } else { sc.fileoff as u64 };
+                    let data: Option<MCRef> = mc.slice(fileoff as usize, (fileoff + (sc.filesize as u64)) as usize);
                     let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
-                        fileoff: sc.fileoff as u64,
+                        fileoff: fileoff,
                         filesize: sc.filesize as u64,
                         name: Some(util::from_cstr(&sc.segname).to_owned()),
                         prot: segprot,
@@ -652,7 +654,6 @@ impl MachO {
                         seg_idx: None,
                         private: lci.ext(),
                     };
-                    if seg.fileoff == 0 { seg.fileoff = hdr_offset; }
                     fixup_segment_overflow(&mut seg, is64);
                     segs.push(seg);
                     for secti in 0..sc.nsects {
@@ -668,7 +669,7 @@ impl MachO {
                             seg_idx: Some(segi),
                             private: secti.ext(),
                         };
-                        if seg.fileoff == 0 { seg.fileoff = hdr_offset; }
+                        if was_0 { seg.fileoff += hdr_offset; }
                         fixup_segment_overflow(&mut seg, is64);
                         sects.push(seg);
                         off += size_of::<section_x>();
@@ -857,12 +858,7 @@ impl MachO {
                                  self.eb.sections.iter_mut()
                                                  .filter(|sect| sect.filesize != 0 &&
                                                                 sect.seg_idx == Some(text_idx))
-                                                 .map(|sect| {
-                                                    if sect.fileoff < text_fileoff {
-                                                        sect.fileoff += text_fileoff; // ???
-                                                    }
-                                                   sect.fileoff - text_fileoff
-                                                 })
+                                                 .map(|sect| sect.fileoff - text_fileoff )
                                                  .min().unwrap_or(0).narrow().unwrap());
         if cmds_space_end as u64 > text_filesize {
             return err(ErrorKind::BadData, "load commands go past __TEXT");
@@ -1255,8 +1251,10 @@ impl MachO {
                 },
                 BIND_OPCODE_ADD_ADDR_ULEB => advance(&mut state, leb!(false)),
                 BIND_OPCODE_DO_BIND => bind_advance(&mut state, pointer_size),
-                BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB =>
-                    bind_advance(&mut state, leb!(false) + pointer_size),
+                BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB => {
+                    let add = leb!(false);
+                    bind_advance(&mut state, add.wrapping_add(pointer_size)) // ???
+                },
                 BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED =>
                     bind_advance(&mut state, (immediate as u64) * pointer_size + pointer_size),
                 BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB => {
@@ -1454,7 +1452,7 @@ impl MachO {
             };
 
             let mut do_nlist = |symtab: &[u8], strtab: &'a [u8], start, count, label| {
-                let sw = stopwatch(label);
+                let _sw = stopwatch(label);
                 let input = &symtab[start*self.nlist_size..(start+count)*self.nlist_size];
                 for nlb in input.chunks(self.nlist_size) {
                     let mut nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
@@ -1533,18 +1531,51 @@ impl MachO {
         }
     }
     pub fn fix_objc_from_cache(&mut self, dc: &DyldCache) {
+        /* Optimizations:
+            Harmless/idempotent:
+            - IvarOffsetOptimizer
+            - MethodListSorter 
+            Proto refs moved in:
+            - __objc_classlist -> class in __objc_data -> baseProtocols
+            -                      ^- isa (metaclass) -^
+            - __objc_protorefs (every word)
+            - __objc_protolist -> protocol in __data -> protocols in __objc_const?
+            Selectors moved to other binaries.
+
+            Basically:
+                - If it goes to libobjc:__DATA,__objc_opt_rw, it's a protocol, and we need to check
+                the second pointer to find the name, and compare to the entries in
+                __objc_protolist.
+                - If it goes to another binary, it's a selector name, and we need to find the
+                equivalent string in __objc_methname.
+                - On i386, there's no slide info, so the dumb strategy won't work.
+                - Otherwise, panic.
+         */
+
         let _sw = stopwatch("fix_objc_from_cache");
+
+        let libobjc = some_or!(dc.image_info.iter().find(|ii| ii.path == "libobjc.A.dylib"),
+                               { errln!("fix_objc_from_cache: no libobjc"); return; });
+        filter(map(
+
+        dc.load_single_image(&c.image_info
+
+
         let slide_info_blob = some_or!(dc.slide_info_blob.as_ref(), {
             errln!("fix_objc_from_cache: no slide info");
             return;
         });
         let data_name = Some(ByteStr::from_str("__DATA"));
+        let got_name = Some(ByteStr::from_str("__got"));
         let segments = &self.eb.segments[..];
         let data = some_or!(
                     segments.iter()
                     .filter(|seg| seg.name.as_ref().map(|s| &**s) == data_name)
                     .next(),
                     { return; });
+        let got = self.eb.sections.iter()
+                  .filter(|sect| sect.name.as_ref().map(|s| &**s) == got_name)
+                  .next();
         let content = data.get_data();
         let dvmaddr = data.vmaddr;
         let (is64, end) = (self.is64, self.eb.endian);
@@ -1569,21 +1600,25 @@ impl MachO {
             };
             if val == 0 { return; }
             let val = VMA(val);
-            if exec::addr_to_seg_off_range(segments, val).is_none() {
-                println!("odd {} -> {}", ptr, val);
-
-            } else {
-                println!("ok {} -> {}", ptr, val);
+            if exec::addr_to_seg_off_range(segments, val).is_some() {
+                //println!("ok {} -> {}", ptr, val);
+                return;
             }
+            println!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
+                     exec::addr_to_seg_off_range(&self.eb.sections, ptr).unwrap().0.name.as_ref().unwrap(),
+                     if let Some((seg, _, _)) = exec::addr_to_seg_off_range(&dc.eb.sections, val) {
+                        &**seg.name.as_ref().unwrap()
+                     } else { ByteStr::from_str("??") });
         });
 
     }
-    pub fn extract_as_necessary(&mut self, mut dc: Option<&DyldCache>) -> exec::ExecResult<()> {
+    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>) -> exec::ExecResult<()> {
         let _sw = stopwatch("extract_as_necessary");
         if self.hdr_offset != 0 {
-            let mut x: Option<DyldCache> = None;
+            let x: Option<DyldCache>;
             let dc = if let Some(dc) = dc { dc } else {
-                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), false)));
+                let inner_sections = true; // xxx
+                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), inner_sections)));
                 x.as_ref().unwrap()
             };
             // we're in a cache...
