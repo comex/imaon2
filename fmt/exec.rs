@@ -152,6 +152,7 @@ impl Segment {
 #[derive(Default)]
 pub struct ExecBase {
     pub arch: Arch,
+    pub pointer_size: usize,
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
@@ -414,6 +415,25 @@ impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
             let res = self.0[0];
             *self.0 = &(*self.0)[1..];
             Some(res)
+        }
+    }
+}
+
+impl ExecBase {
+    // exact size, in one segment
+    pub fn read_sane(&self, addr: VMA, size: u64) -> Option<&[u8]> {
+        let (seg, off, avail) =
+            some_or!(addr_to_seg_off_range(&self.segments, addr),
+                     { return None; });
+        if size > avail { return None; }
+        let data = some_or!(seg.data.as_ref(), { return None; });
+        Some(&data.get()[off as usize .. min(off + size, data.len() as u64) as usize])
+    }
+    pub fn ptr_from_slice(&self, slice: &[u8]) -> u64 {
+        match self.pointer_size {
+            8 => util::copy_from_slice::<u64>(slice, self.endian),
+            4 => util::copy_from_slice::<u32>(slice, self.endian) as u64,
+            _ => panic!("pointer_size")
         }
     }
 }

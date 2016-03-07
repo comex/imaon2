@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use deps::vec_map::VecMap;
-use deps::fnv::FnvHasher;
 use util::SmallVector;
 
 use exec::arch::Arch;
@@ -769,6 +768,7 @@ impl Elf {
             let dyns = get_dynamic(&basics, &segs, &phdrs, &sects, &shdrs);
             let eb = exec::ExecBase {
                 arch: basics.arch,
+                pointer_size: if basics.is64 { 8 } else { 4 },
                 endian: basics.endian,
                 segments: segs,
                 sections: sects,
@@ -828,7 +828,7 @@ impl Elf {
             errln!("warning: DT_GNU_HASH bucket count not power of 2??");
         }
         let res = (|| {
-            let word_size = if self.basics.is64 { 8 } else { 4 };
+            let word_size = self.eb.pointer_size;
             let bitmask_size = try!((hdr.bitmask_nwords as u64).check_mul(word_size as u64).ok_or(()));
             let bucket_size = try!((hdr.nbuckets as u64).check_mul(4).ok_or(()));
             let total_size = try!(bitmask_size.check_add(bucket_size).ok_or(()));

@@ -562,6 +562,7 @@ impl MachO {
             me.mh = util::copy_from_slice(&buf[hdr_offset..lc_off], end);
             // useless 'reserved' field
             if is64 { lc_off += 4; }
+            me.eb.pointer_size = if me.is64 { 8 } else { 4 };
         }
         me._linkedit_bits = Some(make_linkedit_bits(me.is64)); /* :( */
         me.parse_header();
@@ -1145,7 +1146,7 @@ impl MachO {
     }
 
     fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
-        let pointer_size = if self.is64 { 8 } else { 4 };
+        let pointer_size = self.eb.pointer_size as u64;
         let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
             let mut it = ByteSliceIterator(slice_);
             exec::read_leb128_inner_noisy(&mut it, signed, "parse_dyld_bind")
@@ -1172,7 +1173,7 @@ impl MachO {
             if let Some(off) = state.seg_off {
                 let bind_size = if state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
                                    state.typ == (BIND_TYPE_TEXT_PCREL32 as u8)
-                                   { 4 } else { pointer_size };
+                                   { 4 } else { pointer_size as u64 };
                 if state.seg_size - off < bind_size {
                     errln!("warning: parse_dyld_bind: bind reaches off end");
                     state.seg_off = None;
@@ -1530,13 +1531,29 @@ impl MachO {
             }
         }
     }
+    fn get_sect_data_or_blank(&self, segname: &str, sectname: &str) -> &[u8] {
+        let segname = ByteStr::from_str(segname);
+        let sectname = ByteStr::from_str(sectname);
+        for section in self.eb.sections {
+            if &**section.name.as_ref().unwrap() == sectname {
+                let segment = &self.eb.segments[section.seg_idx.unwrap()];
+                if &**segment.name.as_ref().unwrap() == segname {
+                    let seg_data = segment.data.as_ref().unwrap().get();
+                    let off = (section.fileoff - segment.fileoff) as usize;
+                    return &seg_data[off..off+(section.filesize as usize)];
+                }
+            }
+        }
+        static EMPTY: [u8; 0] = [];
+        return &EMPTY as &[u8];
+    }
     pub fn fix_objc_from_cache(&mut self, dc: &DyldCache) {
         /* Optimizations:
             Harmless/idempotent:
             - IvarOffsetOptimizer
             - MethodListSorter 
             Proto refs moved in:
-            - __objc_classlist -> class in __objc_data -> baseProtocols
+            - __objc_classlist -> class in __objc_data -> class data in __objc_const -> baseProtocols
             -                      ^- isa (metaclass) -^
             - __objc_protorefs (every word)
             - __objc_protolist -> protocol in __data -> protocols in __objc_const?
@@ -1553,41 +1570,118 @@ impl MachO {
          */
 
         let _sw = stopwatch("fix_objc_from_cache");
+        let read = |vma, size| {
+            let res = self.eb.read_sane(vma, size);
+            if let None = res { errln!("fix_objc_from_cache: read error"); }
+            res
+        };
 
-        let libobjc = some_or!(dc.image_info.iter().find(|ii| ii.path == "libobjc.A.dylib"),
-                               { errln!("fix_objc_from_cache: no libobjc"); return; });
-        filter(map(
+        let mut writes: Vec<(VMA, u64)> = Vec::new();
 
-        dc.load_single_image(&c.image_info
+        let mut proto_name_to_addr: HashMap<ByteString, VMA, _> = util::new_fnv_hashmap();
 
+        let visit_selector = |writes, sel, addr| {
+        };
+
+        let proto_name = |proto_ptr| -> Option<&ByteStr> {
+            panic!()
+        };
+
+        let pointer_size = self.eb.pointer_size;
+        let pointer_size64 = pointer_size as u64;
+        {
+            let classlist = self.get_sect_data_or_blank("__DATA", "__objc_classlist");
+            for cls_ptr_buf in classlist.chunks(pointer_size) {
+                let mut cls_ptr = VMA(self.eb.ptr_from_slice(cls_ptr_buf));
+                let mut is_meta = false;
+                loop {
+                    let cls_itself = some_or!(read(cls_ptr, 5 * pointer_size64), break);
+                    let cls_data_ptr = VMA(self.eb.ptr_from_slice(&cls_itself[4 * pointer_size..]));
+                    let cls_data = some_or!(read(cls_data_ptr, 0x20 + 7 * pointer_size64), break);
+                    // protocols
+                    let base_protocols = VMA(self.eb.ptr_from_slice(
+                        &cls_data[0x20 + 3 * pointer_size .. 0x20 + 4 * pointer_size]));
+                    let base_protocol_count = self.eb.ptr_from_slice(
+                        some_or!(read(base_protocols, pointer_size64), break));
+                    let bp_size = some_or!(
+                        base_protocol_count.check_mul(pointer_size64),
+                        { errln!("fix_objc_from_cache: protocol count overflows"); break; });
+                    let bp_data = some_or!(read(base_protocols + pointer_size64, bp_size), break);
+                    let mut offset = pointer_size as u64;
+                    for buf in bp_data.chunks(pointer_size) {
+                        let proto_ptr = self.eb.ptr_from_slice(buf);
+                        let name: &ByteStr = some_or!(proto_name(proto_ptr), continue);
+                        if let Some(&my_addr) = proto_name_to_addr.get(name) {
+                            writes.push((base_protocols + offset, my_addr));
+                        } else {
+                            errln!("fix_objc_from_cache: can't find protocol '{}' in this binary", name);
+                        }
+                        offset += pointer_size64;
+                    }
+                    // methods
+                    let base_methods = self.eb.ptr_from_slice(
+                        &cls_data[0x20 + 2 * pointer_size .. 0x20 + 3 * pointer_size]);
+                    let (entsize, count): (u32, u32) = util::copy_from_slice(
+                        some_or!(read(base_methods, 8), { break; }),
+                        self.eb.endian);
+                    let (entsize, count) = (entsize as u64, count as u64);
+                    let methods = some_or!(
+                        read(base_methods + 8,
+                             some_or!(entsize.check_mul(count),
+                                { errln!("fix_objc_from_cache: method count overflows"); break; })),
+                        return);
+                    let mut addr = base_methods + 8;
+                    for (i, buf) in methods.chunk(entsize as usize).enumerate() {
+                        let sel = self.eb.ptr_from_slice(buf);
+                        visit_selector(writes, sel, addr);
+                        addr += pointer_size;
+                    }
+
+
+                    //
+                    if !is_meta {
+                        let isa = self.eb.ptr_from_slice(&cls_itself[..pointer_size]);
+                        cls_ptr = isa;
+                        is_meta = true;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+        }
+
+    }
+    fn check_no_other_lib_refs(&self, dc: &DyldCache) {
 
         let slide_info_blob = some_or!(dc.slide_info_blob.as_ref(), {
             errln!("fix_objc_from_cache: no slide info");
             return;
         });
         let data_name = Some(ByteStr::from_str("__DATA"));
-        let got_name = Some(ByteStr::from_str("__got"));
         let segments = &self.eb.segments[..];
         let data = some_or!(
                     segments.iter()
                     .filter(|seg| seg.name.as_ref().map(|s| &**s) == data_name)
                     .next(),
                     { return; });
-        let got = self.eb.sections.iter()
-                  .filter(|sect| sect.name.as_ref().map(|s| &**s) == got_name)
-                  .next();
         let content = data.get_data();
         let dvmaddr = data.vmaddr;
         let (is64, end) = (self.is64, self.eb.endian);
         let dc_data = some_or!(dc.eb.segments.get(1), {
-            errln!("fix_objc_from_cache: no dyldcache data segment");
+            errln!("check_no_other_lib_refs: no dyldcache data segment");
             return;
         });
         if !(data.vmaddr >= dc_data.vmaddr &&
              data.vmsize <= (dc_data.vmaddr + dc_data.vmsize - data.vmaddr)) {
-            errln!("fix_objc_from_cache: little data not contained in big data");
+            errln!("check_no_other_lib_refs: little data not contained in big data");
             return;
         }
+        let sect_name = |sections: &[exec::Segment], addr: VMA| -> &ByteStr {
+             if let Some((seg, _, _)) = exec::addr_to_seg_off_range(&dc.eb.sections, addr) {
+                &**seg.name.as_ref().unwrap()
+             } else { ByteStr::from_str("??") }
+        };
         dyldcache::iter_slide_info(slide_info_blob, self.eb.endian,
                                    Some((data.vmaddr - dc_data.vmaddr, data.vmsize)),
                                    |offset| {
@@ -1601,14 +1695,11 @@ impl MachO {
             if val == 0 { return; }
             let val = VMA(val);
             if exec::addr_to_seg_off_range(segments, val).is_some() {
-                //println!("ok {} -> {}", ptr, val);
                 return;
             }
             println!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
-                     exec::addr_to_seg_off_range(&self.eb.sections, ptr).unwrap().0.name.as_ref().unwrap(),
-                     if let Some((seg, _, _)) = exec::addr_to_seg_off_range(&dc.eb.sections, val) {
-                        &**seg.name.as_ref().unwrap()
-                     } else { ByteStr::from_str("??") });
+                     sect_name(&self.eb.sections, ptr),
+                     sect_name(&dc.eb.sections, val));
         });
 
     }
@@ -1631,6 +1722,7 @@ impl MachO {
             self.xsym_to_symtab();
             self.unbind();
             self.fix_objc_from_cache(dc);
+            self.check_no_other_lib_refs(dc);
         }
         try!(self.reallocate());
         self.rewhole();

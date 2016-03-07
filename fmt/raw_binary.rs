@@ -32,6 +32,7 @@ impl RawBinary {
         RawBinary {
             eb: exec::ExecBase {
                 arch: arch::UnknownArch,
+                pointer_size: 0,
                 endian: util::BigEndian,
                 segments: vec!(seg.clone()),
                 sections: vec!(seg.clone()),

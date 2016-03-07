@@ -237,6 +237,7 @@ impl DyldCache {
         let mut dc = DyldCache {
             eb: exec::ExecBase {
                 arch: arch,
+                pointer_size: if is64 { 8 } else { 4 },
                 endian: end,
                 segments: segments,
                 sections: vec!(),
