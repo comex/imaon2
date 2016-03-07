@@ -438,3 +438,16 @@ impl ExecBase {
     }
 }
 
+pub fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
+    let mut size = 32;
+    loop {
+        let res = reader.read(offset, size);
+        let res = res.get();
+        if let Some(o) = ByteStr::from_bytes(res).find(b'\0') {
+            return Some(ByteString::from_bytes(&res[..o]));
+        }
+        if (res.len() as u64) < size { return None; }
+        size *= 2;
+    }
+}
+

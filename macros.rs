@@ -85,7 +85,7 @@ macro_rules! errln {($($a:tt)*) => {{
 
 #[macro_export]
 macro_rules! some_or {($opt:expr, $els:stmt) => {
-    if let Some(xxx) = $opt { xxx } else { $els; }
+    if let Some(xxx) = $opt { xxx } else { $els }
 }}
 #[macro_export]
 macro_rules! as_items { ($($i:item)*) => { $($i)* } }

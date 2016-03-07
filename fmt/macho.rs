@@ -18,7 +18,7 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, read_cstr};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
@@ -62,6 +62,19 @@ impl Default for x_nlist_64 {
 
 pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u32 = 2;
 
+
+fn find_in_strtablike(strtab: &[u8], what: &ByteStr) -> Option<usize> {
+    let strtab = ByteStr::from_bytes(strtab);
+    if strtab.len() >= what.len() && &strtab[..what.len()] == what {
+        // no preceding 0 in this case
+        return Some(0);
+    }
+    let mut pat = ByteString::with_capacity(what.len() + 2);
+    pat.0.push(0);
+    pat.push_bstr(what);
+    pat.0.push(0);
+    strtab.find_bstr(&pat)
+}
 
 pub fn u32_to_prot(ip: u32) -> exec::Prot {
     exec::Prot {
@@ -1531,21 +1544,21 @@ impl MachO {
             }
         }
     }
-    fn get_sect_data_or_blank(&self, segname: &str, sectname: &str) -> &[u8] {
+    fn get_sect_data_or_blank(&self, segname: &str, sectname: &str) -> (&[u8], VMA) {
         let segname = ByteStr::from_str(segname);
         let sectname = ByteStr::from_str(sectname);
-        for section in self.eb.sections {
+        for section in &self.eb.sections {
             if &**section.name.as_ref().unwrap() == sectname {
                 let segment = &self.eb.segments[section.seg_idx.unwrap()];
                 if &**segment.name.as_ref().unwrap() == segname {
                     let seg_data = segment.data.as_ref().unwrap().get();
                     let off = (section.fileoff - segment.fileoff) as usize;
-                    return &seg_data[off..off+(section.filesize as usize)];
+                    return (&seg_data[off..off+(section.filesize as usize)], section.vmaddr);
                 }
             }
         }
         static EMPTY: [u8; 0] = [];
-        return &EMPTY as &[u8];
+        (&EMPTY, VMA(0))
     }
     pub fn fix_objc_from_cache(&mut self, dc: &DyldCache) {
         /* Optimizations:
@@ -1570,77 +1583,101 @@ impl MachO {
          */
 
         let _sw = stopwatch("fix_objc_from_cache");
-        let read = |vma, size| {
-            let res = self.eb.read_sane(vma, size);
+        fn read(dc: &DyldCache, vma: VMA, size: u64) -> Option<&[u8]> {
+            let res = dc.eb.read_sane(vma, size);
             if let None = res { errln!("fix_objc_from_cache: read error"); }
             res
-        };
+        }
 
         let mut writes: Vec<(VMA, u64)> = Vec::new();
 
+        let pointer_size64 = self.eb.pointer_size as u64;
+
+        macro_rules! read_ptr { ($loc:expr, $action:stmt) => {
+            self.eb.ptr_from_slice(some_or!(read(dc, $loc, pointer_size64), $action))
+        } }
+
+        let proto_name = |proto_ptr: VMA| -> Option<ByteString> {
+            let name_addr = read_ptr!(some_or!(proto_ptr.check_add(8), {
+                errln!("fix_objc_from_cache: integer overflow");
+                return None;
+            }), return None);
+            let res = read_cstr(&self.eb, VMA(name_addr));
+            if res.is_none() {
+                errln!("fix_objc_from_cache: can't read protocol name");
+            }
+            res
+        };
+
         let mut proto_name_to_addr: HashMap<ByteString, VMA, _> = util::new_fnv_hashmap();
-
-        let visit_selector = |writes, sel, addr| {
-        };
-
-        let proto_name = |proto_ptr| -> Option<&ByteStr> {
-            panic!()
-        };
-
-        let pointer_size = self.eb.pointer_size;
-        let pointer_size64 = pointer_size as u64;
         {
-            let classlist = self.get_sect_data_or_blank("__DATA", "__objc_classlist");
-            for cls_ptr_buf in classlist.chunks(pointer_size) {
+            let (protolist, _) = self.get_sect_data_or_blank("__DATA", "__objc_protolist");
+            for proto_ptr_buf in protolist.chunks(self.eb.pointer_size) {
+                let proto_ptr = VMA(self.eb.ptr_from_slice(proto_ptr_buf));
+                proto_name_to_addr.insert(some_or!(proto_name(proto_ptr), continue), proto_ptr);
+            }
+        }
+
+
+        let mut sel_name_to_addr: HashMap<ByteString, VMA, _> = util::new_fnv_hashmap();
+        let (methname, methname_addr) = self.get_sect_data_or_blank("__DATA", "__objc_methname");
+        let mut visit_selector_pp = |writes: &mut Vec<(VMA, u64)>, addr: VMA| {
+            let old_strp = read_ptr!(addr, return);
+            // todo cache by address?
+            let name = some_or!(read_cstr(&self.eb, VMA(old_strp)), {
+                errln!("fix_objc_from_cache: can't read selector name in other image");
+                return;
+            });
+            let dumb_clone = name.clone();
+            let new_strp: VMA = *sel_name_to_addr.entry(name).or_insert_with(|| {
+                if let Some(off) = find_in_strtablike(methname, &dumb_clone) {
+                    methname_addr + (off as u64)
+                } else {
+                    errln!("fix_objc_from_cache: can't find selector name in __objc_methname");
+                    VMA(0)
+                }
+            });
+            writes.push((addr, new_strp.0));
+        };
+
+
+        {
+            let (classlist, _) = self.get_sect_data_or_blank("__DATA", "__objc_classlist");
+            for cls_ptr_buf in classlist.chunks(self.eb.pointer_size) {
                 let mut cls_ptr = VMA(self.eb.ptr_from_slice(cls_ptr_buf));
                 let mut is_meta = false;
                 loop {
-                    let cls_itself = some_or!(read(cls_ptr, 5 * pointer_size64), break);
-                    let cls_data_ptr = VMA(self.eb.ptr_from_slice(&cls_itself[4 * pointer_size..]));
-                    let cls_data = some_or!(read(cls_data_ptr, 0x20 + 7 * pointer_size64), break);
+                    let cls_data_ptr = VMA(read_ptr!(cls_ptr + 4 * pointer_size64, break));
                     // protocols
-                    let base_protocols = VMA(self.eb.ptr_from_slice(
-                        &cls_data[0x20 + 3 * pointer_size .. 0x20 + 4 * pointer_size]));
-                    let base_protocol_count = self.eb.ptr_from_slice(
-                        some_or!(read(base_protocols, pointer_size64), break));
-                    let bp_size = some_or!(
-                        base_protocol_count.check_mul(pointer_size64),
-                        { errln!("fix_objc_from_cache: protocol count overflows"); break; });
-                    let bp_data = some_or!(read(base_protocols + pointer_size64, bp_size), break);
-                    let mut offset = pointer_size as u64;
-                    for buf in bp_data.chunks(pointer_size) {
-                        let proto_ptr = self.eb.ptr_from_slice(buf);
-                        let name: &ByteStr = some_or!(proto_name(proto_ptr), continue);
-                        if let Some(&my_addr) = proto_name_to_addr.get(name) {
-                            writes.push((base_protocols + offset, my_addr));
+                    let base_protocols = VMA(read_ptr!(cls_data_ptr + 3 * pointer_size64, break));
+                    let base_protocol_count = read_ptr!(base_protocols, break);
+                    let mut protocol_pp = base_protocols;
+                    for _ in 0..base_protocol_count {
+                        let protocol_ptr = VMA(read_ptr!(protocol_pp, break));
+                        let name: ByteString = some_or!(proto_name(protocol_ptr), continue);
+                        if let Some(&my_addr) = proto_name_to_addr.get(&name) {
+                            writes.push((protocol_pp, my_addr.0));
                         } else {
                             errln!("fix_objc_from_cache: can't find protocol '{}' in this binary", name);
                         }
-                        offset += pointer_size64;
+                        protocol_pp = some_or!(protocol_pp.check_add(pointer_size64),
+                                               { errln!("fix_objc_from_cache: integer overflow"); break; });
                     }
                     // methods
-                    let base_methods = self.eb.ptr_from_slice(
-                        &cls_data[0x20 + 2 * pointer_size .. 0x20 + 3 * pointer_size]);
-                    let (entsize, count): (u32, u32) = util::copy_from_slice(
-                        some_or!(read(base_methods, 8), { break; }),
-                        self.eb.endian);
-                    let (entsize, count) = (entsize as u64, count as u64);
-                    let methods = some_or!(
-                        read(base_methods + 8,
-                             some_or!(entsize.check_mul(count),
-                                { errln!("fix_objc_from_cache: method count overflows"); break; })),
-                        return);
-                    let mut addr = base_methods + 8;
-                    for (i, buf) in methods.chunk(entsize as usize).enumerate() {
-                        let sel = self.eb.ptr_from_slice(buf);
-                        visit_selector(writes, sel, addr);
-                        addr += pointer_size;
+                    let base_methods = VMA(read_ptr!(cls_data_ptr + 2 * pointer_size64, break));
+                    let (entsize, count): (u32, u32) = util::copy_from_slice(some_or!(read(dc, base_methods, 8), break),
+                                                                             self.eb.endian);
+                    let mut sel_pp = base_methods;
+                    for _ in 0..count {
+                        visit_selector_pp(&mut writes, sel_pp);
+                        protocol_pp = some_or!(protocol_pp.check_add(entsize as u64),
+                                               { errln!("fix_objc_from_cache: integer overflow"); break; });
                     }
 
 
                     //
                     if !is_meta {
-                        let isa = self.eb.ptr_from_slice(&cls_itself[..pointer_size]);
+                        let isa = VMA(read_ptr!(cls_ptr, break));
                         cls_ptr = isa;
                         is_meta = true;
                     } else {
@@ -1652,7 +1689,7 @@ impl MachO {
         }
 
     }
-    fn check_no_other_lib_refs(&self, dc: &DyldCache) {
+    fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache) {
 
         let slide_info_blob = some_or!(dc.slide_info_blob.as_ref(), {
             errln!("fix_objc_from_cache: no slide info");
@@ -1677,7 +1714,7 @@ impl MachO {
             errln!("check_no_other_lib_refs: little data not contained in big data");
             return;
         }
-        let sect_name = |sections: &[exec::Segment], addr: VMA| -> &ByteStr {
+        let sect_name = |sections: &[exec::Segment], addr: VMA| -> &'a ByteStr {
              if let Some((seg, _, _)) = exec::addr_to_seg_off_range(&dc.eb.sections, addr) {
                 &**seg.name.as_ref().unwrap()
              } else { ByteStr::from_str("??") }

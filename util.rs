@@ -216,6 +216,13 @@ impl Swap for i8 {
     fn bswap(&mut self) {}
 }
 
+impl<A: Swap, B: Swap> Swap for (A, B) {
+    fn bswap(&mut self) {
+        self.0.bswap();
+        self.1.bswap();
+    }
+}
+
 // dumb
 macro_rules! impl_for_array{($cnt:expr) => (
     impl<T> Swap for [T; $cnt] {
@@ -251,7 +258,7 @@ impl ByteStr {
     pub fn from_bytes_mut(s: &mut [u8]) -> &mut ByteStr {
         unsafe { transmute(s) }
     }
-    pub fn find<P>(&self, pat: u8) -> Option<usize> {
+    pub fn find(&self, pat: u8) -> Option<usize> {
         let ptr = self.0.as_ptr();
         let chr = unsafe { memchr(ptr, pat as i32, self.0.len()) };
         if chr == 0 as *mut u8 {
@@ -272,6 +279,15 @@ impl ByteStr {
             }
         }
         None
+    }
+    pub fn find_bstr(&self, pat: &ByteStr) -> Option<usize> {
+        let res = unsafe { memmem(self.as_ptr(), self.len(),
+                                  pat.as_ptr(), pat.len()) };
+        if res == 0 as *mut u8 {
+            None
+        } else {
+            Some((res as usize) - (self.as_ptr() as usize))
+        }
     }
 }
 pub trait SomeRange<T> {}
@@ -333,7 +349,7 @@ impl ByteString {
         result
 
     }
-    fn push_bstr(&mut self, bs: &ByteStr) {
+    pub fn push_bstr(&mut self, bs: &ByteStr) {
         self.0.extend_from_slice(&bs.0);
     }
 }
@@ -799,6 +815,7 @@ extern {
     fn memmove(dst: *mut u8, src: *const u8, len: usize);
     fn memset(dst: *mut u8, byte: i32, len: usize);
     fn memchr(src: *const u8, byte: i32, len: usize) -> *mut u8;
+    fn memmem(big: *const u8, big_len: usize, little: *const u8, little_len: usize) -> *mut u8;
 }
 #[inline(always)]
 unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {

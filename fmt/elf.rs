@@ -19,9 +19,8 @@ use deps::vec_map::VecMap;
 use util::SmallVector;
 
 use exec::arch::Arch;
-use exec::ReadVMA;
 use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, Narrow};
-use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib};
+use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib, read_cstr, ReadVMA};
 use elf_bind::*;
 
 macro_rules! convert_each {
@@ -88,19 +87,6 @@ struct DynamicInfoTemp {
     fini_array: OptOffCountSize,
     preinit_array: OptOffCountSize,
     verneed: OptOffCountSize,
-}
-
-fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
-    let mut size = 32;
-    loop {
-        let res = reader.read(offset, size);
-        let res = res.get();
-        if let Some(o) = res.iter().position(|&c| c == 0) {
-            return Some(ByteString::from_bytes(&res[..o]));
-        }
-        if (res.len() as u64) < size { return None; }
-        size *= 2;
-    }
 }
 
 
