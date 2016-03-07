@@ -1,4 +1,4 @@
-#![feature(libc, plugin, core_intrinsics)]
+#![feature(libc, plugin, core_intrinsics, const_fn)]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -7,11 +7,11 @@ extern crate deps;
 #[macro_use]
 extern crate macros;
 
-use std::mem::{size_of, uninitialized, transmute};
+use std::mem::{size_of, uninitialized, transmute, replace};
 use std::ptr;
 use std::ptr::{copy, null_mut};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::default::Default;
 use std::io::{SeekFrom, Seek};
 use std::os::unix::prelude::AsRawFd;
@@ -439,6 +439,7 @@ pub struct MemoryMap {
     ptr: *mut u8,
     len: usize
 }
+unsafe impl Sync for MemoryMap {}
 
 impl MemoryMap {
     pub fn with_fd_size(fd: Option<libc::c_int>, size: usize) -> MemoryMap {
@@ -469,10 +470,16 @@ impl Drop for MemoryMap {
     }
 }
 
+enum MemoryContainer {
+    Empty,
+    MemoryMap(MemoryMap),
+    BoxedSlice(Box<[u8]>),
+}
+
 #[derive(Clone)]
 pub struct MCRef {
-    mm: Option<Arc<MemoryMap>>,
-    ptr: *mut u8,
+    mc: Arc<MemoryContainer>,
+    ptr: *const u8,
     len: usize
 }
 
@@ -490,28 +497,65 @@ impl Debug for MCRef {
     }
 }
 
+struct XArcInner<T: ?Sized> {
+    strong: AtomicUsize,
+    _weak: AtomicUsize,
+    _data: T,
+}
+
+static EMPTY_ARC_INNER: XArcInner<MemoryContainer> = XArcInner {
+    strong: AtomicUsize::new(1),
+    _weak: AtomicUsize::new(1),
+    _data: MemoryContainer::Empty,
+};
+
 impl MCRef {
     pub fn with_data(data: &[u8]) -> MCRef {
-        // XXX make this more efficient (vec version)
-        let mut mm = MemoryMap::with_fd_size(None, data.len());
-        copy_memory(data, mm.get_mut());
-        MCRef::with_mm(mm)
+        MCRef::with_vec(data.to_owned())
+    }
+
+    pub fn with_vec(vec: Vec<u8>) -> MCRef {
+        let bs = vec.into_boxed_slice();
+        let (ptr, len) = (bs.as_ptr(), bs.len());
+        MCRef {
+            mc: Arc::new(MemoryContainer::BoxedSlice(bs)),
+            ptr: ptr, len: len
+        }
     }
 
     pub fn with_mm(mm: MemoryMap) -> MCRef {
-        let ptr = mm.data();
-        let len = mm.len();
+        let (ptr, len) = (mm.data() as *const _, mm.len());
         MCRef {
-            mm: Some(Arc::new(mm)),
-            ptr: ptr,
-            len: len
+            mc: Arc::new(MemoryContainer::MemoryMap(mm)),
+            ptr: ptr, len: len
         }
     }
 
     #[inline]
     pub fn empty() -> MCRef {
-        MCRef { mm: None, ptr: 0 as *mut u8, len: 0 }
+        let old_size = EMPTY_ARC_INNER.strong.fetch_add(1, Ordering::Relaxed);
+        if old_size > std::isize::MAX as usize {
+            unsafe { std::intrinsics::abort(); }
+        }
+        MCRef {
+            mc: unsafe { transmute(&EMPTY_ARC_INNER) },
+            ptr: 0 as *const u8,
+            len: 0,
+        }
+    }
 
+    pub fn into_vec(mut self) -> Vec<u8> {
+        if let Some(mc) = Arc::get_mut(&mut self.mc) {
+            let ok = if let &mut MemoryContainer::BoxedSlice(ref bs) = mc {
+                bs.as_ptr() == self.ptr && bs.len() == self.len
+            } else { false };
+            if ok {
+                if let MemoryContainer::BoxedSlice(bs) = replace(mc, MemoryContainer::Empty) {
+                    return bs.into_vec();
+                } else { debug_assert!(false); }
+            }
+        }
+        self.get().to_owned()
     }
 
     pub fn slice(&self, from: usize, to: usize) -> Option<MCRef> {
@@ -520,7 +564,7 @@ impl MCRef {
             return None
         }
         unsafe {
-            Some(MCRef { mm: self.mm.clone(), ptr: self.ptr.offset(from as isize), len: len })
+            Some(MCRef { mc: self.mc.clone(), ptr: self.ptr.offset(from as isize), len: len })
         }
     }
 
