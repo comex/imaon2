@@ -23,8 +23,8 @@ use std::any::Any;
 
 use util::{VecCopyExt, into_cow};
 use exec::{arch, SymbolValue};
-#[path = "fmt/execall.rs"] mod execall;
-#[path = "dis/disall.rs"] mod disall;
+#[path = "../fmt/execall.rs"] mod execall;
+#[path = "../dis/disall.rs"] mod disall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");

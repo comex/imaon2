@@ -129,7 +129,8 @@ endif
 
 $(call define_crate,$(LIB),db,db/sexpr.rs,util)
 
-$(call define_crate,bin,exectool,exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
+$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
+$(call define_crate,bin,yasce,tool/yasce.rs,macho)
 
 clean:
 	rm -rf $(OUT) $(TARGET_DIR)/$(CARGO_BUILD_TYPE)

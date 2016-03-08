@@ -13,6 +13,7 @@ use std::any::Any;
 use std;
 use util::{ByteStr, CheckMath};
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
+
 pub struct ImageInfo {
     pub address: u64,
     pub mod_time: u64,
@@ -251,7 +252,7 @@ impl DyldCache {
         if inner_sects {
             for ii in &dc.image_info {
                 // todo better
-                let prefix = ByteString::concat2(get_basename(ii), ":".into());
+                let prefix = ByteString::concat2(ii.path.unix_basename(), ":".into());
                 if let Ok(mo) = dc.load_single_image(ii) {
                     for sect in mo.eb.sections.into_iter()
                          .chain(mo.eb.segments.into_iter()) {
@@ -283,7 +284,7 @@ impl DyldCache {
             None
         } else { None }
     }
-    fn load_single_image(&self, ii: &ImageInfo) -> exec::ExecResult<::MachO> {
+    pub fn load_single_image(&self, ii: &ImageInfo) -> exec::ExecResult<::MachO> {
         let off = some_or!(exec::addr_to_off(&self.eb.segments, exec::VMA(ii.address), 0),
             return exec::err(exec::ErrorKind::BadData,
                              "shared cache image said to be at an unmapped offset"));
@@ -353,10 +354,6 @@ impl exec::ExecProber for DyldWholeProber {
     }
 }
 
-fn get_basename(ii: &ImageInfo) -> &ByteStr {
-    if let Some(pos) = ii.path.rfind(b'/') { &ii.path[pos+1..] } else { &ii.path[..] }
-}
-
 #[derive(Copy, Clone)]
 pub struct DyldSingleProber;
 impl exec::ExecProber for DyldSingleProber {
@@ -368,7 +365,7 @@ impl exec::ExecProber for DyldSingleProber {
             let mut seen_basenames = HashSet::new();
             c.image_info.iter().enumerate().map(|(i, ii)| {
                 let cmd0 = "dyld-single".to_string();
-                let basename = get_basename(ii);
+                let basename = ii.path.unix_basename();
                 let str_ver = std::str::from_utf8(basename).ok();
                 let cmd = if str_ver.is_some() && seen_basenames.insert(str_ver) {
                     vec![cmd0, basename.to_string()]
@@ -400,7 +397,7 @@ impl exec::ExecProber for DyldSingleProber {
         } else {
             let is_basename = path.find('/') == None;
             let o = c.image_info.iter().position(|ii| {
-                bpath == if is_basename { get_basename(ii) } else { &ii.path[..] }
+                bpath == if is_basename { ii.path.unix_basename() } else { &ii.path[..] }
             });
             if let Some(i) = o { i } else { return exec::err(exec::ErrorKind::Other, "no such file in shared cache") }
         };

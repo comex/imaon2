@@ -25,7 +25,6 @@ use std::cell::{UnsafeCell, Cell};
 use std::marker::PhantomData;
 use std::hash::{Hasher, Hash, BuildHasherDefault};
 use std::collections::HashMap;
-use std::time::Instant;
 
 use deps::fnv::FnvHasher;
 use deps::nodrop::NoDrop;
@@ -338,6 +337,9 @@ impl ByteStr {
         } else {
             Some((res as usize) - (self.as_ptr() as usize))
         }
+    }
+    pub fn unix_basename(&self) -> &ByteStr {
+        if let Some(pos) = self.rfind(b'/') { &self[pos+1..] } else { &self[..] }
     }
 }
 pub trait SomeRange<T> {}
@@ -975,13 +977,20 @@ pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, BuildHasherDefault<Fn
     HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default())
 }
 
+#[cfg(stopwatch)]
 thread_local!(static STOPWATCH_INDENT: Cell<usize> = Cell::new(0));
+#[cfg(stopwatch)]
+use std::time::Instant;
 
+#[cfg(not(stopwatch))]
+pub struct Stopwatch<'a>(PhantomData<&'a str>);
+#[cfg(stopwatch)]
 pub struct Stopwatch<'a> {
-    pub desc: &'a str,
-    pub start_time: Instant,
-    pub indent: usize,
+    desc: &'a str,
+    start_time: Instant,
+    indent: usize,
 }
+#[cfg(stopwatch)]
 pub fn stopwatch(desc: &str) -> Stopwatch {
     let indent = STOPWATCH_INDENT.with(|cell| {
         let indent = cell.get();
@@ -990,9 +999,13 @@ pub fn stopwatch(desc: &str) -> Stopwatch {
     });
     Stopwatch { desc: desc, start_time: Instant::now(), indent: indent }
 }
+#[cfg(not(stopwatch))]
+pub fn stopwatch(_desc: &str) -> Stopwatch { Stopwatch(PhantomData) }
+
 impl<'a> Stopwatch<'a> {
     pub fn stop(self) {}
 }
+#[cfg(stopwatch)]
 impl<'a> Drop for Stopwatch<'a> {
     fn drop(&mut self) {
         let duration = Instant::now().duration_from_earlier(self.start_time);

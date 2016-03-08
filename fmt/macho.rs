@@ -938,7 +938,11 @@ impl MachO {
             let mcref: &MCRef = fb.self_field.get(self);
             let buf = mcref.get();
             if fb.is_symtab {
-                allocs.push((mcref.offset_in(&self.symtab).unwrap(), buf.len()));
+                if mcref.len() == 0 {
+                    allocs.push((0, 0));
+                } else {
+                    allocs.push((mcref.offset_in(&self.symtab).unwrap(), buf.len()));
+                }
             } else {
                 allocs.push((linkedit.len(), buf.len()));
                 linkedit.extend_slice(buf);
@@ -1333,14 +1337,14 @@ impl MachO {
                 //println!("{} {:x}", base_addr, read_addr);
                 let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
                            .wrapping_add(read_addr);
-                let resolver = if flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
-                    Some(base_addr + leb!(it))
-                } else { None };
                 let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
+                    /*
                     if resolver.is_some() {
                         errln!("warning: parse_dyld_export: resolver /and/ reexport?");
+                        panic!();
                         continue;
                     }
+                    */
                     let ord = leb!(it);
                     let name;
                     if it.0.len() == 0 {
@@ -1355,6 +1359,9 @@ impl MachO {
                     // export same?
                     let name = if name.len() == 0 { prefix.to_owned().into() } else { name.into() };
                     Some((ord, name))
+                } else { None };
+                let resolver = if reexport.is_none() && flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
+                    Some(base_addr + leb!(it))
                 } else { None };
                 cb(&prefix, addr, flags, resolver, reexport, offset);
                 if !it.0.is_empty() {
@@ -1583,7 +1590,7 @@ impl MachO {
         let data_idx = some_or!(
             self.eb.segments.iter().position(
                 |seg| seg.name.is_some_and(|n| &**n == ByteStr::from_str("__DATA"))),
-            { errln!("fix_objc_from_cache: no __DATA"); return; });
+            { /* no __DATA */ return; });
 
         let mut segw = SegmentWriter::new(&mut self.eb.segments);
         { // <-
