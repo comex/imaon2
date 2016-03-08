@@ -1,15 +1,26 @@
+#![cfg_attr(opt, feature(alloc_system))]
+#[cfg(opt)]
+extern crate alloc_system;
+
 use std::os::unix::ffi::{OsStringExt, OsStrExt};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, Component};
 use std::fs::File;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::mpsc::channel;
 
 #[macro_use]
 extern crate macros;
 extern crate util;
 extern crate macho;
+extern crate deps;
 use macho::dyldcache::{DyldCache, ImageInfo};
 use util::{ByteString, ByteStr};
+
+use deps::threadpool::ThreadPool;
+use deps::num_cpus;
+
 
 fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path) {
     let mut macho = match dc.load_single_image(ii) {
@@ -129,7 +140,11 @@ fn main() {
         } else {
             Path::new("extracted")
         };
-        for ii in &dc.image_info {
+        let threads = if verbose { 1 } else { num_cpus::get() };
+        let pool = ThreadPool::new(threads);
+        let xdc = Arc::new(dc);
+        let (tx, rx) = channel();
+        for (i, ii) in xdc.image_info.iter().enumerate() {
             let mut output_path = output_base.to_owned();
             assert_eq!(ii.path[0], b'/');
             let ii_path = bstr_to_path(&ii.path[1..]).unwrap();
@@ -143,8 +158,25 @@ fn main() {
             }
             if verbose {
                 println!("-> {}", ii.path);
+                extract_one(&xdc, ii, &output_path);
+            } else {
+                let xdc_ = xdc.clone();
+                let tx_ = tx.clone();
+                pool.execute(move || {
+                    let ii = &xdc_.image_info[i];
+                    extract_one(&xdc_, ii, &output_path);
+                    tx_.send(()).unwrap();
+                });
             }
-            extract_one(&dc, ii, &output_path);
+        }
+        if !verbose {
+            let count = xdc.image_info.len();
+            print!("{}", format!("0/{} ", count));
+            for i in 0..count {
+                rx.recv().unwrap();
+                let text = format!("\x1b[1K\x1b[999D{}/{} ", i, count);
+                print!("{}", text);
+            }
         }
     }
 }

@@ -547,6 +547,7 @@ pub struct MCRef {
 }
 
 unsafe impl Send for MCRef {}
+unsafe impl Sync for MCRef {}
 
 impl std::default::Default for MCRef {
     fn default() -> MCRef {

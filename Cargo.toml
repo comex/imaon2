@@ -8,13 +8,16 @@ path = "dummy.rs"
 [dependencies]
 vec_map = "0.6"
 fnv = "1"
+threadpool = "1.0"
+num_cpus = "0.2"
+
 #regex = "0.1.9"
 #regex_macros = "0.1.4"
-#[dependencies.bindgen]
-#git = "https://github.com/crabtw/rust-bindgen.git"
 
-[dependencies.autollvm]
-path = "../autollvm"
+# this pulls in syntex via bindgen :(
+# todo use features
+#[dependencies.autollvm]
+#path = "../autollvm"
 
 [dependencies.nodrop]
 version = "0.1"
