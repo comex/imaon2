@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn, copy_from_slice, step_by)]
+#![feature(collections, libc, iter_arith, const_fn, step_by)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -16,14 +16,15 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
 use std::borrow::Cow;
+use std::cell::Cell;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
 
 pub mod dyldcache;
@@ -1523,17 +1524,19 @@ impl MachO {
         let _sw = stopwatch("unbind");
         // helps IDA, because it treats these as 'rel' (addend = whatever's in that slot already)
         // when they're actually 'rela' (explicit addend).
-        let mut segw = exec::SegmentWriter::new(&mut self.eb.segments);
+        let mut segw = SegmentWriter::new(&mut self.eb.segments);
 
         self.parse_each_dyld_bind(&mut |state| {
             let seg_off = some_or!(state.seg_off, { return; }) as usize;
-            let nc = segw.access_seg(state.seg_idx);
+            // xxx perf
+            segw.make_seg_rw(state.seg_idx);
+            let nc = segw.access_rw(state.seg_idx).unwrap();
             if !self.is64 ||
                state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
                state.typ == (BIND_TYPE_TEXT_PCREL32 as u8) {
-                   nc[seg_off..seg_off+4].copy_from_slice(&[0; 4]);
+                util::copy_to_slice(&nc[seg_off..seg_off+4], &0u32, LittleEndian);
             } else {
-                   nc[seg_off..seg_off+8].copy_from_slice(&[0; 8]);
+                util::copy_to_slice(&nc[seg_off..seg_off+4], &0u64, LittleEndian);
             }
         });
 
@@ -1555,8 +1558,10 @@ impl MachO {
         static EMPTY: [u8; 0] = [];
         (&EMPTY, VMA(0))
     }
-    pub fn fix_objc_from_cache<'a>(&'a mut self, dc: &'a DyldCache) {
-        /* Optimizations:
+    pub fn fix_objc_from_cache<'dc>(&mut self, dc: &'dc DyldCache) {
+        /* Yay, 200 line long function...
+           Could be optimized a bit more.
+           The optimizations dyld does:
             Harmless/idempotent:
             - IvarOffsetOptimizer
             - MethodListSorter 
@@ -1565,34 +1570,50 @@ impl MachO {
             -                      ^- isa (metaclass) -^
             - __objc_protorefs (every word)
             - __objc_protolist -> protocol in __data -> protocols in __objc_const?
-            Selectors moved to other binaries.
-
-            Basically:
-                - If it goes to libobjc:__DATA,__objc_opt_rw, it's a protocol, and we need to check
-                the second pointer to find the name, and compare to the entries in
-                __objc_protolist.
-                - If it goes to another binary, it's a selector name, and we need to find the
-                equivalent string in __objc_methname.
-                - On i386, there's no slide info, so the dumb strategy won't work.
-                - Otherwise, panic.
-         */
+            And:
+            - Selectors moved to other binaries.
+        */
 
         let _sw = stopwatch("fix_objc_from_cache");
-        fn read(dc: &DyldCache, vma: VMA, size: u64) -> Option<&[u8]> {
+        let data_idx = some_or!(
+            self.eb.segments.iter().position(
+                |seg| seg.name.is_some_and(|n| &**n == ByteStr::from_str("__DATA"))),
+            { errln!("fix_objc_from_cache: no __DATA"); return; });
+
+        let mut segw = SegmentWriter::new(&mut self.eb.segments);
+        { // <-
+        segw.make_seg_rw(data_idx);
+        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [u8]> {
             let res = dc.eb.read_sane(vma, size);
             if let None = res { errln!("fix_objc_from_cache: read error"); }
             res
-        }
+        };
+        //let rw = |addr: VMA, size: u64| -> Option<&[Cell<u8>]> {
+        // WTF - rustc can't infer return lifetimes for even simple closures
+        // http://is.gd/2uRGhH
+        fn rw(segw: &SegmentWriter, addr: VMA, size: u64) -> Option<&[Cell<u8>]> {
+            match segw.get_sane_rw(addr, size) {
+                Ok(slice) => Some(slice),
+                Err(SWGetSaneError::NotWritable) => {
+                    errln!("fix_objc_from_cache: pointer {} unexpectedly not in __DATA", addr);
+                    None
+                },
+                Err(SWGetSaneError::Unmapped) => {
+                    errln!("fix_objc_from_cache: pointer {} unmapped", addr);
+                    None
+                },
+            }
+        };
 
-        let mut writes: Vec<(VMA, u64)> = Vec::new();
+
 
         let pointer_size64 = self.eb.pointer_size as u64;
 
         macro_rules! read_ptr { ($loc:expr, $action:stmt) => {
-            self.eb.ptr_from_slice(some_or!(read(dc, $loc, pointer_size64), $action))
+            self.eb.ptr_from_slice(some_or!(outer_read($loc, pointer_size64), $action))
         } }
 
-        let proto_name = |proto_ptr: VMA| -> Option<&'a ByteStr> {
+        let proto_name = |proto_ptr: VMA| -> Option<&'dc ByteStr> {
             let name_addr = read_ptr!(some_or!(proto_ptr.check_add(8), {
                 errln!("fix_objc_from_cache: integer overflow");
                 return None;
@@ -1604,7 +1625,7 @@ impl MachO {
             res
         };
 
-        let mut proto_name_to_addr: HashMap<&'a ByteStr, VMA, _> = util::new_fnv_hashmap();
+        let mut proto_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
         {
             let (protolist, _) = self.get_sect_data_or_blank("__DATA", "__objc_protolist");
             for proto_ptr_buf in protolist.chunks(self.eb.pointer_size) {
@@ -1613,7 +1634,7 @@ impl MachO {
             }
         }
 
-        let mut sel_name_to_addr: HashMap<&'a ByteStr, VMA, _> = util::new_fnv_hashmap();
+        let mut sel_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
 
         {
             let (mut methname, mut methname_addr) = self.get_sect_data_or_blank("__DATA", "__objc_methname");
@@ -1628,38 +1649,40 @@ impl MachO {
 
 
 
-        let visit_selector_pp = |writes: &mut Vec<(VMA, u64)>, selector_pp: VMA| {
-            let old_strp = read_ptr!(selector_pp, return);
+        let visit_selector_pp = |selector_pp: VMA| {
+            let selector_data = some_or!(rw(&segw, selector_pp, pointer_size64), return);
+            let old_strp = self.eb.ptr_from_slice(selector_data);
             // todo cache by address?
             let name = some_or!(dc.eb.read_cstr_sane(VMA(old_strp)), {
                 errln!("fix_objc_from_cache: can't read selector name in other image");
                 return;
             });
             if let Some(&my_addr) = sel_name_to_addr.get(name) {
-                writes.push((selector_pp, my_addr.0));
+                self.eb.ptr_to_slice(selector_data, my_addr.0);
             } else {
                 errln!("fix_objc_from_cache: can't find selector named {} in __objc_methname, referenced from {}", name, selector_pp);
             }
         };
 
-        let visit_protocol_pp = |writes: &mut Vec<(VMA, u64)>, protocol_pp: VMA| {
-            let protocol_ptr = VMA(read_ptr!(protocol_pp, return));
+        let visit_protocol_pp = |protocol_pp: VMA| {
+            let protocol_data = some_or!(rw(&segw, protocol_pp, pointer_size64), return);
+            let protocol_ptr = VMA(self.eb.ptr_from_slice(protocol_data));
             let name = some_or!(proto_name(protocol_ptr), return);
             if let Some(&my_addr) = proto_name_to_addr.get(&name) {
-                writes.push((protocol_pp, my_addr.0));
+                self.eb.ptr_to_slice(protocol_data, my_addr.0);
             } else {
                 errln!("fix_objc_from_cache: can't find protocol named {} in __objc_protolist, referenced from {}", name, protocol_pp);
             }
         };
 
-        let visit_method_list = |writes: &mut Vec<(VMA, u64)>, method_list: VMA| {
+        let visit_method_list = |method_list: VMA| {
             let (entsize, count): (u32, u32) =
-                util::copy_from_slice(some_or!(read(dc, method_list, 8), return),
+                util::copy_from_slice(some_or!(outer_read(method_list, 8), return),
                                       self.eb.endian);
             let mut sel_pp = method_list + 8;
             for _ in 0..count {
                 // methods start with selector ptr
-                visit_selector_pp(writes, sel_pp);
+                visit_selector_pp(sel_pp);
                 sel_pp = some_or!(sel_pp.check_add(entsize as u64),
                                   { errln!("visit_method_list: integer overflow"); break; });
             }
@@ -1678,13 +1701,13 @@ impl MachO {
                     let base_protocol_count = read_ptr!(base_protocols, break);
                     let mut protocol_pp = base_protocols;
                     for _ in 0..base_protocol_count {
-                        visit_protocol_pp(&mut writes, protocol_pp);
+                        visit_protocol_pp(protocol_pp);
                         protocol_pp = some_or!(protocol_pp.check_add(pointer_size64),
                                                { errln!("fix_objc_from_cache: integer overflow"); break; });
                     }
                     // methods
                     let base_methods = VMA(read_ptr!(cls_data_ptr + 2 * pointer_size64, break));
-                    visit_method_list(&mut writes, base_methods);
+                    visit_method_list(base_methods);
 
 
                     //
@@ -1708,26 +1731,26 @@ impl MachO {
                     continue;
                 }
                 let instance_methods = VMA(read_ptr!(cat_ptr + 2 * pointer_size64, continue));
-                visit_method_list(&mut writes, instance_methods);
+                visit_method_list(instance_methods);
                 let class_methods = VMA(read_ptr!(cat_ptr + 3 * pointer_size64, continue));
-                visit_method_list(&mut writes, class_methods);
+                visit_method_list(class_methods);
             }
         }
 
         {
             let (buf, base_addr) = self.get_sect_data_or_blank("__DATA", "__objc_protorefs");
             for addr in (0..buf.len() as u64).step_by(pointer_size64) {
-                visit_protocol_pp(&mut writes, addr + base_addr);
+                visit_protocol_pp(addr + base_addr);
             }
         }
         {
             let (buf, base_addr) = self.get_sect_data_or_blank("__DATA", "__objc_selrefs");
             for addr in (0..buf.len() as u64).step_by(pointer_size64) {
-                visit_selector_pp(&mut writes, addr + base_addr);
+                visit_selector_pp(addr + base_addr);
             }
         }
-
-
+        } // <-
+        segw.finish(&mut self.eb.segments);
 
     }
     fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache) {
@@ -1755,11 +1778,12 @@ impl MachO {
             errln!("check_no_other_lib_refs: little data not contained in big data");
             return;
         }
-        let sect_name = |sections: &[exec::Segment], addr: VMA| -> &'a ByteStr {
+        //let sect_name = <'a>|sections: &'a [exec::Segment], addr: VMA| -> &ByteStr {
+        fn sect_name(sections: &[exec::Segment], addr: VMA) -> &ByteStr {
              if let Some((seg, _, _)) = exec::addr_to_seg_off_range(sections, addr) {
                 &**seg.name.as_ref().unwrap()
              } else { ByteStr::from_str("??") }
-        };
+        }
         dyldcache::iter_slide_info(slide_info_blob, self.eb.endian,
                                    Some((data.vmaddr - dc_data.vmaddr, data.vmsize)),
                                    |offset| {
@@ -1768,7 +1792,7 @@ impl MachO {
             let val: u64 = if is64 {
                 util::copy_from_slice(&content[offset..offset+8], end)
             } else {
-                util::copy_from_slice::<u32>(&content[offset..offset+4], end) as u64
+                util::copy_from_slice::<u32, _>(&content[offset..offset+4], end) as u64
             };
             if val == 0 { return; }
             let val = VMA(val);
@@ -1799,7 +1823,7 @@ impl MachO {
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
             self.unbind();
-            self.fix_objc_from_cache(dc);
+            //self.fix_objc_from_cache(dc);
             self.check_no_other_lib_refs(dc);
         }
         try!(self.reallocate());
@@ -1929,3 +1953,13 @@ impl exec::ExecProber for FatMachOProber {
 
 //#[test]
 
+/*
+wtf rustc
+fn dummy_fix() {
+    //let mut segw = SegmentWriter::new(&mut self.eb.segments);
+    let vec = Vec::<u8>::new();
+    let rw = |size: u64| -> Option<&[u8]> {
+        Some(&vec[size as usize..])
+    };
+}
+*/

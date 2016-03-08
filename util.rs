@@ -40,8 +40,54 @@ pub use trivial_hasher::*;
 mod small_vector;
 pub use small_vector::SmallVector;
 
+pub struct ReadCell<T: Copy> {
+    pub value: UnsafeCell<T>
+}
+impl<T: Copy> ReadCell<T> {
+    pub const fn new(value: T) -> Self {
+        ReadCell { value: UnsafeCell::new(value) }
+    }
+    pub fn get(&self) -> T {
+        unsafe { *self.value.get() }
+    }
+}
+
+pub trait ROSlicePtr<'a> : Copy {
+    fn as_ptr(self) -> *const u8;
+    fn len(self) -> usize;
+}
+pub trait RWSlicePtr<'a> {
+    fn as_mut_ptr(self) -> *mut u8;
+    fn len(&self) -> usize;
+}
+macro_rules! impl_rosp { ($ty:ty) => {
+    impl<'a> ROSlicePtr<'a> for $ty {
+        #[inline(always)]
+        fn as_ptr(self) -> *const u8 {
+            unsafe { transmute(self.as_ptr()) }
+        }
+        #[inline(always)]
+        fn len(self) -> usize { self.len() }
+    }
+} }
+macro_rules! impl_rwsp { ($ty:ty) => {
+    impl<'a> RWSlicePtr<'a> for $ty {
+        #[inline(always)]
+        fn as_mut_ptr(self) -> *mut u8 {
+            unsafe { transmute(self.as_ptr()) }
+        }
+        #[inline(always)]
+        fn len(&self) -> usize { (**self).len() }
+    }
+} }
+impl_rosp!(&'a [u8]);
+impl_rosp!(&'a [Cell<u8>]);
+impl_rosp!(&'a [ReadCell<u8>]);
+impl_rwsp!(&'a [Cell<u8>]);
+impl_rwsp!(&'a mut [u8]);
+
 #[inline]
-pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
+pub fn copy_from_slice<'a, T: Copy + Swap, S: ROSlicePtr<'a>>(slice: S, end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninitialized();
@@ -51,10 +97,11 @@ pub fn copy_from_slice<T: Copy + Swap>(slice: &[u8], end: Endian) -> T {
     }
 }
 
-pub fn copy_to_slice<T: Copy + Swap>(slice: &mut [u8], t: &T, end: Endian) {
+#[inline]
+pub fn copy_to_slice<'a, T: Copy + Swap, S: RWSlicePtr<'a>>(slice: S, t: &T, end: Endian) {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
-        let stp: *mut T = transmute(slice.as_ptr());
+        let stp: *mut T = transmute(slice.as_mut_ptr());
         copy(t, stp, 1);
         (*stp).bswap_from(end);
     }
@@ -598,14 +645,19 @@ impl MCRef {
         None
     }
 
+    /* wtf lifetime error
     pub fn get_mut_decow(&mut self) -> &mut [u8] {
         if let Some(sl) = self.get_mut() {
-            sl
-        } else {
-            let vec = self.get.to_owned();
-            *self = MCRef::with_vec(vec);
-            self.get_mut().unwrap()
+            return sl;
         }
+        let vec = self.get().to_owned();
+        *self = MCRef::with_vec(vec);
+        self.get_mut().unwrap()
+    } */
+
+    // only safe to call if there are no mutable references
+    pub unsafe fn get_cells(&self) -> &[Cell<u8>] {
+        transmute(std::slice::from_raw_parts(self.ptr, self.len))
     }
 
     pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
@@ -826,7 +878,7 @@ fn test_branch() {
             println!("{}", (b + c) as A);
         })
     };
-    for i in range(0, 2) {
+    for i in 0..2 {
         do_i(i)
     }
 }
@@ -952,3 +1004,4 @@ impl<'a> Drop for Stopwatch<'a> {
         STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
     }
 }
+

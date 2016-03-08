@@ -15,7 +15,8 @@ use std::mem::transmute;
 use std::str::FromStr;
 use std::cmp::min;
 use std::any::Any;
-use util::{ByteString, ByteStr, MCRef, CheckMath};
+use std::cell::Cell;
+use util::{ByteString, ByteStr, MCRef, CheckMath, ReadCell, Narrow};
 
 pub mod arch;
 
@@ -340,15 +341,6 @@ pub fn addr_to_seg_off_range(segs: &[Segment], addr: VMA) -> Option<(&Segment, u
     None
 }
 
-pub fn addr_to_seg_idx_off_range(segs: &[Segment], addr: VMA) -> Option<(usize, u64, u64)> {
-    for (i, seg) in segs.enumerate() {
-        if addr >= seg.vmaddr && addr - seg.vmaddr < seg.vmsize {
-            return Some((i, addr - seg.vmaddr, seg.vmsize - (addr - seg.vmaddr)));
-        }
-    }
-    None
-}
-
 pub trait ReadVMA {
     fn read<'a>(&'a self, addr: VMA, size: u64) -> MCRef;
 }
@@ -441,10 +433,17 @@ impl ExecBase {
         let data = some_or!(seg.data.as_ref(), { return None; });
         Some(&data.get()[off as usize .. min(off + size, data.len() as u64) as usize])
     }
-    pub fn ptr_from_slice(&self, slice: &[u8]) -> u64 {
+    pub fn ptr_from_slice<'a, S: util::ROSlicePtr<'a>>(&'a self, slice: S) -> u64 {
         match self.pointer_size {
-            8 => util::copy_from_slice::<u64>(slice, self.endian),
-            4 => util::copy_from_slice::<u32>(slice, self.endian) as u64,
+            8 => util::copy_from_slice::<'a, u64, _>(slice, self.endian),
+            4 => util::copy_from_slice::<'a, u32, _>(slice, self.endian) as u64,
+            _ => panic!("pointer_size")
+        }
+    }
+    pub fn ptr_to_slice<'a, S: util::RWSlicePtr<'a>>(&'a self, slice: S, ptr: u64) {
+        match self.pointer_size {
+            8 => util::copy_to_slice::<'a, u64, _>(slice, &ptr, self.endian),
+            4 => util::copy_to_slice::<'a, u32, _>(slice, &ptr.narrow().unwrap(), self.endian),
             _ => panic!("pointer_size")
         }
     }
@@ -471,44 +470,105 @@ pub fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
     }
 }
 
-struct SegmentWriter {
-    contents: Vec<Option<MCRef>>,
-    cur_idx: usize,
-    cur_data: Vec<u8>,
+pub struct SegmentWriter {
+    contents: Vec<(VMA, u64, SWContents)>,
 }
-impl SegmentWriter {
-    fn new(segs: &mut [Segment]) -> Self {
-        SegmentWriter {
-            contents: segs.map(|seg| Some(seg.steal_data())).collect(),
-            cur_idx: !0,
-            cur_data: Vec::new(),
-        }
-    }
-    fn access_mut(&mut self, idx: usize) -> &mut [u8] {
-        if idx == self.cur_idx {
-            &mut self.cur_data
-        } else {
-            self.contents[self.cur_idx] = Some(MCRef::with_vec(
-                replace(&mut self.cur_data, Vec::new())));
-            if idx != !0 {
-                self.cur_data = self.contents[idx].take().unwrap().into_vec();
+enum SWContents {
+    RO(MCRef),
+    RW(Vec<Cell<u8>>),
+    Fail,
+}
+pub enum SWGetSaneError {
+    NotWritable,
+    Unmapped,
+}
 
-            }
-            self.cur_idx = idx;
-            &mut self.cur_data
+
+impl SegmentWriter {
+    pub fn new(segs: &mut [Segment]) -> Self {
+        SegmentWriter {
+            contents: segs.iter_mut()
+                .map(|seg| (seg.vmaddr, seg.filesize,
+                            SWContents::RO(seg.steal_data())))
+                .collect(),
         }
     }
-    fn close(self, segs: &mut [Segment]) {
+    pub fn access_ro(&self, idx: usize) -> &[ReadCell<u8>] {
+        match &self.contents[idx].2 {
+            &SWContents::RO(ref mcref) => unsafe { transmute(mcref.get()) },
+            &SWContents::RW(ref vec) => unsafe { transmute(&vec[..]) },
+            &SWContents::Fail => panic!(),
+        }
+    }
+    pub fn access_rw(&self, idx: usize) -> Option<&[Cell<u8>]> {
+        match &self.contents[idx].2 {
+            &SWContents::RO(_) => None,
+            &SWContents::RW(ref vec) => Some(&vec[..]),
+            &SWContents::Fail => panic!(),
+        }
+    }
+    pub fn make_seg_rw(&mut self, idx: usize) {
+        let cp = &mut self.contents[idx].2;
+        match replace(cp, SWContents::Fail) {
+            SWContents::RO(mcref) => {
+                let orig: Vec<u8> = mcref.into_vec();
+                let rw: Vec<Cell<u8>> = unsafe { transmute(orig) };
+                *cp = SWContents::RW(rw);
+            },
+            SWContents::RW(vec) => *cp = SWContents::RW(vec),
+            _ => panic!(),
+        }
+    }
+    pub fn get_sane_ro(&self, addr: VMA, size: u64) -> Option<&[ReadCell<u8>]> {
+        let end = addr + size;
+        for &(seg_addr, seg_size, ref data) in &self.contents {
+            let offset = addr.wrapping_sub(seg_addr);
+            if offset < seg_size &&
+               size >= end - addr {
+                let base: &[ReadCell<u8>] = match data {
+                    &SWContents::RO(ref mcref) => unsafe { transmute(mcref.get()) },
+                    &SWContents::RW(ref vec) => unsafe { transmute(&vec[..]) },
+                    &SWContents::Fail => panic!(),
+                };
+                return Some(&base[offset as usize..(offset+size) as usize]);
+            }
+        }
+        None
+    }
+    pub fn get_sane_rw(&self, addr: VMA, size: u64) -> Result<&[Cell<u8>], SWGetSaneError> {
+        let end = addr + size;
+        for &(seg_addr, seg_size, ref data) in &self.contents {
+            let offset = addr.wrapping_sub(seg_addr);
+            if offset < seg_size &&
+               size >= end - addr {
+                let base: &[Cell<u8>] = match data {
+                    &SWContents::RO(_) => return Err(SWGetSaneError::NotWritable),
+                    &SWContents::RW(ref vec) => unsafe { transmute(&vec[..]) },
+                    &SWContents::Fail => panic!(),
+                };
+                return Ok(&base[offset as usize..(offset+size) as usize]);
+            }
+        }
+        Err(SWGetSaneError::Unmapped)
+    }
+    pub fn finish(mut self, segs: &mut [Segment]) {
         assert_eq!(segs.len(), self.contents.len());
-        for (segp, mc) in segs.iter_mut().zip(self.contents.drain()) {
-            segp.data = Some(mc);
+        for (segp, (_, _, ovec)) in segs.iter_mut().zip(self.contents.drain(..)) {
+            segp.data = Some(match ovec {
+                SWContents::RO(mcref) => mcref,
+                SWContents::RW(vec) => {
+                    let orig: Vec<u8> = unsafe { transmute(vec) };
+                    MCRef::with_vec(orig)
+                },
+                SWContents::Fail => panic!(),
+            });
         }
     }
 }
 impl Drop for SegmentWriter {
     fn drop(&mut self) {
         if self.contents.len() != 0 {
-            panic!("SegmentWriter should be close()d");
+            panic!("SegmentWriter should be finish()d");
         }
     }
 }
