@@ -52,26 +52,26 @@ impl<T: Copy> ReadCell<T> {
     }
 }
 
-pub trait ROSlicePtr<'a> : Copy {
-    fn as_ptr(self) -> *const u8;
-    fn len(self) -> usize;
+pub unsafe trait ROSlicePtr {
+    fn as_ptr(&self) -> *const u8;
+    fn len(&self) -> usize;
 }
-pub trait RWSlicePtr<'a> {
+pub unsafe trait RWSlicePtr<'a> {
     fn as_mut_ptr(self) -> *mut u8;
     fn len(&self) -> usize;
 }
 macro_rules! impl_rosp { ($ty:ty) => {
-    impl<'a> ROSlicePtr<'a> for $ty {
+    unsafe impl ROSlicePtr for $ty {
         #[inline(always)]
-        fn as_ptr(self) -> *const u8 {
+        fn as_ptr(&self) -> *const u8 {
             unsafe { transmute(self.as_ptr()) }
         }
         #[inline(always)]
-        fn len(self) -> usize { self.len() }
+        fn len(&self) -> usize { self.len() }
     }
 } }
 macro_rules! impl_rwsp { ($ty:ty) => {
-    impl<'a> RWSlicePtr<'a> for $ty {
+    unsafe impl<'a> RWSlicePtr<'a> for $ty {
         #[inline(always)]
         fn as_mut_ptr(self) -> *mut u8 {
             unsafe { transmute(self.as_ptr()) }
@@ -80,14 +80,17 @@ macro_rules! impl_rwsp { ($ty:ty) => {
         fn len(&self) -> usize { (**self).len() }
     }
 } }
-impl_rosp!(&'a [u8]);
-impl_rosp!(&'a [Cell<u8>]);
-impl_rosp!(&'a [ReadCell<u8>]);
+
+impl_rosp!([u8]);
+impl_rosp!([Cell<u8>]);
+impl_rosp!([ReadCell<u8>]);
+impl_rosp!([i8]);
+
 impl_rwsp!(&'a [Cell<u8>]);
 impl_rwsp!(&'a mut [u8]);
 
 #[inline]
-pub fn copy_from_slice<'a, T: Copy + Swap, S: ROSlicePtr<'a>>(slice: S, end: Endian) -> T {
+pub fn copy_from_slice<'a, T: Copy + Swap, S: ?Sized + ROSlicePtr>(slice: &S, end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninitialized();
@@ -475,25 +478,19 @@ impl<'a> Add<&'a ByteStr> for ByteString {
     }
 }
 
-pub trait X8 {} //: std::marker::MarkerTrait {}
-impl X8 for u8 {}
-impl X8 for i8 {}
-
 #[inline]
-pub fn from_cstr<T: X8>(chs: &[T]) -> &ByteStr {
-    let chs: &[u8] = unsafe { transmute(chs) };
+pub fn from_cstr<'a, S: ?Sized + ROSlicePtr>(chs: &S) -> &'a ByteStr {
     let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
-    ByteStr::from_bytes(&chs[..len])
+    unsafe { ByteStr::from_bytes(std::slice::from_raw_parts(chs.as_ptr(), len)) }
 }
 
 #[inline]
-pub fn from_cstr_strict<T: X8>(chs: &[T]) -> Option<&ByteStr> {
-    let chs: &[u8] = unsafe { transmute(chs) };
+pub fn from_cstr_strict<'a, S: ?Sized + ROSlicePtr>(chs: &S) -> Option<&'a ByteStr> {
     let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
     if len == chs.len() {
         None
     } else {
-        Some(ByteStr::from_bytes(&chs[..len]))
+        unsafe { Some(ByteStr::from_bytes(std::slice::from_raw_parts(chs.as_ptr(), len))) }
     }
 }
 
@@ -1005,3 +1002,7 @@ impl<'a> Drop for Stopwatch<'a> {
     }
 }
 
+#[inline(always)]
+pub fn empty_slice<T>() -> &'static [T] {
+    unsafe { std::slice::from_raw_parts(!0 as *const T, 0) }
+}

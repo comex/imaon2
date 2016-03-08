@@ -82,6 +82,9 @@ impl VMA {
     pub fn wrapping_sub(self, other: VMA) -> u64 {
         self.0.wrapping_sub(other.0)
     }
+    pub fn saturating_add(self, addend: u64) -> VMA {
+        VMA(self.0.saturating_add(addend))
+    }
 }
 // TODO - should this be signed or something?
 impl std::ops::Sub<VMA> for VMA {
@@ -433,10 +436,10 @@ impl ExecBase {
         let data = some_or!(seg.data.as_ref(), { return None; });
         Some(&data.get()[off as usize .. min(off + size, data.len() as u64) as usize])
     }
-    pub fn ptr_from_slice<'a, S: util::ROSlicePtr<'a>>(&'a self, slice: S) -> u64 {
+    pub fn ptr_from_slice<S: ?Sized + util::ROSlicePtr>(&self, slice: &S) -> u64 {
         match self.pointer_size {
-            8 => util::copy_from_slice::<'a, u64, _>(slice, self.endian),
-            4 => util::copy_from_slice::<'a, u32, _>(slice, self.endian) as u64,
+            8 => util::copy_from_slice::<u64, _>(slice, self.endian),
+            4 => util::copy_from_slice::<u32, _>(slice, self.endian) as u64,
             _ => panic!("pointer_size")
         }
     }
@@ -520,10 +523,11 @@ impl SegmentWriter {
         }
     }
     pub fn get_sane_ro(&self, addr: VMA, size: u64) -> Option<&[ReadCell<u8>]> {
+        if size == 0 { return Some(util::empty_slice()) }
         let end = addr + size;
         for &(seg_addr, seg_size, ref data) in &self.contents {
             let offset = addr.wrapping_sub(seg_addr);
-            if offset < seg_size &&
+            if offset <= seg_size &&
                size >= end - addr {
                 let base: &[ReadCell<u8>] = match data {
                     &SWContents::RO(ref mcref) => unsafe { transmute(mcref.get()) },
@@ -536,10 +540,11 @@ impl SegmentWriter {
         None
     }
     pub fn get_sane_rw(&self, addr: VMA, size: u64) -> Result<&[Cell<u8>], SWGetSaneError> {
+        if size == 0 { return Ok(util::empty_slice()) }
         let end = addr + size;
         for &(seg_addr, seg_size, ref data) in &self.contents {
             let offset = addr.wrapping_sub(seg_addr);
-            if offset < seg_size &&
+            if offset <= seg_size &&
                size >= end - addr {
                 let base: &[Cell<u8>] = match data {
                     &SWContents::RO(_) => return Err(SWGetSaneError::NotWritable),

@@ -340,7 +340,7 @@ impl DynamicInfo {
             dep_libs.push(DepLib { path: filename.to_owned().into(), private: i });
             dep_lib_idx_to_verneed_idxs.push(SmallVector::zero());
         }
-        for vn_idx in 0..ocs.count {
+        for _ in 0..ocs.count {
             let data = elf.eb.read(addr, ocs.size);
             if (data.len() as u64) < ocs.size {
                 errln!("warning: verneed data truncated");

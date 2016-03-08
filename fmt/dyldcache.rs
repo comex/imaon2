@@ -79,7 +79,6 @@ pub fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, range: Option<(u64, u
         let e = some_or!(start.check_add(size).check_add(eb - 1),
                          { errln!("iter_slide_info: range overflow"); return false; })
                 / eb * 2;
-        println!("{} {} {}", s, e, toc.len());
         let e = min(e, toc.len() as u64);
         let s = min(s, e);
         toc = &toc[s as usize..e as usize];
