@@ -588,6 +588,26 @@ impl MCRef {
     pub fn get(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts::<u8>(self.ptr, self.len) }
     }
+
+    pub fn get_mut(&mut self) -> Option<&mut [u8]> {
+        if let Some(mc) = Arc::get_mut(&mut self.mc) {
+            if let &mut MemoryContainer::BoxedSlice(ref mut bs) = mc {
+                return Some(&mut bs[..]);
+            }
+        }
+        None
+    }
+
+    pub fn get_mut_decow(&mut self) -> &mut [u8] {
+        if let Some(sl) = self.get_mut() {
+            sl
+        } else {
+            let vec = self.get.to_owned();
+            *self = MCRef::with_vec(vec);
+            self.get_mut().unwrap()
+        }
+    }
+
     pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
         let mine = self.ptr as usize;
         let theirs = other.ptr as usize;

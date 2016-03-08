@@ -147,6 +147,9 @@ impl Segment {
     pub fn get_data(&self) -> &[u8] {
         self.data.as_ref().unwrap().get()
     }
+    pub fn steal_data(&mut self) -> MCRef {
+        replace(&mut self.data, None).unwrap()
+    }
 }
 
 #[derive(Default)]
@@ -337,6 +340,15 @@ pub fn addr_to_seg_off_range(segs: &[Segment], addr: VMA) -> Option<(&Segment, u
     None
 }
 
+pub fn addr_to_seg_idx_off_range(segs: &[Segment], addr: VMA) -> Option<(usize, u64, u64)> {
+    for (i, seg) in segs.enumerate() {
+        if addr >= seg.vmaddr && addr - seg.vmaddr < seg.vmsize {
+            return Some((i, addr - seg.vmaddr, seg.vmsize - (addr - seg.vmaddr)));
+        }
+    }
+    None
+}
+
 pub trait ReadVMA {
     fn read<'a>(&'a self, addr: VMA, size: u64) -> MCRef;
 }
@@ -436,6 +448,14 @@ impl ExecBase {
             _ => panic!("pointer_size")
         }
     }
+    pub fn read_cstr_sane(&self, addr: VMA) -> Option<&ByteStr> {
+        let (seg, off, _) =
+            some_or!(addr_to_seg_off_range(&self.segments, addr),
+                     { return None; });
+        let data = some_or!(seg.data.as_ref(), { return None; });
+        let data = &data.get()[off as usize..];
+        util::from_cstr_strict(data)
+    }
 }
 
 pub fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
@@ -451,3 +471,44 @@ pub fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
     }
 }
 
+struct SegmentWriter {
+    contents: Vec<Option<MCRef>>,
+    cur_idx: usize,
+    cur_data: Vec<u8>,
+}
+impl SegmentWriter {
+    fn new(segs: &mut [Segment]) -> Self {
+        SegmentWriter {
+            contents: segs.map(|seg| Some(seg.steal_data())).collect(),
+            cur_idx: !0,
+            cur_data: Vec::new(),
+        }
+    }
+    fn access_mut(&mut self, idx: usize) -> &mut [u8] {
+        if idx == self.cur_idx {
+            &mut self.cur_data
+        } else {
+            self.contents[self.cur_idx] = Some(MCRef::with_vec(
+                replace(&mut self.cur_data, Vec::new())));
+            if idx != !0 {
+                self.cur_data = self.contents[idx].take().unwrap().into_vec();
+
+            }
+            self.cur_idx = idx;
+            &mut self.cur_data
+        }
+    }
+    fn close(self, segs: &mut [Segment]) {
+        assert_eq!(segs.len(), self.contents.len());
+        for (segp, mc) in segs.iter_mut().zip(self.contents.drain()) {
+            segp.data = Some(mc);
+        }
+    }
+}
+impl Drop for SegmentWriter {
+    fn drop(&mut self) {
+        if self.contents.len() != 0 {
+            panic!("SegmentWriter should be close()d");
+        }
+    }
+}
