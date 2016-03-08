@@ -10,11 +10,17 @@ override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
 ifeq ($(OPT),1)
 LIB := rlib
 override RUSTFLAGS := $(RUSTFLAGS) -O --cfg opt
-RUSTFLAGS_bin := -C lto
+#RUSTFLAGS_bin := -C lto
 CARGO_BUILD_TYPE := release
 override CARGO_BUILD_FLAGS := $(CARGO_BUILD_FLAGS) --release
-OUT := ./outrel
+OUT := ./outopt
+NOT_OUT := ./out
 else
+ifneq ($(OPT),0)
+    ifneq ($(OPT),)
+        $(error OPT should be blank, 0, or 1)
+    endif
+endif
 LIB := dylib
 override RUSTFLAGS := $(RUSTFLAGS) -C codegen-units=1 -C prefer-dynamic
 ifneq ($(NDEBUG),1)
@@ -23,6 +29,7 @@ endif
 CARGO_BUILD_TYPE := debug
 #CARGO_BUILD_FLAGS :=
 OUT := ./out
+NOT_OUT := ./outopt
 endif
 
 ifneq ($(TARGET),)
@@ -137,3 +144,7 @@ clean:
 
 extraclean: clean
 	rm -rf tables/llvm-tblgen Cargo.lock
+
+$(NOT_OUT)/%:
+	@echo "wrong output directory ('make outopt/foo OPT=1' or 'make out/foo')"
+	@exit 1
