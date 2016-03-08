@@ -47,7 +47,7 @@ fn bstr_to_path(a: &ByteStr) -> Result<&Path, std::str::Utf8Error> {
 fn usage() -> ! {
     println!(
     "Yet Another Shared Cache Extractor
-    Usage: yasce <cache> [basename | full path | nothing to extract all] [-o dir/file] [-v]"
+    Usage: yasce <cache> [basename | full path | --all | blank to list files] [-o dir/file] [-v]"
     );
     util::exit();
 }
@@ -58,8 +58,11 @@ fn main() {
     let mut args_it = std::env::args_os();
     let mut output_name = None;
     let mut verbose = false;
+    let mut extract_all = false;
     let dash_o = OsStr::new("-o");
     let dash_v = OsStr::new("-v");
+    let dash_dash_all = OsStr::new("--all");
+    let dash_dash = OsStr::new("--");
     while let Some(arg) = args_it.next() {
         if arg == dash_o {
             if output_name.is_some() {
@@ -67,13 +70,17 @@ fn main() {
                 usage();
             }
             output_name = Some(args_it.next().unwrap_or_else(|| usage()));
-            continue;
-        }
-        if arg == dash_v {
+        } else if arg == dash_v {
             verbose = true;
-            continue;
+        } else if arg == dash_dash_all {
+            extract_all = true;
+        } else if arg == dash_dash {
+            while let Some(arg) = args_it.next() {
+                base_args.push(arg);
+            }
+        } else {
+            base_args.push(arg);
         }
-        base_args.push(arg);
     }
     let argc = base_args.len();
     if argc != 2 && argc != 3 { usage(); }
@@ -104,7 +111,7 @@ fn main() {
         for ii in &dc.image_info {
             if ii.path == filename {
                 if which_extracted.is_some() {
-                    errln!("warning: I only extracted the first of multiple files with this name");
+                    errln!("warning: only extracted the first of multiple files with path '{}'", ii.path);
                     return;
                 }
                 extract_one(&dc, ii, get_output_path(ii, &output_name));
@@ -127,23 +134,32 @@ fn main() {
                 which_extracted = Some(&ii.path);
             }
         }
-    } else {
+
+        if which_extracted.is_none() {
+            errln!("no library in cache is named '{}'", filename);
+            util::exit();
+        }
+    } else if extract_all {
         let output_base = if let Some(ref name) = output_name {
             let ob = Path::new(name);
             if let Some(parent) = ob.parent() {
                 if !parent.exists() {
                     errln!("no such directory: {:?}", parent);
-                    return;
+                    util::exit();
                 }
             }
             ob
         } else {
             Path::new("extracted")
         };
-        let threads = if verbose { 1 } else { num_cpus::get() };
-        let pool = ThreadPool::new(threads);
+
         let xdc = Arc::new(dc);
-        let (tx, rx) = channel();
+        let stuff = if verbose { None } else {
+            let threads = num_cpus::get();
+            let pool = ThreadPool::new(threads);
+            let (tx, rx) = channel();
+            Some((pool, tx, rx))
+        };
         for (i, ii) in xdc.image_info.iter().enumerate() {
             let mut output_path = output_base.to_owned();
             assert_eq!(ii.path[0], b'/');
@@ -156,10 +172,7 @@ fn main() {
             if let Some(p) = output_path.parent() {
                 std::fs::create_dir_all(p).unwrap();
             }
-            if verbose {
-                println!("-> {}", ii.path);
-                extract_one(&xdc, ii, &output_path);
-            } else {
+            if let Some((ref pool, ref tx, _)) = stuff {
                 let xdc_ = xdc.clone();
                 let tx_ = tx.clone();
                 pool.execute(move || {
@@ -167,9 +180,12 @@ fn main() {
                     extract_one(&xdc_, ii, &output_path);
                     tx_.send(()).unwrap();
                 });
+            } else {
+                println!("-> {}", ii.path);
+                extract_one(&xdc, ii, &output_path);
             }
         }
-        if !verbose {
+        if let Some((_, _, ref rx)) = stuff {
             let count = xdc.image_info.len();
             print!("{}", format!("0/{} ", count));
             for i in 0..count {
@@ -177,6 +193,12 @@ fn main() {
                 let text = format!("\x1b[1K\x1b[999D{}/{} ", i, count);
                 print!("{}", text);
             }
+            println!("");
+        }
+    } else {
+        // just list
+        for ii in &dc.image_info {
+            println!("{} @ 0x{:x}", ii.path, ii.address);
         }
     }
 }
