@@ -102,7 +102,7 @@ all: out-td
 endif
 
 $(OUT)/cargo-build: Cargo.toml
-	test -a Cargo.lock && cargo update || true
+	test -e Cargo.lock && cargo update || true
 	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
 	RUSTC=$(RUSTC) cargo build $(CARGO_BUILD_FLAGS)
 	touch $@ # xxx
