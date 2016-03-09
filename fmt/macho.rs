@@ -1917,13 +1917,18 @@ impl MachO {
                 return;
             },
         };
+        let arch = self.eb.arch;
         for segment in &self.eb.segments {
             let content = segment.data.as_ref().unwrap().get();
             let pointer_size = self.eb.pointer_size;
             sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
                 let offset = (ptr - segment.vmaddr) as usize;
-                let val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
+                let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
                 if val == 0 { return; }
+                if arch == arch::AArch64 {
+                    // http://sourcerytools.com/pipermail/cxx-abi-dev/2013-November/002623.html
+                    val &= !(0xffu64 << 56);
+                }
                 let val = VMA(val);
                 if exec::addr_to_seg_off_range(&dc.eb.segments, val).is_none() {
                     errln!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
