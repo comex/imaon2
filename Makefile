@@ -3,8 +3,9 @@
 RUSTC := rustc
 TARGET :=
 
-RUSTSRC := /usr/src/rust
-LLVM := $(RUSTSRC)/src/llvm
+ifneq ($(USE_LLVM),)
+LLVM := /usr/src/rust/src/llvm
+endif
 
 override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
 ifeq ($(OPT),1)
@@ -116,14 +117,14 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
-	python fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
+	python2.7 fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
 
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
 $(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util deps)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
-	python fmt/bindgen.py "$<" -match elf.h \
+	python2.7 fmt/bindgen.py "$<" -match elf.h \
 		-enum2string 'EM_' 'e_machine_to_str' 'lower strip_prefix' \
 		-enum2string 'DT_' 'd_tag_to_str' '' \
 		> "$@"
