@@ -25,7 +25,7 @@ use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
 use std::borrow::Cow;
 use std::cell::Cell;
-use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
+use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
 
 pub mod dyldcache;
 use dyldcache::DyldCache;
@@ -1628,14 +1628,16 @@ impl MachO {
         */
 
         let _sw = stopwatch("fix_objc_from_cache");
-        let data_idx = some_or!(
-            self.eb.segments.iter().position(
-                |seg| seg.name.is_some_and(|n| &**n == ByteStr::from_str("__DATA"))),
-            { /* no __DATA */ return; });
 
         let mut segw = SegmentWriter::new(&mut self.eb.segments);
         { // <-
-        segw.make_seg_rw(data_idx);
+        for (i, seg) in self.eb.segments.iter().enumerate() {
+            if let Some(ref name) = seg.name {
+                if &***name == b"__DATA" || &***name == b"__TEXT" {
+                    segw.make_seg_rw(i);
+                }
+            }
+        }
         let outer_read = |vma: VMA, size: u64| -> Option<&'dc [u8]> {
             let res = dc.eb.read_sane(vma, size);
             if let None = res {
@@ -1817,6 +1819,24 @@ impl MachO {
             let (base_addr, len) = self.sect_bounds_named("__DATA", "__objc_selrefs");
             for addr in (0..len).step_by(pointer_size64) {
                 visit_selector_pp(addr + base_addr);
+            }
+        }
+        {
+            // If this is libobjc itself, we should clear the preoptimization stuff - in the
+            // original dylib it's all 0 except the 4 byte version at the start of RO
+            let (opt_ro_addr, opt_ro_size) = self.sect_bounds_named("__TEXT", "__objc_opt_ro");
+            if opt_ro_size != 0 {
+                if opt_ro_size < 4 {
+                    errln!("fix_objc_from_cache: __objc_opt_ro size too small");
+                } else {
+                    segw.get_sane_rw(opt_ro_addr + 4, opt_ro_size - 4).unwrap()
+                        .set_memory(0);
+                }
+            }
+            let (opt_rw_addr, opt_rw_size) = self.sect_bounds_named("__DATA", "__objc_opt_rw");
+            if opt_rw_size != 0 {
+                segw.get_sane_rw(opt_rw_addr + 4, opt_rw_size - 4).unwrap()
+                    .set_memory(0);
             }
         }
         } // <-

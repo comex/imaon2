@@ -1,4 +1,5 @@
-#![feature(libc, plugin, core_intrinsics, const_fn, time2)]
+#![feature(libc, plugin, core_intrinsics, const_fn)]
+#![cfg_attr(stopwatch, feature(time2))]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -55,9 +56,14 @@ pub unsafe trait ROSlicePtr {
     fn as_ptr(&self) -> *const u8;
     fn len(&self) -> usize;
 }
-pub unsafe trait RWSlicePtr<'a> {
+pub unsafe trait RWSlicePtr<'a>: Sized {
     fn as_mut_ptr(self) -> *mut u8;
     fn len(&self) -> usize;
+    #[inline]
+    fn set_memory(self, byte: u8) {
+        let len = self.len();
+        unsafe { memset(self.as_mut_ptr(), byte as i32, len); }
+    }
 }
 macro_rules! impl_rosp { ($ty:ty) => {
     unsafe impl ROSlicePtr for $ty {
@@ -902,16 +908,6 @@ unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {
 pub fn copy_memory(src: &[u8], dst: &mut [u8]) {
     assert_eq!(dst.len(), src.len());
     unsafe { memmove(dst.as_mut_ptr(), src.as_ptr(), dst.len()); }
-}
-
-pub trait XSetMemory {
-    fn set_memory(&mut self, byte: u8);
-}
-impl XSetMemory for [u8] {
-    #[inline]
-    fn set_memory(&mut self, byte: u8) {
-        unsafe { memset(self.as_mut_ptr(), byte as i32, self.len()); }
-    }
 }
 
 pub fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T> {

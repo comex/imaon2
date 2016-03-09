@@ -481,6 +481,7 @@ enum SWContents {
     RW(Vec<Cell<u8>>),
     Fail,
 }
+#[derive(Debug)]
 pub enum SWGetSaneError {
     NotWritable,
     Unmapped,
