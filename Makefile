@@ -117,7 +117,9 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
-	python2.7 fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o > "$@"
+	python2.7 fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o \
+		-force-type 'LC_' u32 \
+		> "$@" || (rm -f "$@"; false)
 
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
@@ -127,7 +129,7 @@ $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	python2.7 fmt/bindgen.py "$<" -match elf.h \
 		-enum2string 'EM_' 'e_machine_to_str' 'lower strip_prefix' \
 		-enum2string 'DT_' 'd_tag_to_str' '' \
-		> "$@"
+		> "$@" || (rm -f "$@"; false)
 $(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
 $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)

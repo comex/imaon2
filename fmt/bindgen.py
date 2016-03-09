@@ -9,6 +9,7 @@ matches = []
 clang_args = []
 bg_args = []
 e2ss = []
+force_types = []
 hfile = None
 i = 0
 while i < len(all_args):
@@ -26,6 +27,11 @@ while i < len(all_args):
         e2s['transform'] = e2s['transform'].lower().strip().split()
         e2ss.append(e2s)
         i += 4
+    elif all_args[i] == '-force-type':
+        assert len(all_args) >= i + 3
+        regex, ty = all_args[i+1:i+3]
+        force_types.append((regex, ty))
+        i += 3
     elif all_args[i].endswith('.h'):
         assert hfile is None
         bg_args.append('-include')
@@ -85,13 +91,21 @@ bg = re.sub(re.compile('(#\[repr\(C\)\]\n#\[derive\(Copy\)\]\npub struct.*?\n})'
 consts = OrderedDict()
 def f(m):
     name, ty, val = m.groups()
+    if ty == '':
+        for regex, _ty in force_types:
+            if re.match(regex, name):
+                ty = _ty
+                break
+        else:
+            ty = 'i32' if val.startswith('-') else 'u32'
     val = int(val)
-    if val < 0 and ty.startswith('::libc::c_u'):
+    if val < 0 and (ty.startswith('::libc::c_u') or ty.startswith('u')):
         # xxx bindgen bug?
-        val = {'::libc::c_uint': 2**32, '::libc::c_ulong': 2**64}[ty] + val
+        val = {'::libc::c_uint': 2**32, '::libc::c_ulong': 2**64, 'u32': 2**32, 'u64': 2**64}[ty] + val
     consts[name] = val
     return 'pub const %s: %s = %s;' % (name, ty, val)
 bg = re.sub(re.compile('^pub const xxxenum([^ ]*):\s+(::libc::c_u?(?:int|long))\s+=\s+(-?[0-9]+);', re.S | re.M), f, bg)
+bg = re.sub(re.compile('(?:^#\[[^\]]*\]\n)*^pub enum\s+[^ ]*\s+{\s+xxxenum([^ ]*)\s+=\s+()(-?[0-9]+),?\s+}', re.S | re.M), f, bg)
 print bg
 assert 'xxxenum' not in bg
 

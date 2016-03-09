@@ -152,7 +152,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             match sym.val {
                 SymbolValue::Addr(vma) =>        print!("{:<16}", vma),
                 SymbolValue::Abs(vma) =>         print!("{:<16}", vma),
-                SymbolValue::Undefined =>        print!("[undef]         "),
+                SymbolValue::Undefined(..) =>    print!("[undef]         "),
                 SymbolValue::Resolver(vma, _) => print!("{:<16}", vma),
                 SymbolValue::ReExport(_) =>      print!("[re-export]     "),
                 SymbolValue::ThreadLocal(vma) => print!("{:<16}", vma),

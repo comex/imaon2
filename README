@@ -2,6 +2,7 @@ Dependencies:
 - nightly Rust (won't build on stable)
 - rust-bindgen installed to $PATH: run 'cargo install bindgen' (and wait, and
   wait...)
+    - clang and libclang (required by my script and bindgen, respectively)
 - python2.7
 
 To build yasce, install a nightly Rust, and run
@@ -17,3 +18,5 @@ You can also build out/exectool, which is in development.
 The release version is statically linked, except for libc; the debug version is
 dynamically linked against both dylibs corresponding to the crates and the
 standard library.
+
+I develop on OS X; build has been tested (on some point) on Debian.

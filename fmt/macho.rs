@@ -126,7 +126,7 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
     // some stuff is missing, like common symbols
     let mut res: x_nlist_64 = Default::default();
     if sym.is_weak {
-        res.n_type |= if let SymbolValue::Undefined = sym.val { N_WEAK_REF } else { N_WEAK_DEF } as u8
+        res.n_type |= if let SymbolValue::Undefined(..) = sym.val { N_WEAK_REF } else { N_WEAK_DEF } as u8
     }
     if sym.is_public {
         res.n_type |= N_EXT as u8;
