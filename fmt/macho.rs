@@ -669,7 +669,7 @@ impl MachO {
                     let segprot = u32_to_prot(sc.initprot as u32);
                     let mut fileoff = sc.fileoff as u64;
                     let name = util::from_cstr(&sc.segname as &[i8]).to_owned();
-                    let is_cache_text = hdr_offset != 0 && name == "__TEXT";
+                    let is_cache_text = hdr_offset != 0 && &name == "__TEXT";
                     if is_cache_text {
                         // u_d_s_c just keeps this from the original file.  Somehow, for the arm64
                         // cache, the offset isn't even consistent between __TEXT's fileoff and
@@ -1614,15 +1614,11 @@ impl MachO {
 
         segw.finish(&mut self.eb.segments);
     }
-    fn sect_bounds_named(&self, segname: &str, sectname: &str) -> (VMA, u64) {
-        let segname = ByteStr::from_str(segname);
+    fn sect_bounds_named(&self, sectname: &str) -> (VMA, u64) {
         let sectname = ByteStr::from_str(sectname);
         for section in &self.eb.sections {
-            if &**section.name.as_ref().unwrap() == sectname {
-                let segment = &self.eb.segments[section.seg_idx.unwrap()];
-                if &**segment.name.as_ref().unwrap() == segname {
-                    return (section.vmaddr, section.vmsize);
-                }
+            if section.name.as_ref().unwrap() == sectname {
+                return (section.vmaddr, section.vmsize);
             }
         }
         (VMA(0), 0)
@@ -1649,12 +1645,13 @@ impl MachO {
         { // <-
         for (i, seg) in self.eb.segments.iter().enumerate() {
             if let Some(ref name) = seg.name {
-                if &***name == b"__DATA" || &***name == b"__TEXT" {
+                if name == "__TEXT" || name.starts_with(b"__DATA") {
                     segw.make_seg_rw(i);
                 }
             }
         }
         let outer_read = |vma: VMA, size: u64| -> Option<&'dc [u8]> {
+            if vma.0 == 4 { panic!() }
             let res = dc.eb.read_sane(vma, size);
             if let None = res {
                 errln!("fix_objc_from_cache: read error at {}", vma);
@@ -1687,7 +1684,7 @@ impl MachO {
         let mut sel_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
 
         {
-            let (mut methname_addr, methname_size) = self.sect_bounds_named("__TEXT", "__objc_methname");
+            let (mut methname_addr, methname_size) = self.sect_bounds_named("__objc_methname");
             let mut methname = segw.get_sane_ro(methname_addr, methname_size).unwrap();
             loop {
                 let name = some_or!(util::from_cstr_strict(methname), break);
@@ -1699,13 +1696,13 @@ impl MachO {
         }
 
         let proto_name = |proto_ptr: VMA| -> Option<&'dc ByteStr> {
-            let name_addr = read_ptr!(some_or!(proto_ptr.check_add(8), {
+            let name_addr = read_ptr!(some_or!(proto_ptr.check_add(pointer_size64), {
                 errln!("fix_objc_from_cache: integer overflow");
                 return None;
             }), return None);
             let res = dc.eb.read_cstr_sane(VMA(name_addr));
             if res.is_none() {
-                errln!("fix_objc_from_cache: can't read protocol name at {}", name_addr);
+                errln!("fix_objc_from_cache: can't read name at {} for protocol at {}", name_addr, proto_ptr);
             }
             res
         };
@@ -1742,11 +1739,12 @@ impl MachO {
 
         let mut proto_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
         {
-            let (protolist_addr, protolist_size) = self.sect_bounds_named("__DATA", "__objc_protolist");
+            let (protolist_addr, protolist_size) = self.sect_bounds_named("__objc_protolist");
             let protolist = segw.get_sane_ro(protolist_addr, protolist_size).unwrap();
             for proto_ptr_buf in protolist.chunks(self.eb.pointer_size) {
                 let proto_ptr = VMA(self.eb.ptr_from_slice(proto_ptr_buf));
-                proto_name_to_addr.insert(some_or!(proto_name(proto_ptr), continue), proto_ptr);
+                let name = some_or!(proto_name(proto_ptr), continue);
+                proto_name_to_addr.insert(name, proto_ptr);
                 for i in 3..7 {
                     visit_method_list(VMA(read_ptr!(proto_ptr + i * pointer_size64, continue)));
                 }
@@ -1767,7 +1765,7 @@ impl MachO {
         let visit_proto_list = |list: VMA| {
             if list.0 == 0 { return; }
             let protocol_count = read_ptr!(list, return);
-            let mut protocol_pp = list.saturating_add(8);
+            let mut protocol_pp = list.saturating_add(pointer_size64);
             for _ in 0..protocol_count {
                 visit_protocol_pp(protocol_pp);
                 protocol_pp = protocol_pp.saturating_add(pointer_size64);
@@ -1782,7 +1780,7 @@ impl MachO {
         }
 
         {
-            let (classlist_addr, classlist_size) = self.sect_bounds_named("__DATA", "__objc_classlist");
+            let (classlist_addr, classlist_size) = self.sect_bounds_named("__objc_classlist");
             let classlist = segw.get_sane_ro(classlist_addr, classlist_size).unwrap();
             for cls_ptr_buf in classlist.chunks(self.eb.pointer_size) {
                 let mut cls_ptr = VMA(dc.eb.ptr_from_slice(cls_ptr_buf));
@@ -1810,7 +1808,7 @@ impl MachO {
 
         }
         {
-            let (catlist_addr, catlist_size) = self.sect_bounds_named("__DATA", "__objc_catlist");
+            let (catlist_addr, catlist_size) = self.sect_bounds_named("__objc_catlist");
             let catlist = segw.get_sane_ro(catlist_addr, catlist_size).unwrap();
             for cat_ptr_buf in catlist.chunks(self.eb.pointer_size) {
                 let cat_ptr = VMA(self.eb.ptr_from_slice(cat_ptr_buf));
@@ -1826,13 +1824,13 @@ impl MachO {
         }
 
         {
-            let (base_addr, len) = self.sect_bounds_named("__DATA", "__objc_protorefs");
+            let (base_addr, len) = self.sect_bounds_named("__objc_protorefs");
             for addr in (0..len).step_by(pointer_size64) {
                 visit_protocol_pp(addr + base_addr);
             }
         }
         {
-            let (base_addr, len) = self.sect_bounds_named("__DATA", "__objc_selrefs");
+            let (base_addr, len) = self.sect_bounds_named("__objc_selrefs");
             for addr in (0..len).step_by(pointer_size64) {
                 visit_selector_pp(addr + base_addr);
             }
@@ -1840,7 +1838,7 @@ impl MachO {
         {
             // If this is libobjc itself, we should clear the preoptimization stuff - in the
             // original dylib it's all 0 except the 4 byte version at the start of RO
-            let (opt_ro_addr, opt_ro_size) = self.sect_bounds_named("__TEXT", "__objc_opt_ro");
+            let (opt_ro_addr, opt_ro_size) = self.sect_bounds_named("__objc_opt_ro");
             if opt_ro_size != 0 {
                 if opt_ro_size < 4 {
                     errln!("fix_objc_from_cache: __objc_opt_ro size too small");
@@ -1849,7 +1847,7 @@ impl MachO {
                         .set_memory(0);
                 }
             }
-            let (opt_rw_addr, opt_rw_size) = self.sect_bounds_named("__DATA", "__objc_opt_rw");
+            let (opt_rw_addr, opt_rw_size) = self.sect_bounds_named("__objc_opt_rw");
             if opt_rw_size != 0 {
                 segw.get_sane_rw(opt_rw_addr + 4, opt_rw_size - 4).unwrap()
                     .set_memory(0);
