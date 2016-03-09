@@ -1905,9 +1905,9 @@ impl MachO {
             if exec::addr_to_seg_off_range(segments, val).is_some() {
                 return;
             }
-            println!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
-                     sect_name(&self.eb.sections, ptr),
-                     sect_name(&dc.eb.sections, val));
+            errln!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
+                   sect_name(&self.eb.sections, ptr),
+                   sect_name(&dc.eb.sections, val));
         });
 
     }
