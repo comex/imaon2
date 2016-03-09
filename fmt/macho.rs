@@ -388,24 +388,23 @@ impl exec::Exec for MachO {
             },
             SymbolSource::Exported => {
                 let mut out = Vec::new();
-                self.parse_dyld_export(self.dyld_export.get(), None,
-                                       &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, Cow<'a, ByteStr>)>, offset: usize| {
+                self.parse_dyld_export(self.dyld_export.get(), None, &mut |state: &ParseDyldExportState| {
                     out.push(exec::Symbol {
-                        name: name.to_owned().into(),
+                        name: state.name.to_owned().into(),
                         is_public: true,
-                        is_weak: flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
-                        val: if let Some((_, name)) = reexport {
-                            SymbolValue::ReExport(name.into())
-                        } else if let Some(resolver) = resolver {
-                            SymbolValue::Resolver(resolver, Some(addr))
-                        } else { match flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
-                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => SymbolValue::Addr(addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => SymbolValue::ThreadLocal(addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => SymbolValue::Abs(addr),
+                        is_weak: state.flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
+                        val: if let Some((_, ref name)) = state.reexport {
+                            SymbolValue::ReExport((*name).to_owned().into())
+                        } else if let Some(resolver) = state.resolver {
+                            SymbolValue::Resolver(resolver, Some(state.addr))
+                        } else { match state.flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
+                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => SymbolValue::Addr(state.addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => SymbolValue::ThreadLocal(state.addr),
+                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => SymbolValue::Abs(state.addr),
                             _ => panic!("muri")
                         } },
                         size: None,
-                        private: offset,
+                        private: state.offset,
                     });
                 });
                 out
@@ -543,6 +542,14 @@ struct ParseDyldBindState<'s> {
     symbol: Option<&'s ByteStr>,
     already_bound_this_symbol: bool,
     which: WhichBind,
+}
+struct ParseDyldExportState<'a> {
+    name: &'a ByteStr,
+    addr: VMA,
+    flags: u32,
+    resolver: Option<VMA>,
+    reexport: Option<(u64, &'a ByteStr)>,
+    offset: usize,
 }
 
 struct ReaggregatedSyms {
@@ -1339,14 +1346,14 @@ impl MachO {
             }
         }
     }
-    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, Cow<'a, ByteStr>)>, usize)) {
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut for<'b> FnMut(&'b ParseDyldExportState<'b>)) {
         if dyld_export.is_empty() { return; }
         enum State<'x> {
-            Search { search_for: &'x ByteStr, offset: usize },
+            Search { search_for: &'x ByteStr, offset: usize, count: usize },
             Exhaustive { seen: HashSet<usize, TrivialState>, todo: Vec<(usize, ByteString)> },
         }
         let mut state: State = if let Some(search_for) = search_for {
-            State::Search { search_for: search_for, offset: 0 }
+            State::Search { search_for: search_for, offset: 0, count: 0 }
         } else {
             State::Exhaustive {
                 seen: HashSet::with_hasher(TrivialState),
@@ -1359,8 +1366,12 @@ impl MachO {
         });
         loop {
             let (offset, prefix): (usize, Cow<ByteStr>) = match state {
-                State::Search { search_for, ref mut offset } => {
+                State::Search { search_for, ref mut offset, count } => {
                     if *offset == !0 { break; }
+                    if count > dyld_export.len() {
+                        errln!("warning: parse_dyld_export: loop detected");
+                        break;
+                    }
                     let r = (*offset, search_for.into());
                     *offset = !0;
                     r
@@ -1418,13 +1429,16 @@ impl MachO {
                         *it.0 = &it.0[name.len()+1..];
                     };
                     // export same?
-                    let name = if name.len() == 0 { prefix.clone().into_owned().into() } else { name.into() };
+                    let name = if name.len() == 0 { &prefix[..] } else { name };
                     Some((ord, name))
                 } else { None };
                 let resolver = if reexport.is_none() && flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
                     Some(base_addr + leb!(it))
                 } else { None };
-                cb(&prefix, addr, flags, resolver, reexport, offset);
+                cb(&ParseDyldExportState {
+                    name: &prefix, addr: addr, flags: flags,
+                    resolver: resolver, reexport: reexport, offset: offset,
+                });
                 if !it.0.is_empty() {
                     errln!("warning: parse_dyld_export: excess terminal data");
                 }
@@ -1446,18 +1460,15 @@ impl MachO {
                     continue;
                 }
                 let offset = offset as usize;
-                if this_prefix.len() == 0 {
-                    errln!("warning: parse_dyld_export: empty prefix");
-                    continue;
-                }
                 match state {
-                    State::Search { ref mut search_for, offset: ref mut offsetp } => {
+                    State::Search { ref mut search_for, offset: ref mut offsetp, ref mut count } => {
                         if search_for.starts_with(this_prefix) {
                             if *offsetp != !0 {
                                 errln!("warning: parse_dyld_export: multiple matching prefixes in what's supposed to be a trie");
                             }
                             *search_for = &(*search_for)[this_prefix.len()..];
                             *offsetp = offset;
+                            *count += 1;
                         }
                     },
                     State::Exhaustive { ref mut seen, ref mut todo } => {
@@ -1949,12 +1960,14 @@ impl MachO {
         let mut result: Option<u64> = None;
         // TODO only look up the needed part of the trie
         let exports = self.get_symbol_list(SymbolSource::Exported, None);
+        let page_size = self.page_size();
+        let dyld_export = self.dyld_export.get();
         self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, &mut |state: &ParseDyldBindState| {
             if state.source_dylib == SourceLib::Self_ {
-                // 
-                
-                
-                
+                let symbol = some_or!(state.symbol.as_ref(), return true);
+                self.parse_dyld_export(dyld_export, Some(symbol), &mut |state: &ParseDyldExportState| {
+
+                });
             }
             true
         });
