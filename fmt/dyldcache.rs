@@ -1,17 +1,16 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{MCRef, ByteString};
+use util::{MCRef, ByteString, Ext, SliceExt, ByteStr};
 use exec::ErrorKind::BadData;
 use exec::arch;
-use exec::{Reloc, RelocKind};
+use exec::{Reloc, RelocKind, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
 use std::mem::{size_of};
 use std::cmp::min;
 use std::ops::Range;
 use std::collections::HashSet;
 use std::any::Any;
 use std;
-use util::{ByteStr, CheckMath};
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
 
 pub struct ImageInfo {
@@ -29,7 +28,7 @@ pub struct LocalSymbols {
 }
 
 pub struct DyldCache {
-    pub eb: exec::ExecBase,
+    pub eb: ExecBase,
     pub image_info: Vec<ImageInfo>,
     pub uuid: Option<[u8; 16]>,
     pub slide_info_blob: Option<MCRef>,
@@ -44,72 +43,118 @@ fn range_check(big: (usize, usize), little: (usize, usize)) {
 }
 */
 
-pub fn iter_slide_info<F>(blob: &MCRef, end: util::Endian, range: Option<(u64, u64)>,
-                          mut func: F) -> bool where F: FnMut(u64) {
-    let slice = blob.get();
-    let size = size_of::<dyld_cache_slide_info>();
-    if blob.len() < size {
-        errln!("iter_slide_info: slide info blob too small for header");
-        return false;
-    }
-    let slide_info: dyld_cache_slide_info =  util::copy_from_slice(&slice[..size], end);
-    if slide_info.version > 1 {
-        errln!("iter_slide_info: slide info blob version > 1");
-        return false;
-    }
-    let toc = ::file_array_64(blob, "toc", slide_info.toc_offset as u64,
-                                           slide_info.toc_count as u64,
-                                           2);
-    let entries_size = slide_info.entries_size as usize;
-    let entries = ::file_array_64(blob, "entries", slide_info.entries_offset as u64,
-                                                   slide_info.entries_count as u64,
-                                                   entries_size);
-    if entries_size > 0xffff {
-        errln!("iter_slide_info: entries_size {} way too big (should be 128)", entries_size);
-        return false;
-    }
-    let entries = entries.get();
-    let granularity = 4;
-    let entry_bytes = entries_size * 8 * granularity;
+const SLIDE_GRANULARITY: u64 = 4;
+pub struct SlideInfo {
+    toc: MCRef,
+    endian: util::Endian,
+    entries: MCRef,
+    entries_size: usize,
+    data_addr: VMA,
+    data_size: u64,
+}
 
-
-    let mut toc = toc.get();
-    let (base_off, range_size) = if let Some((start, size)) = range {
-        let eb = entry_bytes as u64;
-        let s = start / eb * 2;
-        let e = some_or!(start.check_add(size).check_add(eb - 1),
-                         { errln!("iter_slide_info: range overflow"); return false; })
-                / eb * 2;
-        let e = min(e, toc.len() as u64);
-        let s = min(s, e);
-        toc = &toc[s as usize..e as usize];
-        (start % eb, size)
-    } else {
-        (0, !0)
-    };
-    let toc_iter = toc.chunks(2);
-
-    let true_entries_count = entries.len() / entries_size;
-    for (i, idx_blob) in toc_iter.enumerate() {
-        let idx: u16 = util::copy_from_slice(idx_blob, end);
-        if idx as usize >= true_entries_count {
-            errln!("iter_slide_info: toc entry {} out of bounds ({})", i, idx);
-            continue;
+impl SlideInfo {
+    pub fn new(blob: &MCRef, end: util::Endian, data_addr: VMA, data_size: u64) -> ExecResult<SlideInfo> {
+        let slice = blob.get();
+        let size = size_of::<dyld_cache_slide_info>();
+        if blob.len() < size {
+            return err(BadData, "slide info blob too small for header");
         }
-        let off = (idx as usize) * entries_size;
-        let subblob = &entries[off..off+entries_size];
-        let mut addr_off = (entry_bytes * i) as u64;
-        for &c in subblob.iter() {
-            for j in 0..8 {
-                if (c >> j) & 1 != 0 &&
-                    addr_off.wrapping_sub(base_off) < range_size {
-                    func(addr_off - base_off);
+        let slide_info: dyld_cache_slide_info =  util::copy_from_slice(&slice[..size], end);
+        if slide_info.version > 1 {
+            return err(BadData, "slide info blob version > 1");
+        }
+        let toc = ::file_array_64(blob, "toc", slide_info.toc_offset as u64,
+                                               slide_info.toc_count as u64,
+                                               2);
+        let entries_size = slide_info.entries_size.ext();
+        let entries = ::file_array_64(blob, "entries", slide_info.entries_offset as u64,
+                                                       slide_info.entries_count as u64,
+                                                       entries_size);
+        if entries_size > 0xffff {
+            return err(BadData, "entries_size too big");
+        }
+        Ok(SlideInfo {
+            toc: toc,
+            endian: end,
+            entries: entries,
+            entries_size: entries_size,
+            data_addr: data_addr,
+            data_size: data_size,
+        })
+    }
+    pub fn iter<F>(&self, range: Option<(VMA, u64)>, mut func: F) where F: FnMut(VMA) {
+        let entries_size = self.entries_size;
+        let entry_bytes = entries_size * 8 * (SLIDE_GRANULARITY as usize);
+        let (entries, mut toc) = (self.entries.get(), self.toc.get());
+        let end = self.endian;
+        let (skipped_off, range_start, range_size) = if let Some((start, size)) = range {
+            let start_off = start.wrapping_sub(self.data_addr);
+            let eb = entry_bytes as u64;
+            let s = start_off / eb;
+            let e = start_off.saturating_add(size).saturating_add(eb - 1) / eb;
+            let e = min(e, (toc.len() / 2) as u64);
+            let s = min(s, e);
+            toc = &toc[(s*2) as usize..(e*2) as usize];
+            (s * (entry_bytes as u64), start, size)
+        } else {
+            (0, VMA(0), !0)
+        };
+        let toc_iter = toc.chunks(2);
+        let (data_addr, data_size) = (self.data_addr, self.data_size);
+
+        for (i, idx_blob) in toc_iter.enumerate() {
+            let idx: u16 = util::copy_from_slice(idx_blob, end);
+            let off = (idx as usize) * entries_size;
+            let subblob = some_or!(entries.slice_opt(off, off + entries_size), {
+                errln!("SlideInfo::iter: toc entry {} out of bounds ({})", i, idx);
+                continue
+            });
+            let mut data_off = (entry_bytes * i) as u64 + skipped_off;
+            for &c in subblob.iter() {
+                for j in 0..8 {
+                    if (c >> j) & 1 != 0 {
+                        if data_off >= data_size {
+                            errln!("DyldCache::get_reloc_list: reloc out of bounds ({} data_size={})",
+                                   data_off, data_size);
+                            return;
+                        }
+                        let addr = data_addr + data_off;
+                        if addr.wrapping_sub(range_start) < range_size {
+                            func(addr);
+                        }
+                    }
+                    data_off += SLIDE_GRANULARITY;
                 }
-                addr_off += 4;
             }
         }
     }
-    true
+    /*
+    fn is_slid(&self, addr: VMA) -> ExecResult<bool> {
+        let entries_size = self.entries_size;
+        let (toc, entries) = (self.toc.get(), self.entries.get());
+        if addr < self.data_start || addr >= self.data_start + self.data_size {
+            return Ok(false);
+        }
+        if addr % SLIDE_GRANULARITY != 0 {
+            panic!("is_slid: badly aligned addr");
+        }
+        let off = (addr - self.data_start) / SLIDE_GRANULARITY;
+        let toc_idx = off / (8 * entries_size);
+        let off = off - toc_idx;
+        let (byte_idx, bit_idx) = (off / 8, off % 8);
+
+        if toc_idx >= toc.len() / 2 {
+            return Ok(false);
+        }
+        let entry_idx: u16 = util::copy_from_slice(&toc[toc_idx*2..toc_idx*2+2], self.end);
+        let entries_off = entry_idx as usize * self.entries_size as usize;
+        let subblob = some_or!(entries.slice_opt(off, off + entries_size), {
+            return err(BadData, "toc entry out of bounds")
+        });
+        Ok((subblob[byte_idx] >> bit_idx) & 1 != 0)
+    }
+    */
 }
 
 
@@ -124,14 +169,14 @@ impl RangeCast for Range<u64> {
 }
 
 impl DyldCache {
-    pub fn new(mc: MCRef, inner_sects: bool) -> exec::ExecResult<DyldCache> {
+    pub fn new(mc: MCRef, inner_sects: bool) -> ExecResult<DyldCache> {
         // note - not all fields in older caches, but at least a page should be there, so don't worry about size calculation
         let hdr_size = size_of::<dyld_cache_header>();
         let (arch, end, is64, hdr) = {
             let buf = mc.get();
-            if buf.len() < hdr_size { return exec::err(BadData, "truncated"); }
+            if buf.len() < hdr_size { return err(BadData, "truncated"); }
             if &buf[..7] != b"dyld_v1" {
-                return exec::err(BadData, "bad magic");
+                return err(BadData, "bad magic");
             }
             let padded_arch = &buf[7..16];
             let (arch, is64) = if padded_arch == b"    i386\0" {
@@ -146,7 +191,7 @@ impl DyldCache {
             } else if padded_arch == b"   arm64\0" {
                 (arch::AArch64, true)
             } else {
-                return exec::err(BadData, "unknown architecture, ergo can't determine endianness");
+                return err(BadData, "unknown architecture, ergo can't determine endianness");
             };
             let end = util::LittleEndian;
             let hdr: dyld_cache_header = util::copy_from_slice(&buf[..hdr_size], end);
@@ -221,8 +266,8 @@ impl DyldCache {
                     mi.size = len - mi.fileOffset;
                 }
 
-                exec::Segment {
-                    vmaddr: exec::VMA(mi.address),
+                Segment {
+                    vmaddr: VMA(mi.address),
                     vmsize: mi.size,
                     fileoff: mi.fileOffset,
                     filesize: mi.size,
@@ -235,7 +280,7 @@ impl DyldCache {
             }).collect()
         };
         let mut dc = DyldCache {
-            eb: exec::ExecBase {
+            eb: ExecBase {
                 arch: arch,
                 pointer_size: if is64 { 8 } else { 4 },
                 endian: end,
@@ -257,7 +302,7 @@ impl DyldCache {
                     for sect in mo.eb.sections.into_iter()
                          .chain(mo.eb.segments.into_iter()) {
                         dc.eb.sections.push(
-                            exec::Segment { name: Some(ByteString::concat2(&prefix, sect.name.as_ref().unwrap())),
+                            Segment { name: Some(ByteString::concat2(&prefix, sect.name.as_ref().unwrap())),
                                             ..sect }
                         );
                     }
@@ -284,41 +329,43 @@ impl DyldCache {
             None
         } else { None }
     }
-    pub fn load_single_image(&self, ii: &ImageInfo) -> exec::ExecResult<::MachO> {
-        let off = some_or!(exec::addr_to_off(&self.eb.segments, exec::VMA(ii.address), 0),
-            return exec::err(exec::ErrorKind::BadData,
-                             "shared cache image said to be at an unmapped offset"));
+    pub fn load_single_image(&self, ii: &ImageInfo) -> ExecResult<::MachO> {
+        let off = some_or!(exec::addr_to_off(&self.eb.segments, VMA(ii.address), 0),
+            return err(BadData,
+                       "shared cache image said to be at an unmapped offset"));
         let buf = self.eb.whole_buf.as_ref().unwrap().clone();
         let mut mo = try!(::MachO::new(buf, true, off as usize));
         mo.dsc_tabs = self.get_ls_entry_for_offset(off);
         Ok(mo)
     }
+    pub fn get_slide_info(&self) -> ExecResult<Option<SlideInfo>> {
+        let slide_info_blob = some_or!(self.slide_info_blob.as_ref(), {
+            return Ok(None);
+        });
+        let data_seg = some_or!(self.eb.segments.get(1), {
+            return err(BadData, "no data segment");
+        });
+        let (data_addr, data_size) = (data_seg.vmaddr, data_seg.vmsize);
+        Ok(Some(try!(SlideInfo::new(slide_info_blob, self.eb.endian, data_addr, data_size))))
+    }
 }
 
-impl exec::Exec for DyldCache {
-    fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
+impl Exec for DyldCache {
+    fn get_exec_base<'a>(&'a self) -> &'a ExecBase {
         &self.eb
     }
     fn get_reloc_list(&self, specific: Option<&Any>) -> Vec<Reloc> {
         assert!(specific.is_none());
         let mut ret = Vec::new();
-        let slide_info_blob = some_or!(self.slide_info_blob.as_ref(), { return ret; });
-        let data_seg = some_or!(self.eb.segments.get(1), {
-            errln!("DyldCache::get_reloc_list: no data segment");
-            return ret;
-        });
-        let (data_addr, data_size) = (data_seg.vmaddr, data_seg.vmsize);
-        iter_slide_info(slide_info_blob,
-                        self.eb.endian,
-                        None,
-                        |offset| {
-            if offset > data_size {
-                errln!("DyldCache::get_reloc_list: reloc out of bounds ({} data_size={})",
-                       offset, data_size);
-                return;
-            }
-            ret.push(Reloc { address: data_addr + offset, kind: RelocKind::_32Bit, addend: None });
-        });
+        match self.get_slide_info() {
+            Ok(Some(sli)) => {
+                sli.iter(None, |addr| {
+                    ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, addend: None });
+                });
+            },
+            Ok(None) => (),
+            Err(e) => { errln!("DyldCache::get_reloc_list: couldn't get slide info: {}", e); },
+        }
         ret
     }
 
@@ -328,13 +375,13 @@ impl exec::Exec for DyldCache {
 
 #[derive(Copy, Clone)]
 pub struct DyldWholeProber;
-impl exec::ExecProber for DyldWholeProber {
+impl ExecProber for DyldWholeProber {
     fn name(&self) -> &str {
         "dyld-whole"
     }
-    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
         if let Ok(c) = DyldCache::new(buf, false) {
-            vec![exec::ProbeResult {
+            vec![ProbeResult {
                 desc: "whole dyld cache".to_string(),
                 arch: c.eb.arch,
                 likely: true,
@@ -344,23 +391,23 @@ impl exec::ExecProber for DyldWholeProber {
             vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-whole", 1, std::usize::MAX, &mut vec![
             ::getopts::optflag("", "inner-sects", "show sections from inner libraries"),
         ])));
         let inner_sects = m.opt_present("inner-sects");
         let c = try!(DyldCache::new(buf, inner_sects));
-        Ok((Box::new(c) as Box<exec::Exec>, m.free))
+        Ok((Box::new(c) as Box<Exec>, m.free))
     }
 }
 
 #[derive(Copy, Clone)]
 pub struct DyldSingleProber;
-impl exec::ExecProber for DyldSingleProber {
+impl ExecProber for DyldSingleProber {
     fn name(&self) -> &str {
         "dyld-single"
     }
-    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
         if let Ok(c) = DyldCache::new(buf, false) {
             let mut seen_basenames = HashSet::new();
             c.image_info.iter().enumerate().map(|(i, ii)| {
@@ -372,7 +419,7 @@ impl exec::ExecProber for DyldSingleProber {
                 } else {
                     vec![cmd0, "-i".to_string(), format!("{}", i)]
                 };
-                exec::ProbeResult {
+                ProbeResult {
                     desc: ii.path.lossy().to_string(),
                     arch: c.eb.arch,
                     likely: true,
@@ -383,7 +430,7 @@ impl exec::ExecProber for DyldSingleProber {
             vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
             ::getopts::optflag("i", "idx", "choose by idx"),
         ])));
@@ -393,15 +440,15 @@ impl exec::ExecProber for DyldSingleProber {
         let bpath = ByteStr::from_str(path);
         let idx = if m.opt_present("i") {
             let r: Result<usize, _> = path.parse();
-            if let Ok(i) = r { i } else { return exec::err(exec::ErrorKind::Other, "--idx arg not a number") }
+            if let Ok(i) = r { i } else { return err(ErrorKind::Other, "--idx arg not a number") }
         } else {
             let is_basename = path.find('/') == None;
             let o = c.image_info.iter().position(|ii| {
                 bpath == if is_basename { ii.path.unix_basename() } else { &ii.path[..] }
             });
-            if let Some(i) = o { i } else { return exec::err(exec::ErrorKind::Other, "no such file in shared cache") }
+            if let Some(i) = o { i } else { return err(ErrorKind::Other, "no such file in shared cache") }
         };
         let mo = try!(c.load_single_image(&c.image_info[idx]));
-        Ok((Box::new(mo) as Box<exec::Exec>, free))
+        Ok((Box::new(mo) as Box<Exec>, free))
     }
 }

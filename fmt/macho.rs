@@ -63,22 +63,6 @@ impl Default for x_nlist_64 {
 
 pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u32 = 2;
 
-
-/*
-fn find_in_strtablike(strtab: &[u8], what: &ByteStr) -> Option<usize> {
-    let strtab = ByteStr::from_bytes(strtab);
-    if strtab.len() >= what.len() && &strtab[..what.len()] == what {
-        // no preceding 0 in this case
-        return Some(0);
-    }
-    let mut pat = ByteString::with_capacity(what.len() + 2);
-    pat.0.push(0);
-    pat.push_bstr(what);
-    pat.0.push(0);
-    strtab.find_bstr(&pat)
-}
-*/
-
 pub fn u32_to_prot(ip: u32) -> exec::Prot {
     exec::Prot {
         r: (ip & VM_PROT_READ) != 0,
@@ -388,9 +372,9 @@ impl exec::Exec for MachO {
             SymbolSource::Imported => {
                 let mut out = Vec::new();
                 self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
-                    if state.already_bound_this_symbol { return; }
+                    if state.already_bound_this_symbol { return true; }
                     out.push(exec::Symbol {
-                        name: some_or!(state.symbol, { return; }).into(),
+                        name: some_or!(state.symbol, { return true; }).into(),
                         is_public: true,
                         // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
                         is_weak: state.which == WhichBind::WeakBind,
@@ -398,6 +382,7 @@ impl exec::Exec for MachO {
                         size: None,
                         private: 0,
                     });
+                    true
                 });
                 out
             },
@@ -1219,13 +1204,13 @@ impl MachO {
         (existing_segs, extra_segs)
     }
 
-    fn parse_each_dyld_bind<'a>(&'a self, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
+    fn parse_each_dyld_bind<'a>(&'a self, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
         self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, cb);
         self.parse_dyld_bind(self.dyld_weak_bind.get(), WhichBind::WeakBind, cb);
         self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, cb);
     }
 
-    fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>)) {
+    fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
         let pointer_size = self.eb.pointer_size as u64;
         let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
             let mut it = ByteSliceIterator(slice_);
@@ -1249,7 +1234,7 @@ impl MachO {
                 }
             }
         };
-        let mut bind_advance = |state: &mut ParseDyldBindState<'a>, amount: u64| {
+        let mut bind_advance = |state: &mut ParseDyldBindState<'a>, amount: u64| -> bool {
             if let Some(off) = state.seg_off {
                 let bind_size = if state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
                                    state.typ == (BIND_TYPE_TEXT_PCREL32 as u8)
@@ -1259,9 +1244,10 @@ impl MachO {
                     state.seg_off = None;
                 }
             }
-            cb(state);
+            if !cb(state) { return false; }
             state.already_bound_this_symbol = true;
             advance(state, amount);
+            true
         };
         let mut state = ParseDyldBindState {
             source_dylib: SourceLib::None,
@@ -1331,18 +1317,18 @@ impl MachO {
                     advance(&mut state, offset);
                 },
                 BIND_OPCODE_ADD_ADDR_ULEB => advance(&mut state, leb!(false)),
-                BIND_OPCODE_DO_BIND => bind_advance(&mut state, pointer_size),
+                BIND_OPCODE_DO_BIND => if !bind_advance(&mut state, pointer_size) { return },
                 BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB => {
                     let add = leb!(false);
-                    bind_advance(&mut state, add.wrapping_add(pointer_size)) // ???
+                    if !bind_advance(&mut state, add.wrapping_add(pointer_size)) /* ??? */ { return }
                 },
                 BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED =>
-                    bind_advance(&mut state, (immediate as u64) * pointer_size + pointer_size),
+                    if !bind_advance(&mut state, (immediate as u64) * pointer_size + pointer_size) { return },
                 BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB => {
                     let count = leb!(false);
                     let skip = leb!(false) + pointer_size;
                     for _ in 0..count {
-                        bind_advance(&mut state, skip);
+                        if !bind_advance(&mut state, skip) { return }
                     }
                 },
                 _ => {
@@ -1599,7 +1585,7 @@ impl MachO {
         let mut segw = SegmentWriter::new(&mut self.eb.segments);
 
         self.parse_each_dyld_bind(&mut |state| {
-            let seg_off = some_or!(state.seg_off, { return; }) as usize;
+            let seg_off = some_or!(state.seg_off, { return true; }) as usize;
             // xxx perf
             segw.make_seg_rw(state.seg_idx);
             let nc = segw.access_rw(state.seg_idx).unwrap();
@@ -1610,6 +1596,7 @@ impl MachO {
             } else {
                 util::copy_to_slice(&nc[seg_off..seg_off+8], &0u64, LittleEndian);
             }
+            true
         });
 
         segw.finish(&mut self.eb.segments);
@@ -1858,56 +1845,38 @@ impl MachO {
 
     }
     fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache) {
-
-        let slide_info_blob = some_or!(dc.slide_info_blob.as_ref(), {
-            errln!("fix_objc_from_cache: no slide info");
-            return;
-        });
-        let data_name = Some(ByteStr::from_str("__DATA"));
-        let segments = &self.eb.segments[..];
-        let data = some_or!(
-                    segments.iter()
-                    .filter(|seg| seg.name.as_ref().map(|s| &**s) == data_name)
-                    .next(),
-                    { return; });
-        let content = data.get_data();
-        let dvmaddr = data.vmaddr;
-        let (is64, end) = (self.is64, self.eb.endian);
-        let dc_data = some_or!(dc.eb.segments.get(1), {
-            errln!("check_no_other_lib_refs: no dyldcache data segment");
-            return;
-        });
-        if !(data.vmaddr >= dc_data.vmaddr &&
-             data.vmsize <= (dc_data.vmaddr + dc_data.vmsize - data.vmaddr)) {
-            errln!("check_no_other_lib_refs: little data not contained in big data");
-            return;
-        }
-        //let sect_name = <'a>|sections: &'a [exec::Segment], addr: VMA| -> &ByteStr
         fn sect_name(sections: &[exec::Segment], addr: VMA) -> &ByteStr {
              if let Some((seg, _, _)) = exec::addr_to_seg_off_range(sections, addr) {
                 &**seg.name.as_ref().unwrap()
              } else { ByteStr::from_str("??") }
         }
-        dyldcache::iter_slide_info(slide_info_blob, self.eb.endian,
-                                   Some((data.vmaddr - dc_data.vmaddr, data.vmsize)),
-                                   |offset| {
-            let ptr = dvmaddr + offset;
-            let offset = offset as usize;
-            let val: u64 = if is64 {
-                util::copy_from_slice(&content[offset..offset+8], end)
-            } else {
-                util::copy_from_slice::<u32, _>(&content[offset..offset+4], end) as u64
-            };
-            if val == 0 { return; }
-            let val = VMA(val);
-            if exec::addr_to_seg_off_range(segments, val).is_some() {
-                return;
-            }
-            errln!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
-                   sect_name(&self.eb.sections, ptr),
-                   sect_name(&dc.eb.sections, val));
-        });
 
+        let sli = match dc.get_slide_info() {
+            Ok(Some(sli)) => sli,
+            Ok(None) => {
+                // no slide info so can't do it, oh well...
+                return;
+            },
+            Err(e) => {
+                errln!("check_no_other_lib_refs: couldn't get slide info: {}", e);
+                return;
+            },
+        };
+        for segment in &self.eb.segments {
+            let content = segment.data.as_ref().unwrap().get();
+            let pointer_size = self.eb.pointer_size;
+            sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
+                let offset = (ptr - segment.vmaddr) as usize;
+                let val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
+                if val == 0 { return; }
+                let val = VMA(val);
+                if exec::addr_to_seg_off_range(&dc.eb.segments, val).is_none() {
+                    errln!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
+                           sect_name(&self.eb.sections, ptr),
+                           sect_name(&dc.eb.sections, val));
+                }
+            });
+        }
     }
     pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>) -> exec::ExecResult<()> {
         let _sw = stopwatch("extract_as_necessary");
@@ -1933,6 +1902,11 @@ impl MachO {
         self.rewhole();
         Ok(())
     }
+    /*
+    pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> Option<u64> {
+
+    }
+    */
 }
 
 pub struct MachOProber;
