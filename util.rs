@@ -381,6 +381,7 @@ impl IndexMut<usize> for ByteStr {
         &mut self.0[idx]
     }
 }
+
 impl ByteString {
     pub fn new(s: &ByteStr) -> Self {
         ByteString(s.0.to_owned())
@@ -483,6 +484,22 @@ impl<'a> Add<&'a ByteStr> for ByteString {
     fn add(mut self, other: &ByteStr) -> ByteString {
         self.push_bstr(other);
         self
+    }
+}
+
+impl<'a> PartialEq<&'a str> for ByteStr {
+    fn eq(&self, other: &&'a str) -> bool {
+        &**self == other.as_bytes()
+    }
+}
+impl PartialEq<ByteStr> for ByteString {
+    fn eq(&self, other: &ByteStr) -> bool {
+        &***self == &**other
+    }
+}
+impl<'a> PartialEq<&'a str> for ByteString {
+    fn eq(&self, other: &&'a str) -> bool {
+        &***self == other.as_bytes()
     }
 }
 

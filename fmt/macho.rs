@@ -667,15 +667,24 @@ impl MachO {
                                            { errln!("warning: segment command too small; skipping"); return; });
                     let sc: segment_command_x = util::copy_from_slice(sc_data, end);
                     let segprot = u32_to_prot(sc.initprot as u32);
-                    let was_0 = sc.fileoff == 0;
-                    let fileoff = if was_0 { hdr_offset as u64 } else { sc.fileoff as u64 };
+                    let mut fileoff = sc.fileoff as u64;
+                    let name = util::from_cstr(&sc.segname as &[i8]).to_owned();
+                    let is_cache_text = hdr_offset != 0 && name == "__TEXT";
+                    if is_cache_text {
+                        // u_d_s_c just keeps this from the original file.  Somehow, for the arm64
+                        // cache, the offset isn't even consistent between __TEXT's fileoff and
+                        // __text's.  So just do it based on the address.
+                        fileoff = hdr_offset;
+                    }
+                    //let was_0 = sc.fileoff == 0;
+                    //let fileoff = if was_0 { hdr_offset as u64 } else { sc.fileoff as u64 };
                     let data: Option<MCRef> = mc.slice(fileoff as usize, (fileoff + (sc.filesize as u64)) as usize);
                     let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
                         fileoff: fileoff,
                         filesize: sc.filesize as u64,
-                        name: Some(util::from_cstr(&sc.segname as &[i8]).to_owned()),
+                        name: Some(name),
                         prot: segprot,
                         data: data,
                         seg_idx: None,
@@ -685,10 +694,17 @@ impl MachO {
                     segs.push(seg);
                     for secti in 0..sc.nsects {
                         let s: section_x = util::copy_from_slice(&lc_buf[off..off + size_of::<section_x>()], end);
+                        let mut fileoff = s.offset as u64;
+                        if is_cache_text {
+                            fileoff = some_or!((s.addr as u64).check_sub(sc.vmaddr as u64).check_add(hdr_offset), {
+                                errln!("warning: integer overflow in shared cache library __TEXT offset recalculation");
+                                fileoff
+                            });
+                        }
                         let mut seg = exec::Segment {
                             vmaddr: VMA(s.addr as u64),
                             vmsize: s.size as u64,
-                            fileoff: s.offset as u64,
+                            fileoff: fileoff,
                             filesize: if s.offset != 0 { s.size as u64 } else { 0 },
                             name: Some(util::from_cstr(&s.sectname as &[i8]).to_owned()),
                             prot: segprot,
@@ -696,7 +712,7 @@ impl MachO {
                             seg_idx: Some(segi),
                             private: sect_private.len(),
                         };
-                        if was_0 { seg.fileoff += hdr_offset; }
+                        //if was_0 { seg.fileoff += hdr_offset; }
                         fixup_segment_overflow(&mut seg, is64);
                         sects.push(seg);
                         sect_private.push(SectPrivate {
