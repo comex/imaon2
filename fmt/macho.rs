@@ -406,6 +406,7 @@ impl exec::Exec for MachO {
                         size: None,
                         private: state.offset,
                     });
+                    true
                 });
                 out
             },
@@ -1346,14 +1347,14 @@ impl MachO {
             }
         }
     }
-    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut for<'b> FnMut(&'b ParseDyldExportState<'b>)) {
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut for<'b> FnMut(&'b ParseDyldExportState<'b>) -> bool) {
         if dyld_export.is_empty() { return; }
         enum State<'x> {
-            Search { search_for: &'x ByteStr, offset: usize, count: usize },
+            Search { search_for: &'x ByteStr, sf_offset: usize, offset: usize, count: usize },
             Exhaustive { seen: HashSet<usize, TrivialState>, todo: Vec<(usize, ByteString)> },
         }
         let mut state: State = if let Some(search_for) = search_for {
-            State::Search { search_for: search_for, offset: 0, count: 0 }
+            State::Search { search_for: search_for, sf_offset: 0, offset: 0, count: 0 }
         } else {
             State::Exhaustive {
                 seen: HashSet::with_hasher(TrivialState),
@@ -1365,14 +1366,15 @@ impl MachO {
             return;
         });
         loop {
-            let (offset, prefix): (usize, Cow<ByteStr>) = match state {
-                State::Search { search_for, ref mut offset, count } => {
+            let (offset, prefix): (usize, Cow<ByteStr>)
+            = match state {
+                State::Search { ref mut search_for, sf_offset, ref mut offset, count } => {
                     if *offset == !0 { break; }
                     if count > dyld_export.len() {
                         errln!("warning: parse_dyld_export: loop detected");
                         break;
                     }
-                    let r = (*offset, search_for.into());
+                    let r = (*offset, (*search_for)[..sf_offset].into());
                     *offset = !0;
                     r
                 },
@@ -1397,7 +1399,7 @@ impl MachO {
             *it.0 = &it.0[..terminal_size as usize];
             if !it.0.is_empty() && match state {
                 State::Exhaustive { .. } => true,
-                State::Search { search_for, .. } => search_for.len() == 0,
+                State::Search { search_for, sf_offset, .. } => sf_offset == search_for.len(),
             } {
                 let flags = leb!(it);
                 if flags > std::u32::MAX as u64 {
@@ -1435,10 +1437,10 @@ impl MachO {
                 let resolver = if reexport.is_none() && flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
                     Some(base_addr + leb!(it))
                 } else { None };
-                cb(&ParseDyldExportState {
+                if !cb(&ParseDyldExportState {
                     name: &prefix, addr: addr, flags: flags,
                     resolver: resolver, reexport: reexport, offset: offset,
-                });
+                }) { return; }
                 if !it.0.is_empty() {
                     errln!("warning: parse_dyld_export: excess terminal data");
                 }
@@ -1461,14 +1463,13 @@ impl MachO {
                 }
                 let offset = offset as usize;
                 match state {
-                    State::Search { ref mut search_for, offset: ref mut offsetp, ref mut count } => {
-                        if search_for.starts_with(this_prefix) {
-                            if *offsetp != !0 {
-                                errln!("warning: parse_dyld_export: multiple matching prefixes in what's supposed to be a trie");
-                            }
-                            *search_for = &(*search_for)[this_prefix.len()..];
+                    State::Search { ref mut search_for, ref mut sf_offset, offset: ref mut offsetp, ref mut count } => {
+                        // there can be multiple; need to pick the first that matches
+                        if (&search_for[*sf_offset..]).starts_with(this_prefix) {
+                            *sf_offset += this_prefix.len();
                             *offsetp = offset;
                             *count += 1;
+                            break;
                         }
                     },
                     State::Exhaustive { ref mut seen, ref mut todo } => {
@@ -1957,22 +1958,44 @@ impl MachO {
         Ok(())
     }
     pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> Option<u64> {
-        let mut result: Option<u64> = None;
-        // TODO only look up the needed part of the trie
-        let exports = self.get_symbol_list(SymbolSource::Exported, None);
-        let page_size = self.page_size();
+        let mut guess: Option<u64> = None;
         let dyld_export = self.dyld_export.get();
-        self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, &mut |state: &ParseDyldBindState| {
-            if state.source_dylib == SourceLib::Self_ {
-                let symbol = some_or!(state.symbol.as_ref(), return true);
-                self.parse_dyld_export(dyld_export, Some(symbol), &mut |state: &ParseDyldExportState| {
-
+        self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, &mut |bind_state: &ParseDyldBindState| {
+            if bind_state.source_dylib == SourceLib::Self_ {
+                let symbol = some_or!(bind_state.symbol.as_ref(), return true);
+                let mut got_one = false;
+                let mut bad = false;
+                self.parse_dyld_export(dyld_export, Some(symbol), &mut |export_state: &ParseDyldExportState| -> bool {
+                    debug_assert_eq!(&export_state.name, symbol);
+                    let true_addr = export_state.addr;
+                    let seg_data = some_or!(bind_state.seg, return true).get_data();
+                    let seg_off = some_or!(bind_state.seg_off, return true) as usize;
+                    let broken_addr = VMA(dc.eb.ptr_from_slice(
+                        &seg_data[seg_off..seg_off + (dc.eb.pointer_size as usize)]));
+                    let this_guess = broken_addr.wrapping_sub(true_addr);
+                    match guess {
+                        Some(old_guess) => {
+                            if this_guess != old_guess {
+                                errln!("guess_broken_cache_slide: got inconsistent results:");
+                                errln!("   old_guess={:x} this_guess={:x}", old_guess, this_guess);
+                                guess = None;
+                                bad = true;
+                                return false;
+                            }
+                        },
+                        None => guess = Some(this_guess),
+                    }
+                    got_one = true;
+                    true
                 });
+                if bad { return false; }
+                if !got_one {
+                    errln!("guess_broken_cache_slide: self-bind named '{}' not found in exports", symbol);
+                }
             }
             true
         });
-        None
-
+        guess
     }
 }
 

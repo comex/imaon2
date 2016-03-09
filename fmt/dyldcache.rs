@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{MCRef, ByteString, Ext, SliceExt, ByteStr};
+use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
@@ -309,6 +309,7 @@ impl DyldCache {
                 }
             }
         }
+        dc.auto_unslide();
         Ok(dc)
     }
     pub fn get_ls_entry_for_offset(&self, off: u64) -> Option<::DscTabs> {
@@ -347,6 +348,68 @@ impl DyldCache {
         });
         let (data_addr, data_size) = (data_seg.vmaddr, data_seg.vmsize);
         Ok(Some(try!(SlideInfo::new(slide_info_blob, self.eb.endian, data_addr, data_size))))
+    }
+    pub fn auto_unslide(&mut self) {
+        let slide = {
+            let ii = some_or!(self.image_info.iter().filter(|ii| ii.path.ends_with(b"/libsystem_c.dylib")).next(), {
+                errln!("auto_unslide: couldn't find libsystem_c.dylib - not a problem if the cache is OK, but won't check for broken slid cache");
+                return
+            });
+            let slide = match self.load_single_image(ii) {
+                Ok(mo) => mo.guess_broken_cache_slide(self),
+                Err(e) => {
+                    errln!("auto_unslide: couldn't load libsystem_c.dylib: {}", e);
+                    return
+                }
+            };
+            some_or!(slide, {
+                errln!("auto_unslide: error guessing shared cache slide, so not unsliding");
+                return
+            })
+        };
+        if slide != 0 {
+            let slide: u32 = some_or!(slide.narrow(), {
+                errln!("auto_unslide: guessed slide was 0x{:x}, which is impossible as real slides must be < 2^32 (format upgrade?)", slide);
+                return
+            });
+            errln!("auto_unslide: will unslide your broken preslid shared cache (thanks xnu)");
+            if let Err(e) = self.slide_by(slide, /*backwards*/ true) {
+                errln!("auto_unslide: ...but failed: {}", e);
+            }
+        }
+    }
+    // this could be done generically but what's needed for this is very simple...
+    #[inline(never)]
+    pub fn slide_by(&mut self, amount: u32, backwards: bool) -> ExecResult<()> {
+        let sli = some_or!(try!(self.get_slide_info()), {
+            return err(ErrorKind::Other, "slide_by: tried to slide a cache without slide info");
+        });
+        let end = self.eb.endian;
+        let check_overflow = self.eb.pointer_size > 4;
+        let mut overflow = false;
+        let amount = if backwards { 0u32.wrapping_sub(amount) } else { amount };
+        let mut whole = self.eb.whole_buf.take().unwrap().into_vec();
+        for segment in &self.eb.segments {
+            sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
+                let off = (ptr - segment.vmaddr + segment.fileoff) as usize;
+                let slice = &mut whole[off..off+4];
+                let old: u32 = util::copy_from_slice(slice, end);
+                let new = old.wrapping_add(amount);
+                overflow = overflow || if backwards { new > old } else { new < old };
+                util::copy_to_slice(slice, &new, end);
+            });
+        }
+        if check_overflow && overflow {
+            return err(ErrorKind::Other, "slide_by: slide failed due to overflow");
+        }
+        let mc = MCRef::with_vec(whole);
+        for segment in &mut self.eb.segments {
+            segment.data = Some(mc.slice(segment.fileoff as usize,
+                                         (segment.fileoff as usize) + (segment.filesize as usize))
+                                .unwrap());
+        }
+        self.eb.whole_buf = Some(mc);
+        Ok(())
     }
 }
 
