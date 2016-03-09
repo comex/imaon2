@@ -388,7 +388,8 @@ impl exec::Exec for MachO {
             },
             SymbolSource::Exported => {
                 let mut out = Vec::new();
-                self.parse_dyld_export(self.dyld_export.get(), &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, Cow<'a, ByteStr>)>, offset: usize| {
+                self.parse_dyld_export(self.dyld_export.get(), None,
+                                       &mut |name: &ByteStr, addr: VMA, flags: u32, resolver: Option<VMA>, reexport: Option<(u64, Cow<'a, ByteStr>)>, offset: usize| {
                     out.push(exec::Symbol {
                         name: name.to_owned().into(),
                         is_public: true,
@@ -1338,18 +1339,44 @@ impl MachO {
             }
         }
     }
-    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, Cow<'a, ByteStr>)>, usize)) {
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut FnMut(&ByteStr, VMA, u32, Option<VMA>, Option<(u64, Cow<'a, ByteStr>)>, usize)) {
         if dyld_export.is_empty() { return; }
-        let mut seen = HashSet::with_hasher(TrivialState);
-        let mut todo = vec![(0usize, ByteString::from_str(""))];
+        enum State<'x> {
+            Search { search_for: &'x ByteStr, offset: usize },
+            Exhaustive { seen: HashSet<usize, TrivialState>, todo: Vec<(usize, ByteString)> },
+        }
+        let mut state: State = if let Some(search_for) = search_for {
+            State::Search { search_for: search_for, offset: 0 }
+        } else {
+            State::Exhaustive {
+                seen: HashSet::with_hasher(TrivialState),
+                todo: vec![(0usize, ByteString::from_str(""))],
+            }
+        };
         let base_addr = some_or!(self.dyld_base, {
             errln!("warning: parse_dyld_export: no load command segment, lol");
             return;
         });
-        while let Some((offset, prefix)) = todo.pop() {
+        loop {
+            let (offset, prefix): (usize, Cow<ByteStr>) = match state {
+                State::Search { search_for, ref mut offset } => {
+                    if *offset == !0 { break; }
+                    let r = (*offset, search_for.into());
+                    *offset = !0;
+                    r
+                },
+                State::Exhaustive { seen: _, ref mut todo } => {
+                    if let Some((offset, prefix)) = todo.pop() {
+                        (offset, prefix.into())
+                    } else { break }
+                },
+            };
             let mut slice = &dyld_export[offset..];
             let mut it = ByteSliceIterator(&mut slice);
-            macro_rules! leb { ($it:expr) => {some_or!(exec::read_leb128_inner_noisy(&mut $it, false, "parse_dyld_export"), { continue; })} }
+            macro_rules! leb { ($it:expr) => {
+                some_or!(exec::read_leb128_inner_noisy(&mut $it, false, "parse_dyld_export"),
+                         continue)
+            } }
             let terminal_size = leb!(it);
             if terminal_size > it.0.len() as u64 {
                 errln!("warning: parse_dyld_export: terminal_size too big");
@@ -1357,7 +1384,10 @@ impl MachO {
             }
             let mut following = &it.0[terminal_size as usize..];
             *it.0 = &it.0[..terminal_size as usize];
-            if !it.0.is_empty() {
+            if !it.0.is_empty() && match state {
+                State::Exhaustive { .. } => true,
+                State::Search { search_for, .. } => search_for.len() == 0,
+            } {
                 let flags = leb!(it);
                 if flags > std::u32::MAX as u64 {
                     errln!("warning: parse_dyld_export: way too many flags");
@@ -1376,13 +1406,6 @@ impl MachO {
                 let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
                            .wrapping_add(read_addr);
                 let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
-                    /*
-                    if resolver.is_some() {
-                        errln!("warning: parse_dyld_export: resolver /and/ reexport?");
-                        panic!();
-                        continue;
-                    }
-                    */
                     let ord = leb!(it);
                     let name;
                     if it.0.len() == 0 {
@@ -1395,7 +1418,7 @@ impl MachO {
                         *it.0 = &it.0[name.len()+1..];
                     };
                     // export same?
-                    let name = if name.len() == 0 { prefix.to_owned().into() } else { name.into() };
+                    let name = if name.len() == 0 { prefix.clone().into_owned().into() } else { name.into() };
                     Some((ord, name))
                 } else { None };
                 let resolver = if reexport.is_none() && flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
@@ -1420,10 +1443,30 @@ impl MachO {
                 let offset = leb!(it);
                 if offset > dyld_export.len() as u64 {
                     errln!("warning: parse_dyld_export: invalid limb offset {}", offset);
-                } else if !seen.insert(offset) {
-                    errln!("warning: parse_dyld_export: offset {} already seen, whoa, might loop", offset);
-                } else {
-                    todo.push((offset as usize, prefix.clone() + this_prefix));
+                    continue;
+                }
+                let offset = offset as usize;
+                if this_prefix.len() == 0 {
+                    errln!("warning: parse_dyld_export: empty prefix");
+                    continue;
+                }
+                match state {
+                    State::Search { ref mut search_for, offset: ref mut offsetp } => {
+                        if search_for.starts_with(this_prefix) {
+                            if *offsetp != !0 {
+                                errln!("warning: parse_dyld_export: multiple matching prefixes in what's supposed to be a trie");
+                            }
+                            *search_for = &(*search_for)[this_prefix.len()..];
+                            *offsetp = offset;
+                        }
+                    },
+                    State::Exhaustive { ref mut seen, ref mut todo } => {
+                        if !seen.insert(offset) {
+                            errln!("warning: parse_dyld_export: offset {} already seen, whoa, might loop", offset);
+                        } else {
+                            todo.push((offset, prefix.clone().into_owned() + this_prefix));
+                        }
+                    },
                 }
             }
         }
@@ -1902,11 +1945,22 @@ impl MachO {
         self.rewhole();
         Ok(())
     }
-    /*
     pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> Option<u64> {
+        let mut result: Option<u64> = None;
+        // TODO only look up the needed part of the trie
+        let exports = self.get_symbol_list(SymbolSource::Exported, None);
+        self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, &mut |state: &ParseDyldBindState| {
+            if state.source_dylib == SourceLib::Self_ {
+                // 
+                
+                
+                
+            }
+            true
+        });
+        None
 
     }
-    */
 }
 
 pub struct MachOProber;
