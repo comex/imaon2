@@ -145,6 +145,7 @@ clean:
 extraclean: clean
 	rm -rf tables/llvm-tblgen Cargo.lock
 
-$(NOT_OUT)/%:
+$(NOT_OUT)/%: FORCE
 	@echo "wrong output directory ('make outopt/foo OPT=1' or 'make out/foo')"
 	@exit 1
+FORCE:
