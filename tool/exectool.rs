@@ -241,7 +241,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
 
 fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {
     fn get_elf<'a>(exe: &'a mut exec::Exec) -> &'a mut elf::Elf { exe.as_any_mut().downcast_mut::<elf::Elf>().expect("not elf") }
-    fn get_macho<'a>(exe: &'a mut exec::Exec) -> &'a mut macho::MachO { exe.as_any_mut().downcast_mut::<macho::MachO>().expect("not elf") }
+    fn get_macho<'a>(exe: &'a mut exec::Exec) -> &'a mut macho::MachO { exe.as_any_mut().downcast_mut::<macho::MachO>().expect("not macho") }
     if let Some(out_file) = m.opt_str("extract") {
         // TODO generic
         let macho = get_macho(ex);

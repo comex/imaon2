@@ -19,6 +19,8 @@ use std::cell::Cell;
 use util::{ByteString, ByteStr, MCRef, CheckMath, ReadCell, Narrow};
 
 pub mod arch;
+mod reloc;
+pub use reloc::{RelocKind, RelocContext};
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -202,12 +204,6 @@ pub enum SymbolSource {
     Exported,
 }
 
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum RelocKind {
-    Pointer,
-    _32Bit,
-}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Reloc {

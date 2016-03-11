@@ -18,7 +18,7 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, Reloc};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
@@ -721,7 +721,7 @@ impl MachO {
             match lc.cmd {
                 LC_SEGMENT => do_segment(false, &mut self.eb.segments, &mut self.eb.sections, &mut self.sect_private),
                 LC_SEGMENT_64 => do_segment(true, &mut self.eb.segments, &mut self.eb.sections, &mut self.sect_private),
-                LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB | 
+                LC_DYLD_INFO | LC_DYLD_INFO_ONLY | LC_SYMTAB | LC_DYSYMTAB |
                 LC_FUNCTION_STARTS | LC_DATA_IN_CODE | LC_DYLIB_CODE_SIGN_DRS |
                 LC_SEGMENT_SPLIT_INFO | LC_LINKER_OPTIMIZATION_HINT | LC_CODE_SIGNATURE => {
                     for fb in self.linkedit_bits() {
@@ -739,11 +739,20 @@ impl MachO {
                             } else {
                                 self.eb.whole_buf.as_ref().unwrap()
                             };
-                            let name = if lc.cmd == LC_SEGMENT_SPLIT_INFO && self.hdr_offset != 0 {
-                                // update_dsc generates broken LC_SEGMENT_SPLIT_INFO commands
-                                ""
-                            } else { fb.name };
-                            *mcref = file_array(buf, name, off, count, fb.elm_size);
+                            let mut ignore = false;
+                            if self.hdr_offset != 0 {
+                                // update_dsc is supposed to drop the others but... doesn't on iOS?
+                                match lc.cmd {
+                                    LC_SYMTAB |
+                                    LC_DYSYMTAB |
+                                    LC_DYLD_INFO | LC_DYLD_INFO_ONLY |
+                                    LC_FUNCTION_STARTS | LC_DATA_IN_CODE => (),
+                                    _ => ignore = true,
+                                }
+                            }
+                            if !ignore {
+                                *mcref = file_array(buf, fb.name, off, count, fb.elm_size);
+                            }
                         }
                     }
                 },
@@ -2001,6 +2010,74 @@ impl MachO {
             true
         });
         guess
+    }
+    pub fn subtract_dic_from_addr_range<'a, F>(&'a self, start: VMA, size: u64, mut cb: F)
+        where F: FnMut(VMA, u64) {
+        // simple enough
+        let dic = self.data_in_code.get();
+        let end = self.eb.endian;
+        for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
+            let dice = util::copy_from_slice(chunk, end);
+            if dice.length == 0 { continue; }
+
+            let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
+            if text_addr.check_add(end_offset).is_none() {
+                errln!("warning: bad data_in_code end offset {:x}", end_offset);
+                continue;
+            }
+            let 
+            
+        }
+    }
+    // currently for cache extraction on arm64 only
+    pub fn guess_text_relocs(&self) -> Vec<Reloc> {
+        let mut relocs = Vec::new();
+        if self.eb.arch != arch::AArch64 {
+            return relocs;
+        }
+        let end = self.eb.endian;
+        let mut (cur_dice_start, cur_dice_end): (VMA, VMA) = (VMA(0), VMA(0));
+        let mut dice_iter_done = false;
+        for sect in &self.eb.sections {
+            let data = self.read(sect.vmaddr, sect.filesize);
+            let data = data.get();
+            for (start, size) in self.subtract_dic_from_addr_range(sect.vmaddr, sect.filesize) {
+                let data = &data[start - sect.vmaddr .. start + size - sect.vmaddr];
+                let mut addr = start;
+                while data.len() >= 4 {
+                    let insn: u32 = util::copy_from_slice(&data[..4], end);
+                    // the important part
+                    if insn & 0x9F000000 
+
+                    data = &data[4..];
+                    addr += 4;
+                }
+            }
+        }
+            let mut addr = sect.vmaddr;
+            let data = data.get();
+            while data.len() >= 4 {
+                while cur_dice_end <= addr && !dice_iter_done {
+                    if let Some(dice) = dice_iter.next() {
+                            continue;
+                        });
+                        cur_dice_start = text_addr + (dice.offset as u64);
+                    } else {
+                        dice_iter_done = true;
+                        break;
+                    }
+                }
+                if addr >= cur_dice_start {
+                    let skip = min(data.len(), (cur_dice_end - addr) as usize);
+                    data = &data[skip]; addr += skip;
+                    continue;
+                }
+                data = &data[4..];
+                addr += 4;
+            }
+        }
+        unimplemented!()
+
     }
 }
 
