@@ -1,4 +1,4 @@
-#![feature(libc, plugin, core_intrinsics, const_fn)]
+#![feature(libc, plugin, core_intrinsics, const_fn, copy_from_slice)]
 #![cfg_attr(stopwatch, feature(time2))]
 
 extern crate libc;
@@ -642,7 +642,7 @@ impl MCRef {
                 } else { debug_assert!(false); }
             }
         }
-        self.get().to_owned()
+        fast_slice_to_owned(self.get())
     }
 
     pub fn slice(&self, from: usize, to: usize) -> Option<MCRef> {
@@ -1032,4 +1032,14 @@ impl<'a> Drop for Stopwatch<'a> {
 #[inline(always)]
 pub fn empty_slice<T>() -> &'static [T] {
     unsafe { std::slice::from_raw_parts(!0 as *const T, 0) }
+}
+
+pub fn fast_slice_to_owned<T: Copy>(slice: &[T]) -> Vec<T> {
+    // extend_from_slice is supposed to be fast.  in unoptimized mode, it takes 60s to copy a few hundred MB.
+    let len = slice.len();
+    let mut res = Vec::with_capacity(len);
+    unsafe { res.set_len(len); }
+    res.copy_from_slice(slice);
+    res
+
 }
