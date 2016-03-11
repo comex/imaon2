@@ -612,17 +612,7 @@ impl ImageCacheEntry {
                 SymbolValue::Addr(_) => true,
                 _ => false
             });
-            // there can be references to someone else's lazy stub??
-            mo.parse_each_dyld_bind(&mut |state: &::ParseDyldBindState| {
-                let addr = some_or!(state.seg, return true).vmaddr
-                    + some_or!(state.seg_off, return true);
-                list.push(exec::Symbol {
-                    name: some_or!(state.symbol, return true).to_owned().into(),
-                    val: SymbolValue::Addr(addr),
-                    is_public: false, is_weak: false, size: None, private: 0,
-                });
-                true
-            });
+            // there can be references to someone else's lazy stub?? TODO
             list.sort_by_key(|sym| match sym.val {
                 SymbolValue::Addr(vma) => vma,
                 _ => panic!()

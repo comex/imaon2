@@ -25,7 +25,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, Rang
 use std::cell::{UnsafeCell, Cell};
 use std::marker::PhantomData;
 use std::hash::{Hasher, Hash, BuildHasherDefault};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use deps::fnv::FnvHasher;
 use deps::nodrop::NoDrop;
@@ -994,6 +994,10 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
 
 pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, BuildHasherDefault<FnvHasher>> {
     HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default())
+}
+
+pub fn new_fnv_hashset<T: Eq + Hash>() -> HashSet<T, BuildHasherDefault<FnvHasher>> {
+    HashSet::with_hasher(BuildHasherDefault::<FnvHasher>::default())
 }
 
 #[cfg(stopwatch)]

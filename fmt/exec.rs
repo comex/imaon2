@@ -16,6 +16,7 @@ use std::str::FromStr;
 use std::cmp::min;
 use std::any::Any;
 use std::cell::Cell;
+use std::hash::{Hash, Hasher};
 use util::{ByteString, ByteStr, MCRef, CheckMath, ReadCell, Narrow};
 
 pub mod arch;
@@ -110,6 +111,14 @@ impl util::CheckMath<u64, VMA> for VMA {
 
 }
 impl_check_math_option!(VMA, u64);
+
+impl Hash for VMA {
+    fn hash<H>(&self, state: &mut H) where H: Hasher { self.0.hash(state) }
+    fn hash_slice<H>(data: &[Self], state: &mut H) where H: Hasher {
+        let data: &[u64] = unsafe { transmute(data) };
+        u64::hash_slice(data, state)
+    }
+}
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Prot {
