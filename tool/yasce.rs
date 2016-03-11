@@ -1,10 +1,13 @@
+#![feature(stmt_expr_attributes)]
+
 #![cfg_attr(opt, feature(alloc_system))]
 #[cfg(opt)]
 extern crate alloc_system;
 
 use std::os::unix::ffi::{OsStringExt, OsStrExt};
+use std::os::unix::fs::symlink;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, Component};
+use std::path::{Path, PathBuf, Component};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
@@ -154,27 +157,52 @@ fn main() {
         };
 
         let xdc = Arc::new(dc);
+        let canon = xdc.make_canonical_path_map();
+        let mut wait_count = 0;
         let stuff = if verbose { None } else {
             let threads = num_cpus::get();
             let pool = ThreadPool::new(threads);
             let (tx, rx) = channel();
             Some((pool, tx, rx))
         };
-        for (i, ii) in xdc.image_info.iter().enumerate() {
-            let mut output_path = output_base.to_owned();
-            assert_eq!(ii.path[0], b'/');
-            let ii_path = bstr_to_path(&ii.path[1..]).unwrap();
-            if ii_path.has_root() ||
-               ii_path.components().any(|comp| comp == Component::ParentDir) {
-                   panic!("evil? filename {}", ii.path);
+        for (i, (ii, &canonical_idx)) in xdc.image_info.iter().zip(&canon).enumerate() {
+            fn get_output_path(mut res: PathBuf, path_bstr: &ByteStr) -> (PathBuf, &Path) {
+                assert!(path_bstr.len() > 0 && path_bstr[0] == b'/');
+                let path = bstr_to_path(&path_bstr[1..]).unwrap();
+                if path.has_root() ||
+                   path.components().any(|comp| comp == Component::ParentDir) {
+                       panic!("evil? filename {}", path_bstr);
+                }
+                res.push(path);
+                (res, path)
             }
-            output_path.push(ii_path);
+            let (output_path, output_rel) = get_output_path(output_base.to_owned(), &ii.path);
             if let Some(p) = output_path.parent() {
                 std::fs::create_dir_all(p).unwrap();
+            }
+            if canonical_idx != i {
+                let target = &xdc.image_info[canonical_idx].path;
+                #[cfg(not(unix))]
+                println!("* would symlink {} to {}, but not on Unix, to skipping"
+                         &ii.path, target);
+                #[cfg(unix)]
+                {
+                    let mut dot_dots = PathBuf::new();
+                    for component in output_rel.parent().unwrap().components() {
+                        if let Component::Normal(..) = component {
+                            dot_dots.push("../");
+                        }
+                    }
+                    let (target_path, _) = get_output_path(dot_dots, target);
+                    let _ = std::fs::remove_file(&output_path);
+                    symlink(&target_path, &output_path).unwrap();
+                    continue;
+                }
             }
             if let Some((ref pool, ref tx, _)) = stuff {
                 let xdc_ = xdc.clone();
                 let tx_ = tx.clone();
+                wait_count += 1;
                 pool.execute(move || {
                     let ii = &xdc_.image_info[i];
                     extract_one(&xdc_, ii, &output_path);
@@ -186,19 +214,23 @@ fn main() {
             }
         }
         if let Some((_, _, ref rx)) = stuff {
-            let count = xdc.image_info.len();
-            print!("{}", format!("0/{} ", count));
-            for i in 0..count {
+            print!("{}", format!("0/{} ", wait_count));
+            for i in 0..wait_count {
                 rx.recv().unwrap();
-                let text = format!("\x1b[1K\x1b[999D{}/{} ", i, count);
+                let text = format!("\x1b[1K\x1b[999D{}/{} ", i, wait_count);
                 print!("{}", text);
             }
             println!("");
         }
     } else {
         // just list
-        for ii in &dc.image_info {
-            println!("{} @ 0x{:x}", ii.path, ii.address);
+        let canon = dc.make_canonical_path_map();
+        for (i, (ii, &canonical_idx)) in dc.image_info.iter().zip(&canon).enumerate() {
+            print!("{} @ 0x{:x}", ii.path, ii.address);
+            if canonical_idx != i {
+                print!(" [-> {}]", dc.image_info[canonical_idx].path);
+            }
+            println!("");
         }
     }
 }

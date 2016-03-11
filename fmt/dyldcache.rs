@@ -8,7 +8,8 @@ use exec::{Reloc, RelocKind, ExecResult, err, ExecBase, VMA, Exec, ExecProber, P
 use std::mem::{size_of};
 use std::cmp::min;
 use std::ops::Range;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use std::collections::hash_map::Entry;
 use std::any::Any;
 use std;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
@@ -410,6 +411,27 @@ impl DyldCache {
         }
         self.eb.whole_buf = Some(mc);
         Ok(())
+    }
+
+    pub fn make_canonical_path_map(&self) -> Vec<usize> {
+        let mut address_to_idx: HashMap<u64, usize, _> = util::new_fnv_hashmap();
+        for (i, ii) in self.image_info.iter().enumerate() {
+            match address_to_idx.entry(ii.address) {
+                Entry::Vacant(va) => {va.insert(i);},
+                Entry::Occupied(mut oc) => {
+                    let old = oc.get_mut();
+                    let old_path = &self.image_info[*old].path;
+                    let new_path = &ii.path;
+                    // silly heuristic
+                    if new_path == "/usr/lib/libSystem.B.dylib" ||
+                       (old_path != "/usr/lib/libSystem.B.dylib" &&
+                        new_path.len() > old_path.len()) {
+                        *old = i;
+                    }
+                },
+            }
+        }
+        self.image_info.iter().map(|ii| address_to_idx[&ii.address]).collect()
     }
 }
 
