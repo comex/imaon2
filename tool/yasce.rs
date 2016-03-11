@@ -17,19 +17,23 @@ use std::sync::mpsc::channel;
 extern crate macros;
 extern crate util;
 extern crate macho;
-extern crate deps;
-use macho::dyldcache::{DyldCache, ImageInfo};
+extern crate exec;
+use macho::dyldcache::{DyldCache, ImageInfo, ImageCache};
 use util::{ByteString, ByteStr};
+use exec::arch;
 
+extern crate deps;
 use deps::threadpool::ThreadPool;
 use deps::num_cpus;
 
-
-fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path) {
+fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Option<&ImageCache>) {
     let mut macho = match dc.load_single_image(ii) {
         Ok(m) => m,
         Err(e) => { errln!("for '{}', parse Mach-O fail: {}", ii.path, e); return },
     };
+    if let Some(ic) = image_cache {
+        macho.fix_text_relocs_from_cache(ic, dc);
+    }
     match macho.extract_as_necessary(Some(dc)) {
         Ok(()) => (),
         Err(e) => { errln!("for '{}', extract fail: {}", ii.path, e); return },
@@ -100,6 +104,9 @@ fn main() {
         errln!("parse dyld cache format fail: {}", e);
         util::exit();
     });
+    let image_cache = Arc::new(if dc.eb.arch == arch::AArch64 {
+        Some(ImageCache::new(&dc))
+    } else { None });
 
     if let Some(filename) = filename {
         fn get_output_path<'a>(ii: &'a ImageInfo, output_name: &'a Option<OsString>) -> &'a Path {
@@ -117,7 +124,8 @@ fn main() {
                     errln!("warning: only extracted the first of multiple files with path '{}'", ii.path);
                     return;
                 }
-                extract_one(&dc, ii, get_output_path(ii, &output_name));
+                extract_one(&dc, ii, get_output_path(ii, &output_name),
+                            (*image_cache).as_ref());
                 which_extracted = Some(&ii.path);
             }
         }
@@ -133,7 +141,8 @@ fn main() {
                     errln!("    {}", ii.path);
                     continue;
                 }
-                extract_one(&dc, ii, get_output_path(ii, &output_name));
+                extract_one(&dc, ii, get_output_path(ii, &output_name),
+                            (*image_cache).as_ref());
                 which_extracted = Some(&ii.path);
             }
         }
@@ -202,15 +211,18 @@ fn main() {
             if let Some((ref pool, ref tx, _)) = stuff {
                 let xdc_ = xdc.clone();
                 let tx_ = tx.clone();
+                let image_cache_ = image_cache.clone();
                 wait_count += 1;
                 pool.execute(move || {
                     let ii = &xdc_.image_info[i];
-                    extract_one(&xdc_, ii, &output_path);
+                    extract_one(&xdc_, ii, &output_path,
+                                (*image_cache_).as_ref());
                     tx_.send(()).unwrap();
                 });
             } else {
                 println!("-> {}", ii.path);
-                extract_one(&xdc, ii, &output_path);
+                extract_one(&xdc, ii, &output_path,
+                            (*image_cache).as_ref());
             }
         }
         if let Some((_, _, ref rx)) = stuff {

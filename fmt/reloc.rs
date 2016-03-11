@@ -47,7 +47,7 @@ impl RelocContext {
                 } else { None }
             },
             Arm64Br26 => {
-                if word & 0xfc000000 == 0x14000000 {
+                if word & 0x7c000000 == 0x14000000 {
                     Some(self.base_addr.wrapping_add(
                         sign_extend((word & 0x3ffffff) * 4, 28)
                     ))

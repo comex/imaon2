@@ -181,12 +181,14 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     if m.opt_present("relocs") {
         println!("Relocations:");
         for rel in ex.get_reloc_list(None) {
-            print!("addr={} kind={:?}", rel.address, rel.kind);
+            println!("addr={} kind={:?}", rel.address, rel.kind);
+            /*
             if let Some(add) = rel.addend {
                 println!(" addend=0x{:x}", add);
             } else {
                 println!("");
             }
+            */
         }
     }
     if m.opt_present("macho-filedata-info") {

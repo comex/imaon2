@@ -199,6 +199,7 @@ fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size
 }
 
 
+#[derive(Clone)]
 pub struct DscTabs {
     pub symtab: MCRef,
     pub strtab: MCRef,
@@ -206,7 +207,7 @@ pub struct DscTabs {
     pub count: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum LoadDylibKind {
     Normal = LC_LOAD_DYLIB as isize,
     Weak = LC_LOAD_WEAK_DYLIB as isize,
@@ -214,6 +215,7 @@ pub enum LoadDylibKind {
     Upward = LC_LOAD_UPWARD_DYLIB as isize,
 }
 
+#[derive(Clone)]
 pub struct LoadDylib {
     path: ByteString,
     kind: LoadDylibKind,
@@ -222,6 +224,7 @@ pub struct LoadDylib {
     compatibility_version: PackedVersion,
 }
 
+#[derive(Clone, Copy)]
 struct PackedVersion(u32);
 impl std::fmt::Display for PackedVersion {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
@@ -229,13 +232,14 @@ impl std::fmt::Display for PackedVersion {
     }
 }
 
+#[derive(Clone)]
 pub struct SectPrivate {
     idx_in_seg: usize,
     flags: u32,
 
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MachO {
     pub eb: exec::ExecBase,
     pub is64: bool,
@@ -285,6 +289,7 @@ enum WhichBind {
     LazyBind = 2
 }
 
+#[derive(Clone, Copy)]
 struct LinkeditBit {
     name: &'static str,
     self_field: FieldLens<MachO, MCRef>,
@@ -386,30 +391,7 @@ impl exec::Exec for MachO {
                 });
                 out
             },
-            SymbolSource::Exported => {
-                let mut out = Vec::new();
-                self.parse_dyld_export(self.dyld_export.get(), None, &mut |state: &ParseDyldExportState| {
-                    out.push(exec::Symbol {
-                        name: state.name.to_owned().into(),
-                        is_public: true,
-                        is_weak: state.flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
-                        val: if let Some((_, ref name)) = state.reexport {
-                            SymbolValue::ReExport((*name).to_owned().into())
-                        } else if let Some(resolver) = state.resolver {
-                            SymbolValue::Resolver(resolver, Some(state.addr))
-                        } else { match state.flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
-                            EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => SymbolValue::Addr(state.addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => SymbolValue::ThreadLocal(state.addr),
-                            EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => SymbolValue::Abs(state.addr),
-                            _ => panic!("muri")
-                        } },
-                        size: None,
-                        private: state.offset,
-                    });
-                    true
-                });
-                out
-            },
+            SymbolSource::Exported => self.get_exported_symbol_list(),
         }
     }
 
@@ -532,7 +514,7 @@ impl<T> OKOrTruncated<T> for Option<T> {
     }
 }
 
-struct ParseDyldBindState<'s> {
+pub struct ParseDyldBindState<'s> {
     source_dylib: SourceLib,
     seg: Option<&'s exec::Segment>,
     seg_idx: usize,
@@ -1222,7 +1204,7 @@ impl MachO {
         (existing_segs, extra_segs)
     }
 
-    fn parse_each_dyld_bind<'a>(&'a self, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
+    pub fn parse_each_dyld_bind<'a>(&'a self, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
         self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, cb);
         self.parse_dyld_bind(self.dyld_weak_bind.get(), WhichBind::WeakBind, cb);
         self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, cb);
@@ -2011,24 +1993,36 @@ impl MachO {
         });
         guess
     }
-    pub fn subtract_dic_from_addr_range<'a, F>(&'a self, start: VMA, size: u64, mut cb: F)
+    pub fn subtract_dic_from_addr_range<'a, F>(&'a self, outer_start: VMA, outer_size: u64, mut cb: F)
         where F: FnMut(VMA, u64) {
         // simple enough
         let dic = self.data_in_code.get();
-        let end = self.eb.endian;
+        let endian = self.eb.endian;
         let text_addr = some_or!(self.dyld_base, {
             errln!("warning: can't get data_in_code because no reasonable-looking text segment");
             return;
         });
+        let outer_end = outer_start + outer_size;
+        let mut prev_dice_end = outer_start;
         for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
-            let dice: data_in_code_entry = util::copy_from_slice(chunk, end);
+            let dice: data_in_code_entry = util::copy_from_slice(chunk, endian);
             if dice.length == 0 { continue; }
             let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
-            if text_addr.check_add(end_offset).is_none() {
+            let dice_end_addr = some_or!(text_addr.check_add(end_offset), {
                 errln!("warning: bad data_in_code end offset {:x}", end_offset);
                 continue;
+            });
+            let dice_start_addr = text_addr + (dice.offset as u64);
+            if dice_start_addr >= outer_end {
+                break;
             }
-            cb(text_addr + (dice.offset as u64), dice.length as u64);
+            if prev_dice_end < dice_start_addr {
+                cb(prev_dice_end, dice_start_addr - prev_dice_end);
+            }
+            prev_dice_end = dice_end_addr;
+        }
+        if prev_dice_end < outer_end {
+            cb(prev_dice_end, outer_end - prev_dice_end);
         }
     }
     // currently for cache extraction on arm64 only
@@ -2049,14 +2043,18 @@ impl MachO {
                 let mut data =
                     &sectdata[(start - sect.vmaddr) as usize ..
                               (start + size - sect.vmaddr) as usize];
+                println!("got {} bytes", data.len());
                 let mut addr = start;
                 while data.len() >= 4 {
                     let insn: u32 = util::copy_from_slice(&data[..4], end);
                     // the important part
-                    let kind = if insn & 0x9F000000 == 0x90000000 {
-                        Some(RelocKind::Arm64Adrp)
-                    } else if insn & 0xfc000000 == 0x14000000 {
+                    let kind = if insn & 0x7c000000 == 0x14000000 {
                         Some(RelocKind::Arm64Br26)
+                    /*
+                    } else if insn & 0x9f000000 == 0x90000000 {
+                        Some(RelocKind::Arm64Adrp)
+                        xxx this won't quite work because we need the corresponding adr to find the symbol
+                        */
                     } else { None };
                     if let Some(kind) = kind {
                         let rc = RelocContext {
@@ -2077,12 +2075,82 @@ impl MachO {
         }
         relocs
     }
-    pub fn fix_text_relocs_from_cache(&self, ic: &ImageCache) {
+    pub fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache) {
         let guess = self.guess_text_relocs();
         if guess.len() == 0 { return; }
         for (source, kind, target) in guess {
+            let target = some_or!(resolve_arm64_trampolines(dc, target, source, self.eb.endian),
+                                  continue);
+            if let Some(sme) = ic.lookup_addr(target) {
+                let ice = &ic.cache[sme.image_idx];
+                let mo = match &ice.mo {
+                    &Ok(ref mo) => mo,
+                    &Err(ref e) => {
+                        errln!("warning: fix_text_relocs_from_cache: addr {} (ref'd by {}) points to bad image ({})", target, source, e);
+                        continue;
+                    },
+                };
+                let syms = ice.get_syms();
+                let idx = some_or!(syms.binary_search_by(
+                    |sym| match sym.val {
+                        SymbolValue::Addr(vma) => vma.cmp(&target),
+                        _ => panic!()
+                    }).ok(), {
+                    errln!("warning: fix_text_relocs_from_cache: found image for {} (ref'd by {}), but no symbol", target, source);
+                    continue;
+                });
+                println!("ok, symbol is {:?}", syms[idx]);
 
+            } else {
+                errln!("warning: fix_text_relocs_from_cache: couldn't find image for {} (ref'd by {})", target, source);
+            }
         }
+    }
+    pub fn get_exported_symbol_list(&self) -> Vec<exec::Symbol<'static>> {
+        let mut out = Vec::new();
+        self.parse_dyld_export(self.dyld_export.get(), None, &mut |state: &ParseDyldExportState| {
+            out.push(exec::Symbol {
+                name: state.name.to_owned().into(),
+                is_public: true,
+                is_weak: state.flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
+                val: if let Some((_, ref name)) = state.reexport {
+                    SymbolValue::ReExport((*name).to_owned().into())
+                } else if let Some(resolver) = state.resolver {
+                    SymbolValue::Resolver(resolver, Some(state.addr))
+                } else { match state.flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {
+                    EXPORT_SYMBOL_FLAGS_KIND_REGULAR | 3 => SymbolValue::Addr(state.addr),
+                    EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL => SymbolValue::ThreadLocal(state.addr),
+                    EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE => SymbolValue::Abs(state.addr),
+                    _ => panic!("muri")
+                } },
+                size: None,
+                private: state.offset,
+            });
+            true
+        });
+        out
+    }
+}
+
+fn resolve_arm64_trampolines(dc: &DyldCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<VMA> {
+    let mut num = 0usize;
+    let mut prev = refd_by;
+    loop {
+        let insn_buf = some_or!(dc.eb.read_sane(target, 4), {
+            errln!("resolve_arm64_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
+                   target, num, refd_by, prev);
+            return None;
+        });
+        let insn: u32 = util::copy_from_slice(insn_buf, end);
+        // stricter mask as BL is no good
+        if insn & 0xfc000000 != 0x14000000 {
+            return Some(target);
+        }
+        let p = prev;
+        prev = target;
+        let rc = RelocContext { kind: RelocKind::Arm64Br26, pointer_size: 8, base_addr: prev };
+        target = rc.word_to_addr(insn.ext()).unwrap();
+        num += 1;
     }
 }
 

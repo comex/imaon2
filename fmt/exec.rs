@@ -158,7 +158,7 @@ impl Segment {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ExecBase {
     pub arch: Arch,
     pub pointer_size: usize,

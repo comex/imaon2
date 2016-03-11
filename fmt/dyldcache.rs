@@ -1,10 +1,10 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow};
+use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy};
 use exec::ErrorKind::BadData;
 use exec::arch;
-use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
+use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, SymbolValue};
 use std::mem::{size_of};
 use std::cmp::{min, Ordering};
 use std::ops::Range;
@@ -436,6 +436,13 @@ impl DyldCache {
         }
         self.image_info.iter().map(|ii| address_to_idx[&ii.address]).collect()
     }
+    pub fn image_info_idx(&self, ii: &ImageInfo) -> usize {
+        let ii = ii as *const _ as usize;
+        let ii0 = self.image_info.as_ptr() as usize;
+        let idx = ii.wrapping_sub(ii0) / size_of::<ImageInfo>();
+        assert!(ii == (&self.image_info[idx] as *const _ as usize));
+        idx
+    }
 }
 
 impl Exec for DyldCache {
@@ -543,14 +550,19 @@ impl ExecProber for DyldSingleProber {
 
 pub struct ImageCache {
     pub seg_map: Vec<SegMapEntry>,
-    pub cache: Vec<ExecResult<MachO>>,
+    pub cache: Vec<ImageCacheEntry>,
+}
+
+pub struct ImageCacheEntry {
+    pub mo: ExecResult<MachO>,
+    syms: Lazy<Vec<exec::Symbol<'static>>>,
 }
 
 pub struct SegMapEntry {
-    addr: VMA,
-    size: u64,
-    image_idx: usize,
-    seg_idx: usize,
+    pub addr: VMA,
+    pub size: u64,
+    pub image_idx: usize,
+    pub seg_idx: usize,
 }
 
 impl ImageCache {
@@ -569,20 +581,53 @@ impl ImageCache {
                     });
                 }
             }
-            cache.push(res);
+            cache.push(ImageCacheEntry {
+                mo: res,
+                syms: Lazy::new(),
+            });
         }
         seg_map.sort_by_key(|entry| entry.addr);
         ImageCache { seg_map: seg_map, cache: cache }
     }
     pub fn lookup_addr(&self, addr: VMA) -> Option<&SegMapEntry> {
         self.seg_map.binary_search_by(|entry| {
+            //println!("< got entry={},{} addr={}", entry.addr, entry.size, addr);
             if addr >= entry.addr + entry.size {
-                Ordering::Greater
-            } else if addr < entry.addr {
                 Ordering::Less
+            } else if addr < entry.addr {
+                Ordering::Greater
             } else {
                 Ordering::Equal
             }
         }).ok().map(|i| &self.seg_map[i])
+    }
+}
+
+impl ImageCacheEntry {
+    pub fn get_syms(&self) -> &Vec<exec::Symbol> {
+        self.syms.get(|| -> Vec<exec::Symbol<'static>> {
+            let mo = self.mo.as_ref().unwrap();
+            let mut list = mo.get_exported_symbol_list();
+            list.retain(|sym| match sym.val {
+                SymbolValue::Addr(_) => true,
+                _ => false
+            });
+            // there can be references to someone else's lazy stub??
+            mo.parse_each_dyld_bind(&mut |state: &::ParseDyldBindState| {
+                let addr = some_or!(state.seg, return true).vmaddr
+                    + some_or!(state.seg_off, return true);
+                list.push(exec::Symbol {
+                    name: some_or!(state.symbol, return true).to_owned().into(),
+                    val: SymbolValue::Addr(addr),
+                    is_public: false, is_weak: false, size: None, private: 0,
+                });
+                true
+            });
+            list.sort_by_key(|sym| match sym.val {
+                SymbolValue::Addr(vma) => vma,
+                _ => panic!()
+            });
+            list
+        })
     }
 }

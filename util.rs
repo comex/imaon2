@@ -955,6 +955,7 @@ impl<T> Lazy<T> {
         }
     }
 }
+unsafe impl<T> Sync for Lazy<T> {}
 impl<T> Drop for Lazy<T> {
     fn drop(&mut self) {
         if self.is_valid.load(Ordering::Acquire) {
@@ -965,8 +966,12 @@ impl<T> Drop for Lazy<T> {
 
 pub struct FieldLens<Outer, Inner> {
     offset: usize,
-    lol: PhantomData<*const (Outer, Inner)>,
+    lol: PhantomData<fn(&Outer)->&Inner>,
 }
+impl<O, I> Clone for FieldLens<O, I> {
+    fn clone(&self) -> Self { *self }
+}
+impl<O, I> Copy for FieldLens<O, I> {}
 
 pub unsafe fn __field_lens<Outer, Inner>(offset: *const Inner) -> FieldLens<Outer, Inner> {
     FieldLens { offset: offset as usize, lol: PhantomData }
