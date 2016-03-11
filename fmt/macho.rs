@@ -22,13 +22,12 @@ use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKi
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
-use std::collections::hash_map::Entry;
 use std::borrow::Cow;
 use std::cell::Cell;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
 
 pub mod dyldcache;
-use dyldcache::{DyldCache, ImageCache};
+use dyldcache::{DyldCache, ImageCache, SegMapEntry};
 
 // dont bother with the unions
 deriving_swap!(
@@ -2093,7 +2092,7 @@ impl MachO {
             let sp = &self.sect_private[sect.private];
             if sp.flags & SECTION_TYPE != S_SYMBOL_STUBS { continue; }
             let (ind_idx, stub_size) = (sp.reserved1 as usize, sp.reserved2 as usize);
-            let mut stub_count = sect.filesize / stub_size.ext();
+            let stub_count = sect.filesize / stub_size.ext();
             if ind_idx > indirectsym_count {
                 errln!("warning: stub_name_list: reserved1 ({}) > stub count ({}) for section {:?}",
                        ind_idx, stub_count, sect.name);
@@ -2122,29 +2121,34 @@ impl MachO {
         res
     }
     pub fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache) {
+        let pointer_size = self.eb.pointer_size.ext();
+        let end = self.eb.endian;
         let guess = self.guess_text_relocs();
         if guess.len() == 0 { return; }
+
+        let mut writer = SegmentWriter::new(&mut self.eb.segments);
+        for sect in &self.eb.sections {
+            if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
+                writer.make_seg_rw(sect.seg_idx.unwrap());
+            }
+        }
+        { // <-
+
         let mut my_stubs_by_name: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
         for (name, stub_addr) in self.stub_name_list() {
-            println!(">> name={} stub_addr={}", name, stub_addr);
             my_stubs_by_name.insert(name, stub_addr);
         }
+
+
         let mut target_cache: HashMap<VMA, Option<VMA>, _> = util::new_fnv_hashmap();
         for (source, kind, target) in guess {
             let new_target = target_cache.entry(target).or_insert_with(|| {
-                let target = some_or!(resolve_arm64_trampolines(dc, target, source, self.eb.endian),
-                                      return None);
-                let sme = some_or!(ic.lookup_addr(target), {
-                    errln!("warning: fix_text_relocs_from_cache: couldn't find image for {} (ref'd by {})", target, source);
-                    return None;
-                });
+                let (target, sme) = some_or!(resolve_arm64_trampolines(dc, ic, target, source, self.eb.endian),
+                                             return None);
                 let ice = &ic.cache[sme.image_idx];
-                let mo = match &ice.mo {
-                    &Ok(ref mo) => mo,
-                    &Err(ref e) => {
-                        errln!("warning: fix_text_relocs_from_cache: addr {} (ref'd by {}) points to bad image ({})", target, source, e);
-                        return None;
-                    },
+                if let Err(ref e) = ice.mo {
+                    errln!("warning: fix_text_relocs_from_cache: addr {} (ref'd by {}) points to bad image ({})", target, source, e);
+                    return None;
                 };
                 let syms = ice.get_syms();
                 let idx = some_or!(syms.binary_search_by(
@@ -2163,11 +2167,23 @@ impl MachO {
                 });
                 Some(*res)
             });
-            if let Some(t) = *new_target {
-                //println!(">> {}", t);
+            if let Some(new_target) = *new_target {
+                let rc = RelocContext {
+                    kind: kind,
+                    pointer_size: pointer_size,
+                    base_addr: source,
+                };
 
+                let cell_ptr = writer.get_sane_rw(source, 4).unwrap();
+                let insn: u32 = util::copy_from_slice(cell_ptr, end);
+                let insn = rc.addr_to_word(new_target, insn.ext()).unwrap() as u32;
+                //println!("patching {} -> {:x} newt={}", source, insn, new_target);
+
+                util::copy_to_slice(cell_ptr, &insn, end);
             }
         }
+        } // <-
+        writer.finish(&mut self.eb.segments);
     }
     pub fn get_exported_symbol_list(&self) -> Vec<exec::Symbol<'static>> {
         let mut out = Vec::new();
@@ -2195,10 +2211,14 @@ impl MachO {
     }
 }
 
-fn resolve_arm64_trampolines(dc: &DyldCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<VMA> {
+fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<(VMA, &'a SegMapEntry)> {
     let mut num = 0usize;
     let mut prev = refd_by;
     loop {
+        if let Some(sme) = ic.lookup_addr(target) {
+            return Some((target, sme));
+        }
+        // if it's in an image, then it could be a B but not a trampoline, so need to check this first
         let insn_buf = some_or!(dc.eb.read_sane(target, 4), {
             errln!("resolve_arm64_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
                    target, num, refd_by, prev);
@@ -2207,7 +2227,9 @@ fn resolve_arm64_trampolines(dc: &DyldCache, mut target: VMA, refd_by: VMA, end:
         let insn: u32 = util::copy_from_slice(insn_buf, end);
         // stricter mask as BL is no good
         if insn & 0xfc000000 != 0x14000000 {
-            return Some(target);
+            errln!("resolve_arm64_trampolines: address {} not found in image, but is not a B (insn = 0x{:08x}) \
+                    (ref'd by {}, most recently by {})", target, insn, refd_by, prev);
+            return None;
         }
         prev = target;
         let rc = RelocContext { kind: RelocKind::Arm64Br26, pointer_size: 8, base_addr: target };

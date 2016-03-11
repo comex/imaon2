@@ -71,8 +71,9 @@ impl RelocContext {
             },
             Arm64Br26 => {
                 let base = old_word & !0x3ffffff;
+                if rel & 3 != 0 { return None; }
                 let x = try_opt!(un_sign_extend(rel, 28));
-                Some(x | base)
+                Some(x >> 2 | base)
             },
             Arm64Off12 => {
                 unimplemented!()
