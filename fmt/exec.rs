@@ -209,7 +209,15 @@ pub enum SymbolSource {
 pub struct Reloc {
     pub address: VMA,
     pub kind: RelocKind,
-    pub addend: Option<u64>,
+    pub base: VMA,
+    pub target: RelocTarget,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum RelocTarget {
+    ThisImageSlide,
+    ThisSegmentSlide,
+    Import(&'a Symbol),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

@@ -62,13 +62,15 @@ impl RelocContext {
             Pointer => Some(addr),
             _32Bit => if addr <= u32::MAX { Some(addr) } else { None },
             Arm64Adrp => {
+                let base = old_word & !0x600fffe0;
                 let x = try_opt!(un_sign_extend(rel, 33));
                 if x & 0xfff != 0 { return None; }
-                Some((x & 0x3000) << 17 | (x & 0x1ffffc000) >> 9)
+                Some((x & 0x3000) << 17 | (x & 0x1ffffc000) >> 9 | base)
             },
             Arm64Br26 => {
+                let base = old_word & !0x3ffffff;
                 let x = try_opt!(un_sign_extend(rel, 28));
-                Some(x | 0x14000000)
+                Some(x | base)
             },
             Arm64Off12 => {
                 unimplemented!()

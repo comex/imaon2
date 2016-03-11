@@ -4,7 +4,7 @@ use macho_bind;
 use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow};
 use exec::ErrorKind::BadData;
 use exec::arch;
-use exec::{Reloc, RelocKind, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
+use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
 use std::mem::{size_of};
 use std::cmp::min;
 use std::ops::Range;
@@ -13,6 +13,7 @@ use std::collections::hash_map::Entry;
 use std::any::Any;
 use std;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
+use ::MachO;
 
 pub struct ImageInfo {
     pub address: u64,
@@ -34,7 +35,7 @@ pub struct DyldCache {
     pub uuid: Option<[u8; 16]>,
     pub slide_info_blob: Option<MCRef>,
     pub cs_blob: Option<MCRef>,
-    local_symbols: Option<LocalSymbols>,
+    pub local_symbols: Option<LocalSymbols>,
 }
 
 /*
@@ -294,6 +295,7 @@ impl DyldCache {
             slide_info_blob: slide_info,
             cs_blob: cs_blob,
             local_symbols: local_symbols,
+            image_cache: Vec::new(),
         };
         if inner_sects {
             for ii in &dc.image_info {
@@ -333,12 +335,12 @@ impl DyldCache {
             None
         } else { None }
     }
-    pub fn load_single_image(&self, ii: &ImageInfo) -> ExecResult<::MachO> {
+    pub fn load_single_image(&self, ii: &ImageInfo) -> ExecResult<MachO> {
         let off = some_or!(exec::addr_to_off(&self.eb.segments, VMA(ii.address), 0),
             return err(BadData,
                        "shared cache image said to be at an unmapped offset"));
         let buf = self.eb.whole_buf.as_ref().unwrap().clone();
-        let mut mo = try!(::MachO::new(buf, true, off as usize));
+        let mut mo = try!(MachO::new(buf, true, off as usize));
         mo.dsc_tabs = self.get_ls_entry_for_offset(off);
         Ok(mo)
     }
@@ -447,7 +449,7 @@ impl Exec for DyldCache {
         match self.get_slide_info() {
             Ok(Some(sli)) => {
                 sli.iter(None, |addr| {
-                    ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, addend: None });
+                    ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, target: RelocTarget::ThisImageSlide });
                 });
             },
             Ok(None) => (),
@@ -537,5 +539,41 @@ impl ExecProber for DyldSingleProber {
         };
         let mo = try!(c.load_single_image(&c.image_info[idx]));
         Ok((Box::new(mo) as Box<Exec>, free))
+    }
+}
+
+pub struct ImageCache<'a> {
+    dc: &'a DyldCache,
+    cache: Vec<Lazy<ExecResult<MachO>>>,
+}
+
+impl ImageCache {
+    pub fn new<'a>(dc: &'a DyldCache) -> ImageCache<'a> {
+        let mut cache = Vec::new();
+        cache.resize(dc.image_info.len(), Lazy::new());
+        ImageCache { dc: dc, cache: cache }
+    }
+    pub fn load_single_image(&self, idx: usize) -> &ExecResult<MachO> {
+        self.cache[idx].get(|| {
+            self.dc.load_single_image(&self.dc.image_info[idx])
+        })
+    }
+}
+
+pub struct SegMapEntry {
+    addr: VMA,
+    size: u64,
+    image_idx: usize,
+    seg_idx: usize,
+}
+
+pub struct SegMap {
+    map: Vec<SegMapEntry>,
+}
+
+impl SegMap {
+    pub fn new(dc: &DyldCache) -> SegMap {
+        
+
     }
 }

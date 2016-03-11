@@ -2019,65 +2019,65 @@ impl MachO {
         for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
             let dice = util::copy_from_slice(chunk, end);
             if dice.length == 0 { continue; }
-
             let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
             if text_addr.check_add(end_offset).is_none() {
                 errln!("warning: bad data_in_code end offset {:x}", end_offset);
                 continue;
             }
-            let 
-            
+            cb(text_addr + (dice.offset as u64), dice.length as u64);
         }
     }
     // currently for cache extraction on arm64 only
-    pub fn guess_text_relocs(&self) -> Vec<Reloc> {
+    pub fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)> {
         let mut relocs = Vec::new();
         if self.eb.arch != arch::AArch64 {
             return relocs;
         }
         let end = self.eb.endian;
-        let mut (cur_dice_start, cur_dice_end): (VMA, VMA) = (VMA(0), VMA(0));
-        let mut dice_iter_done = false;
         for sect in &self.eb.sections {
-            let data = self.read(sect.vmaddr, sect.filesize);
-            let data = data.get();
-            for (start, size) in self.subtract_dic_from_addr_range(sect.vmaddr, sect.filesize) {
-                let data = &data[start - sect.vmaddr .. start + size - sect.vmaddr];
+            if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
+                continue;
+            }
+            let sectdata = self.read(sect.vmaddr, sect.filesize);
+            let sectdata = sectdata.get();
+            self.subtract_dic_from_addr_range(sect.vmaddr, sect.filesize, |start, size| {
+                let sectdata = &sectdata[start - sect.vmaddr .. start + size - sect.vmaddr];
                 let mut addr = start;
                 while data.len() >= 4 {
                     let insn: u32 = util::copy_from_slice(&data[..4], end);
                     // the important part
-                    if insn & 0x9F000000 
+                    let kind = if insn & 0x9F000000 == 0x90000000 {
+                        Some(RelocKind::Arm64Adrp)
+                    } else if insn & 0xfc000000 == 0x14000000 {
+                        Some(RelocKind::Arm64Br26)
+                    } else { None };
+                    if let Some(kind) = kind {
+                        let rc = RelocContext {
+                            kind: kind,
+                            pointer_size: self.pointer_size,
+                            base_addr: addr,
+                        };
+                        let target = rc.word_to_addr(insn);
+                        if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
+                            relocs.push((addr, kind, target));
+                        }
+                    }
 
                     data = &data[4..];
                     addr += 4;
                 }
-            }
+            });
         }
-            let mut addr = sect.vmaddr;
-            let data = data.get();
-            while data.len() >= 4 {
-                while cur_dice_end <= addr && !dice_iter_done {
-                    if let Some(dice) = dice_iter.next() {
-                            continue;
-                        });
-                        cur_dice_start = text_addr + (dice.offset as u64);
-                    } else {
-                        dice_iter_done = true;
-                        break;
-                    }
-                }
-                if addr >= cur_dice_start {
-                    let skip = min(data.len(), (cur_dice_end - addr) as usize);
-                    data = &data[skip]; addr += skip;
-                    continue;
-                }
-                data = &data[4..];
-                addr += 4;
-            }
-        }
-        unimplemented!()
+        relocs
+    }
+    pub fn fix_text_relocs_from_cache(&self, dc: &DyldCache, sm: &DyldCacheSegMap) {
+        let guess = self.guess_text_relocs();
+        if guess.len() == 0 { return; }
+        assert!(dc.sorted_image_info);
+        for (source, kind, target) in guess {
+            
 
+        }
     }
 }
 
