@@ -6,7 +6,7 @@ use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
 use std::mem::{size_of};
-use std::cmp::min;
+use std::cmp::{min, Ordering};
 use std::ops::Range;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
@@ -295,7 +295,6 @@ impl DyldCache {
             slide_info_blob: slide_info,
             cs_blob: cs_blob,
             local_symbols: local_symbols,
-            image_cache: Vec::new(),
         };
         if inner_sects {
             for ii in &dc.image_info {
@@ -443,13 +442,13 @@ impl Exec for DyldCache {
     fn get_exec_base<'a>(&'a self) -> &'a ExecBase {
         &self.eb
     }
-    fn get_reloc_list(&self, specific: Option<&Any>) -> Vec<Reloc> {
+    fn get_reloc_list<'a>(&'a self, specific: Option<&'a Any>) -> Vec<Reloc<'a>> {
         assert!(specific.is_none());
         let mut ret = Vec::new();
         match self.get_slide_info() {
             Ok(Some(sli)) => {
                 sli.iter(None, |addr| {
-                    ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, target: RelocTarget::ThisImageSlide });
+                    ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, base: None, target: RelocTarget::ThisImageSlide });
                 });
             },
             Ok(None) => (),
@@ -542,22 +541,9 @@ impl ExecProber for DyldSingleProber {
     }
 }
 
-pub struct ImageCache<'a> {
-    dc: &'a DyldCache,
-    cache: Vec<Lazy<ExecResult<MachO>>>,
-}
-
-impl ImageCache {
-    pub fn new<'a>(dc: &'a DyldCache) -> ImageCache<'a> {
-        let mut cache = Vec::new();
-        cache.resize(dc.image_info.len(), Lazy::new());
-        ImageCache { dc: dc, cache: cache }
-    }
-    pub fn load_single_image(&self, idx: usize) -> &ExecResult<MachO> {
-        self.cache[idx].get(|| {
-            self.dc.load_single_image(&self.dc.image_info[idx])
-        })
-    }
+pub struct ImageCache {
+    pub seg_map: Vec<SegMapEntry>,
+    pub cache: Vec<ExecResult<MachO>>,
 }
 
 pub struct SegMapEntry {
@@ -567,13 +553,36 @@ pub struct SegMapEntry {
     seg_idx: usize,
 }
 
-pub struct SegMap {
-    map: Vec<SegMapEntry>,
-}
-
-impl SegMap {
-    pub fn new(dc: &DyldCache) -> SegMap {
-        
-
+impl ImageCache {
+    pub fn new(dc: &DyldCache) -> ImageCache {
+        let mut cache = Vec::with_capacity(dc.image_info.len());
+        let mut seg_map = Vec::new();
+        for (i, ii) in dc.image_info.iter().enumerate() {
+            let res = dc.load_single_image(ii);
+            if let Ok(ref mo) = res {
+                for (j, seg) in mo.eb.segments.iter().enumerate() {
+                    seg_map.push(SegMapEntry {
+                        addr: seg.vmaddr,
+                        size: seg.vmsize,
+                        image_idx: i,
+                        seg_idx: j,
+                    });
+                }
+            }
+            cache.push(res);
+        }
+        seg_map.sort_by_key(|entry| entry.addr);
+        ImageCache { seg_map: seg_map, cache: cache }
+    }
+    pub fn lookup_addr(&self, addr: VMA) -> Option<&SegMapEntry> {
+        self.seg_map.binary_search_by(|entry| {
+            if addr >= entry.addr + entry.size {
+                Ordering::Greater
+            } else if addr < entry.addr {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        }).ok().map(|i| &self.seg_map[i])
     }
 }

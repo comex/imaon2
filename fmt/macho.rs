@@ -18,7 +18,7 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, Reloc};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, Reloc, RelocKind, RelocContext, ReadVMA};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
@@ -28,7 +28,7 @@ use std::cell::Cell;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
 
 pub mod dyldcache;
-use dyldcache::DyldCache;
+use dyldcache::{DyldCache, ImageCache};
 
 // dont bother with the unions
 deriving_swap!(
@@ -2016,8 +2016,12 @@ impl MachO {
         // simple enough
         let dic = self.data_in_code.get();
         let end = self.eb.endian;
+        let text_addr = some_or!(self.dyld_base, {
+            errln!("warning: can't get data_in_code because no reasonable-looking text segment");
+            return;
+        });
         for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
-            let dice = util::copy_from_slice(chunk, end);
+            let dice: data_in_code_entry = util::copy_from_slice(chunk, end);
             if dice.length == 0 { continue; }
             let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
             if text_addr.check_add(end_offset).is_none() {
@@ -2034,14 +2038,17 @@ impl MachO {
             return relocs;
         }
         let end = self.eb.endian;
+        let pointer_size = self.eb.pointer_size;
         for sect in &self.eb.sections {
             if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
                 continue;
             }
-            let sectdata = self.read(sect.vmaddr, sect.filesize);
+            let sectdata = self.eb.read(sect.vmaddr, sect.filesize);
             let sectdata = sectdata.get();
             self.subtract_dic_from_addr_range(sect.vmaddr, sect.filesize, |start, size| {
-                let sectdata = &sectdata[start - sect.vmaddr .. start + size - sect.vmaddr];
+                let mut data =
+                    &sectdata[(start - sect.vmaddr) as usize ..
+                              (start + size - sect.vmaddr) as usize];
                 let mut addr = start;
                 while data.len() >= 4 {
                     let insn: u32 = util::copy_from_slice(&data[..4], end);
@@ -2054,28 +2061,26 @@ impl MachO {
                     if let Some(kind) = kind {
                         let rc = RelocContext {
                             kind: kind,
-                            pointer_size: self.pointer_size,
+                            pointer_size: pointer_size.ext(),
                             base_addr: addr,
                         };
-                        let target = rc.word_to_addr(insn);
+                        let target = rc.word_to_addr(insn.ext()).unwrap();
                         if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
                             relocs.push((addr, kind, target));
                         }
                     }
 
                     data = &data[4..];
-                    addr += 4;
+                    addr = addr + 4;
                 }
             });
         }
         relocs
     }
-    pub fn fix_text_relocs_from_cache(&self, dc: &DyldCache, sm: &DyldCacheSegMap) {
+    pub fn fix_text_relocs_from_cache(&self, ic: &ImageCache) {
         let guess = self.guess_text_relocs();
         if guess.len() == 0 { return; }
-        assert!(dc.sorted_image_info);
         for (source, kind, target) in guess {
-            
 
         }
     }

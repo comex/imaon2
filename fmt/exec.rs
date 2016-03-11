@@ -206,18 +206,18 @@ pub enum SymbolSource {
 
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct Reloc {
+pub struct Reloc<'a> {
     pub address: VMA,
     pub kind: RelocKind,
-    pub base: VMA,
-    pub target: RelocTarget,
+    pub base: Option<VMA>, // None if 'rel'
+    pub target: RelocTarget<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum RelocTarget {
+pub enum RelocTarget<'a> {
     ThisImageSlide,
     ThisSegmentSlide,
-    Import(&'a Symbol),
+    Import(&'a Symbol<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -235,7 +235,7 @@ pub trait Exec : 'static {
         vec!()
     }
 
-    fn get_reloc_list(&self, specific: Option<&Any>) -> Vec<Reloc> {
+    fn get_reloc_list<'a>(&'a self, specific: Option<&'a Any>) -> Vec<Reloc<'a>> {
         assert!(specific.is_none());
         vec!()
     }

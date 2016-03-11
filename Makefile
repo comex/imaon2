@@ -121,7 +121,7 @@ $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-
 		-force-type 'LC_' u32 \
 		> "$@" || (rm -f "$@"; false)
 
-$(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs,util)
+$(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs fmt/reloc.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
 $(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util deps)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)

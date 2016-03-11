@@ -96,7 +96,7 @@ fn main() {
     });
 
     let dc_buf = util::safe_mmap(&mut fp);
-    let dc = DyldCache::new(dc_buf, false).unwrap_or_else(|e| {
+    let dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
         errln!("parse dyld cache format fail: {}", e);
         util::exit();
     });
