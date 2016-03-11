@@ -735,6 +735,7 @@ impl Swap for GNUHashHeader {
 
 struct GNUHash {
     header: GNUHashHeader,
+    #[allow(dead_code)]
     bitmask: MCRef,
     buckets: MCRef,
     chain_addr: VMA,

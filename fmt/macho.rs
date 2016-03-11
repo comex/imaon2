@@ -1944,7 +1944,7 @@ impl MachO {
             let x: Option<DyldCache>;
             let dc = if let Some(dc) = dc { dc } else {
                 let inner_sections = true; // xxx
-                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), inner_sections)));
+                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), inner_sections, /*unslide*/ false)));
                 x.as_ref().unwrap()
             };
             // we're in a cache...

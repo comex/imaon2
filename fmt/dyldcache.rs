@@ -170,7 +170,7 @@ impl RangeCast for Range<u64> {
 }
 
 impl DyldCache {
-    pub fn new(mc: MCRef, inner_sects: bool) -> ExecResult<DyldCache> {
+    pub fn new(mc: MCRef, inner_sects: bool, unslide: bool) -> ExecResult<DyldCache> {
         // note - not all fields in older caches, but at least a page should be there, so don't worry about size calculation
         let hdr_size = size_of::<dyld_cache_header>();
         let (arch, end, is64, hdr) = {
@@ -310,7 +310,9 @@ impl DyldCache {
                 }
             }
         }
-        dc.auto_unslide();
+        if unslide {
+            dc.auto_unslide();
+        }
         Ok(dc)
     }
     pub fn get_ls_entry_for_offset(&self, off: u64) -> Option<::DscTabs> {
@@ -465,7 +467,7 @@ impl ExecProber for DyldWholeProber {
         "dyld-whole"
     }
     fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
-        if let Ok(c) = DyldCache::new(buf, false) {
+        if let Ok(c) = DyldCache::new(buf, false, false) {
             vec![ProbeResult {
                 desc: "whole dyld cache".to_string(),
                 arch: c.eb.arch,
@@ -477,11 +479,11 @@ impl ExecProber for DyldWholeProber {
         }
     }
    fn create(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
-        let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-whole", 1, std::usize::MAX, &mut vec![
+        let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-whole", 0, std::usize::MAX, &mut vec![
             ::getopts::optflag("", "inner-sects", "show sections from inner libraries"),
         ])));
         let inner_sects = m.opt_present("inner-sects");
-        let c = try!(DyldCache::new(buf, inner_sects));
+        let c = try!(DyldCache::new(buf, inner_sects, /*unslide*/ true));
         Ok((Box::new(c) as Box<Exec>, m.free))
     }
 }
@@ -493,7 +495,7 @@ impl ExecProber for DyldSingleProber {
         "dyld-single"
     }
     fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
-        if let Ok(c) = DyldCache::new(buf, false) {
+        if let Ok(c) = DyldCache::new(buf, false, false) {
             let mut seen_basenames = HashSet::new();
             c.image_info.iter().enumerate().map(|(i, ii)| {
                 let cmd0 = "dyld-single".to_string();
@@ -519,7 +521,7 @@ impl ExecProber for DyldSingleProber {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
             ::getopts::optflag("i", "idx", "choose by idx"),
         ])));
-        let c = try!(DyldCache::new(buf, false));
+        let c = try!(DyldCache::new(buf, false, /*unslide*/ true));
         let mut free = m.free.clone();
         let path = &free.remove(0)[..];
         let bpath = ByteStr::from_str(path);
