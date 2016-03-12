@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn, step_by, copy_from_slice)]
+#![feature(collections, libc, iter_arith, const_fn, step_by)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -389,8 +389,9 @@ impl exec::Exec for MachO {
                     out.push(Symbol {
                         name: some_or!(state.symbol, { return true; }).into(),
                         is_public: true,
-                        // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
-                        is_weak: state.which == WhichBind::WeakBind,
+                        // XXX what about BIND_SYMBOL_FLAGS_NON_WEAK_DEFINITION?
+                        is_weak: state.which == WhichBind::WeakBind ||
+                                 state.flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT != 0,
                         val: SymbolValue::Undefined(state.source_dylib),
                         size: None,
                         private: 0,
@@ -557,6 +558,7 @@ pub struct ParseDyldBindState<'s> {
     typ: u8,
     symbol: Option<&'s ByteStr>,
     already_bound_this_symbol: bool,
+    flags: u32,
     which: WhichBind,
 }
 struct ParseDyldExportState<'a> {
@@ -1069,13 +1071,18 @@ impl MachO {
         let mut got_addr = VMA(0);
         let mut got_size = 0;
         let mut got_seg_idx = 0;
-        let (mut stubs_base, mut la_base, mut got_base) = (None, None, None);
+        // TODO get counts too
+        let (mut stubs_base, mut la_base, mut la_weak_base, mut got_base) = (None, None, None, None);
         for sect in &self.eb.sections {
             let sp = &self.sect_private[sect.private];
             let ptr = if sp.flags & SECTION_TYPE == S_SYMBOL_STUBS {
                 &mut stubs_base
             } else if sp.flags & SECTION_TYPE == S_LAZY_SYMBOL_POINTERS {
-                &mut la_base
+                if sect.name.as_ref().unwrap() == "__la_weak_ptr" {
+                    &mut la_weak_base
+                } else {
+                    &mut la_base
+                }
             } else if sp.flags & SECTION_TYPE == S_NON_LAZY_SYMBOL_POINTERS {
                 got_addr = sect.vmaddr;
                 got_size = sect.vmsize;
@@ -1101,7 +1108,9 @@ impl MachO {
             let end = self.eb.endian;
             let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
             if let Some(stubs_base) = stubs_base {
-                let mut ind_idx = stubs_base;
+                let mut ind_idx_stubs = stubs_base;
+                let mut ind_idx_la: Option<_> = la_base;
+                let mut ind_idx_la_weak: Option<_> = la_weak_base;
                 self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, &mut |state: &ParseDyldBindState| {
                     if state.source_dylib == SourceLib::Self_ { return true; }
                     let name = some_or!(state.symbol, return true);
@@ -1111,27 +1120,35 @@ impl MachO {
                         errln!("warning: update_indirectsym: name '{}' from lazy bind not found in undefsym", name);
                         0
                     };
-                    let ind_off = ind_idx * 4;
-                    if ind_idx >= indirectsym.len() {
-                        errln!("warning: update_indirectsym: ran out of stubs while at name '{}'", name);
-                        return false;
+                    let ii_stubs = ind_idx_stubs; ind_idx_stubs += 1;
+                    let is_weak = state.flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT != 0;
+                    let ii_la = if is_weak && ind_idx_la_weak.is_some() {
+                        println!("{}: la_weak", name);
+                        let i = ind_idx_la_weak.unwrap(); ind_idx_la_weak = Some(i + 1); i
+                    } else {
+                        let i = some_or!(ind_idx_la, {
+                            if ind_idx_la_weak.is_some() {
+                                errln!("warning: update_indirectsym: got stubs but no non-weak lazy symbol pointers; won't update this");
+                                return true
+                            } else {
+                                errln!("warning: update_indirectsym: got stubs but no lazy symbol pointers; won't update");
+                                return false
+                            }
+                        });
+                        ind_idx_la = Some(i + 1);
+                        i
+                    };
+                    for &ind_idx in &[ii_stubs, ii_la] {
+                        let ind_off = ind_idx * 4;
+                        if ind_idx >= indirectsym.len() {
+                            errln!("warning: update_indirectsym: bad indirect symbol table index {}", ind_idx);
+                            return false;
+                        }
+                        let buf = &mut indirectsym[ind_off..ind_off+4];
+                        util::copy_to_slice(buf, &idx, end);
                     }
-                    let buf = &mut indirectsym[ind_off..ind_off+4];
-                    util::copy_to_slice(buf, &idx, end);
-                    ind_idx += 1;
                     true
                 });
-                if let Some(la_base) = la_base {
-                    // TODO copy directly?
-                    if nindirectsym - la_base < ind_idx - stubs_base {
-                        errln!("warning: update_indirectsym: not enough room to copy stubs onto lazy");
-                    } else {
-                        let excerpt = indirectsym[stubs_base*4..ind_idx*4].to_vec();
-                        indirectsym[la_base*4..(la_base+(ind_idx-stubs_base))*4].copy_from_slice(&excerpt);
-                    }
-                } else {
-                    errln!("warning: update_indirectsym: got stubs without lazy symbol pointers; will update, but this looks wrong");
-                }
             } else if la_base.is_some() {
                 errln!("warning: update_indirectsym: got lazy symbol pointers without stubs; won't update");
             }
@@ -1420,6 +1437,7 @@ impl MachO {
             symbol: None,
             already_bound_this_symbol: false,
             which: which,
+            flags: 0,
         };
         let set_dylib_ordinal = |state: &mut ParseDyldBindState, ord: u64| {
             let count = self.load_dylib.len().ext();
@@ -1456,6 +1474,7 @@ impl MachO {
                     state.symbol = Some(name);
                     state.already_bound_this_symbol = false;
                     slice = &slice[name.len()+1..];
+                    state.flags = immediate.ext();
                 },
                 BIND_OPCODE_SET_TYPE_IMM => {
                     state.typ = immediate;
@@ -2097,6 +2116,7 @@ impl MachO {
             self.xsym_to_symtab();
             self.update_indirectsym(&res.undefsym_name_to_idx);
             if let Some(ic) = image_cache {
+                // must come after indirectsym
                 self.fix_text_relocs_from_cache(ic, dc);
             }
             self.unbind();
