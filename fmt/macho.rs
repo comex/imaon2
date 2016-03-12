@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn, step_by)]
+#![feature(collections, libc, iter_arith, const_fn, step_by, copy_from_slice)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -16,7 +16,7 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian, Lazy};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian, Lazy, Fnv};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
 use std::{u64, u32, usize};
@@ -25,9 +25,7 @@ use std::collections::{HashSet, HashMap};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::any::Any;
-use std::hash::BuildHasherDefault;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
-use deps::fnv::FnvHasher;
 
 pub mod dyldcache;
 use dyldcache::{DyldCache, ImageCache, SegMapEntry, ImageCacheEntry};
@@ -575,7 +573,7 @@ struct ReaggregatedSyms {
     extdefsym: Vec<u8>,
     undefsym: Vec<u8>,
     strtab: Vec<u8>,
-    nextdefsym_diff: usize,
+    undefsym_name_to_idx: HashMap<ByteString, usize, Fnv>,
 }
 
 fn strx_to_name(strtab: &[u8], strx: u64) -> &ByteStr {
@@ -1060,18 +1058,114 @@ impl MachO {
         }
     }
 
-    fn update_indirectsym(&mut self, diff: usize) {
-        // reallocate will stick this back into linkedit
-        let indirectsym = self.indirectsym.get_mut_decow();
-        let end = self.eb.endian;
-        for buf in indirectsym.chunks_mut(4) {
-            let idx: u32 = util::copy_from_slice(buf, end);
-            if diff > (std::u32::MAX - idx).ext() {
-                errln!("warning: update_indirectsym: overflow adding diff {} to symbol index {}; output will be wrong", diff, idx);
+    fn update_indirectsym(&mut self, undefsym_name_to_idx: &HashMap<ByteString, usize, Fnv>) {
+        // reallocate will stick this back into linkedit order of nlists has been preserved, so we
+        // *could* just add whatever we shoved into extdefsym to each index... except imports of
+        // reexports, which correspond to nlists that were removed, get 0 here!
+        // luckily, stubs are in the same order as dyld lazy_bind info, so use that
+        // for non-lazy GOT, we have the exact addresses from bind/weak_bind (but the lack of
+        // ordering between the two means we have to use them)
+        let nindirectsym = self.indirectsym.len() / 4;
+        let mut got_addr = VMA(0);
+        let mut got_size = 0;
+        let mut got_seg_idx = 0;
+        let (mut stubs_base, mut la_base, mut got_base) = (None, None, None);
+        for sect in &self.eb.sections {
+            let sp = &self.sect_private[sect.private];
+            let ptr = if sp.flags & SECTION_TYPE == S_SYMBOL_STUBS {
+                &mut stubs_base
+            } else if sp.flags & SECTION_TYPE == S_LAZY_SYMBOL_POINTERS {
+                &mut la_base
+            } else if sp.flags & SECTION_TYPE == S_NON_LAZY_SYMBOL_POINTERS {
+                got_addr = sect.vmaddr;
+                got_size = sect.vmsize;
+                got_seg_idx = sect.seg_idx.unwrap();
+                &mut got_base
+            } else {
+                continue
+            };
+            if ptr.is_some() {
+                errln!("warning: update_indirectsym: got more than one S_SYMBOL_STUBS/S_LAZY_SYMBOL_POINTERS/S_NON_LAZY_SYMBOL_POINTERS");
+                return;
             }
-            let new_idx: u32 = diff.wrapping_add(idx.ext()).trunc();
-            util::copy_to_slice(buf, &new_idx, end);
+            *ptr = Some(sp.reserved1 as usize);
+            if sp.reserved1 as usize > nindirectsym {
+                errln!("warning: update_indirectsym: got bad indirect symbol table index {} (nindirectsym={}) \
+                        for section {}", sp.reserved1, nindirectsym, sect.name.as_ref().unwrap());
+                return;
+            }
         }
+        let mut xindirectsym = replace(&mut self.indirectsym, MCRef::default());
+        {
+            let indirectsym = xindirectsym.get_mut_decow();
+            let end = self.eb.endian;
+            let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
+            if let Some(stubs_base) = stubs_base {
+                let mut ind_idx = stubs_base;
+                self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, &mut |state: &ParseDyldBindState| {
+                    if state.source_dylib == SourceLib::Self_ { return true; }
+                    let name = some_or!(state.symbol, return true);
+                    let idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
+                        (idx + base_sym_idx).narrow().unwrap()
+                    } else {
+                        errln!("warning: update_indirectsym: name '{}' from lazy bind not found in undefsym", name);
+                        0
+                    };
+                    let ind_off = ind_idx * 4;
+                    if ind_idx >= indirectsym.len() {
+                        errln!("warning: update_indirectsym: ran out of stubs while at name '{}'", name);
+                        return false;
+                    }
+                    let buf = &mut indirectsym[ind_off..ind_off+4];
+                    util::copy_to_slice(buf, &idx, end);
+                    ind_idx += 1;
+                    true
+                });
+                if let Some(la_base) = la_base {
+                    // TODO copy directly?
+                    if nindirectsym - la_base < ind_idx - stubs_base {
+                        errln!("warning: update_indirectsym: not enough room to copy stubs onto lazy");
+                    } else {
+                        let excerpt = indirectsym[stubs_base*4..ind_idx*4].to_vec();
+                        indirectsym[la_base*4..(la_base+(ind_idx-stubs_base))*4].copy_from_slice(&excerpt);
+                    }
+                } else {
+                    errln!("warning: update_indirectsym: got stubs without lazy symbol pointers; will update, but this looks wrong");
+                }
+            } else if la_base.is_some() {
+                errln!("warning: update_indirectsym: got lazy symbol pointers without stubs; won't update");
+            }
+            if let Some(got_base) = got_base {
+                let cb = &mut |state: &ParseDyldBindState| {
+                    if state.source_dylib == SourceLib::Self_ { return true; }
+                    if state.seg_idx != got_seg_idx { return true; }
+                    let got_off = (state.seg.unwrap().vmaddr + state.seg_off.unwrap()).wrapping_sub(got_addr);
+                    if got_off >= got_size { return true; }
+                    let name = some_or!(state.symbol, return true);
+                    let ind_idx = some_or!(((got_off / self.eb.pointer_size.ext()) as usize).check_add(got_base), {
+                        errln!("warning: update_indirectsym: overflow adding GOT base indirectsym index for '{}'", name);
+                        return true;
+                    });
+                    let idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
+                        (idx + base_sym_idx).narrow().unwrap()
+                    } else {
+                        errln!("warning: update_indirectsym: name '{}' from {:?} bind not found in undefsym", name, state.which);
+                        return true
+                    };
+                    let ind_off = ind_idx * 4;
+                    if ind_idx >= indirectsym.len() {
+                        errln!("warning: update_indirectsym: invalid indirectsym index {} for '{}'", ind_idx, name);
+                        return false;
+                    }
+                    let buf = &mut indirectsym[ind_off..ind_off+4];
+                    util::copy_to_slice(buf, &idx, end);
+                    true
+                };
+                self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, cb);
+                self.parse_dyld_bind(self.dyld_weak_bind.get(), WhichBind::WeakBind, cb);
+            }
+        }
+        self.indirectsym = xindirectsym;
     }
 
     fn xsym_to_symtab(&mut self) {
@@ -1557,7 +1651,7 @@ impl MachO {
             extdefsym: Vec::new(),
             undefsym: Vec::new(),
             strtab: vec![b'\0'],
-            nextdefsym_diff: 0,
+            undefsym_name_to_idx: util::new_fnv_hashmap(),
         };
         // Why have this map?
         // 1. just in case a <redacted> is the only symbol we have for something, which shouldn't
@@ -1583,6 +1677,7 @@ impl MachO {
         {
             // nlist-to-nlist part: this whole thing is similar to get_symbol_list, but i want to copy directly
             // also, order needs to be preserved to avoid messing up indirectsyms
+            // ^ not anymore, but whatever
             let _sw = stopwatch("reaggregate_nlist_syms_from_cache: nl-to-nl");
             let internal_symtab = self.symtab.get();
             let internal_strtab = self.strtab.get();
@@ -1632,6 +1727,7 @@ impl MachO {
                     seen_symbols.insert((addr, name));
                 }
                 let which = if n_type == N_UNDF {
+                    res.undefsym_name_to_idx.insert(name.to_owned(), res.undefsym.len() / nlist_size);
                     &mut res.undefsym
                 } else if int_nl.n_type as u32 & N_EXT != 0 {
                     &mut res.extdefsym
@@ -1673,8 +1769,6 @@ impl MachO {
             };
             assert!(sym.is_public);
             copy_nlist_to_vec(&mut res.extdefsym, &nl, end, is64);
-            // undefsym indices will be pushed down, so need to update indirectsym
-            res.nextdefsym_diff += 1;
         }
         stopw.stop();
         res
@@ -2001,7 +2095,7 @@ impl MachO {
             self.undefsym = MCRef::with_data(&res.undefsym);
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
-            self.update_indirectsym(res.nextdefsym_diff);
+            self.update_indirectsym(&res.undefsym_name_to_idx);
             self.unbind();
             self.fix_objc_from_cache(dc);
             self.check_no_other_lib_refs(dc);
@@ -2264,7 +2358,7 @@ impl MachO {
         } // <-
         writer.finish(&mut self.eb.segments);
     }
-    pub fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, BuildHasherDefault<FnvHasher>> {
+    pub fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv> {
         let opts = MachOLookupExportOptions { using_image_cache: Some(unsafe { transmute::<&'a ImageCache, &'static ImageCache>(ic) }) };
         let mut res = util::new_fnv_hashmap();
         let mut prev_source_info: Option<(usize, &ImageCacheEntry)> = None;

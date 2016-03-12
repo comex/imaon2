@@ -995,12 +995,14 @@ impl<Outer, Inner> FieldLens<Outer, Inner> {
     }
 }
 
-pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, BuildHasherDefault<FnvHasher>> {
-    HashMap::with_hasher(BuildHasherDefault::<FnvHasher>::default())
+pub type Fnv = BuildHasherDefault<FnvHasher>;
+
+pub fn new_fnv_hashmap<K: Eq + Hash, V>() -> HashMap<K, V, Fnv> {
+    HashMap::with_hasher(Fnv::default())
 }
 
-pub fn new_fnv_hashset<T: Eq + Hash>() -> HashSet<T, BuildHasherDefault<FnvHasher>> {
-    HashSet::with_hasher(BuildHasherDefault::<FnvHasher>::default())
+pub fn new_fnv_hashset<T: Eq + Hash>() -> HashSet<T, Fnv> {
+    HashSet::with_hasher(Fnv::default())
 }
 
 #[cfg(stopwatch)]

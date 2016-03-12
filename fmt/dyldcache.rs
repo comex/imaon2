@@ -2,7 +2,7 @@ extern crate util;
 extern crate exec;
 extern crate deps;
 use macho_bind;
-use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy};
+use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, SymbolValue};
@@ -11,10 +11,8 @@ use std::cmp::{min, Ordering};
 use std::ops::Range;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
-use std::hash::BuildHasherDefault;
 use std::any::Any;
 use std;
-use deps::fnv::FnvHasher;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
 use ::MachO;
 
@@ -554,7 +552,7 @@ impl ExecProber for DyldSingleProber {
 pub struct ImageCache {
     pub seg_map: Vec<SegMapEntry>,
     pub cache: Vec<ImageCacheEntry>,
-    pub path_map: HashMap<ByteString, usize, BuildHasherDefault<FnvHasher>>,
+    pub path_map: HashMap<ByteString, usize, Fnv>,
 }
 
 pub struct ImageCacheEntry {
