@@ -1075,27 +1075,16 @@ impl MachO {
             sect_addr: VMA,
             sect_size: u64,
         }
-        let (mut stubs_info, mut la_info, mut la_weak_info, mut got_info) = (None, None, None, None);
+        let mut stubs_info = None;
+        let mut pointers_sects_info = Vec::new();
         for sect in &self.eb.sections {
             let sp = &self.sect_private[sect.private];
-            let (ptr, item_size) = if sp.flags & SECTION_TYPE == S_SYMBOL_STUBS {
-                (&mut stubs_info, sp.reserved2 as usize)
-            } else if sp.flags & SECTION_TYPE == S_LAZY_SYMBOL_POINTERS {
-                // xxx support multiple?
-                if sect.name.as_ref().unwrap() == "__la_weak_ptr" {
-                    (&mut la_weak_info, pointer_size)
-                } else {
-                    (&mut la_info, pointer_size)
-                }
-            } else if sp.flags & SECTION_TYPE == S_NON_LAZY_SYMBOL_POINTERS {
-                (&mut got_info, pointer_size)
-            } else {
-                continue
+            let section_type = sp.flags & SECTION_TYPE;
+            let item_size = match section_type {
+                S_SYMBOL_STUBS => sp.reserved2 as usize,
+                S_LAZY_SYMBOL_POINTERS | S_NON_LAZY_SYMBOL_POINTERS => pointer_size,
+                _ => continue
             };
-            if ptr.is_some() {
-                errln!("warning: update_indirectsym: got more than one S_SYMBOL_STUBS/S_LAZY_SYMBOL_POINTERS/S_NON_LAZY_SYMBOL_POINTERS");
-                return;
-            }
             let info = IndirectPointingSectionInfo {
                 ind_idx_base: sp.reserved1 as usize,
                 ind_count: (sect.vmsize / item_size.ext()).narrow().unwrap(), // xxx
@@ -1106,15 +1095,23 @@ impl MachO {
                 errln!("warning: update_indirectsym: got bad indirect symbol table index/size for section {}", sect.name.as_ref().unwrap());
                 continue;
             }
-            *ptr = Some(info);
+            if section_type == S_SYMBOL_STUBS {
+                if stubs_info.is_some() {
+                    errln!("warning: update_indirectsym: got more than one S_SYMBOL_STUBS");
+                } else {
+                    stubs_info = Some(info);
+                }
+            } else {
+                pointers_sects_info.push(info);
+            }
         }
         let mut xindirectsym = replace(&mut self.indirectsym, MCRef::default());
         {
             let indirectsym = xindirectsym.get_mut_decow();
             let end = self.eb.endian;
             let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
-            let (mut stubs_ind_idx, stubs_ind_count) = if let Some(ref info) = stubs_info {
-                (info.ind_idx_base, info.ind_count)
+            let (mut stubs_ind_idx, stubs_ind_end) = if let Some(ref info) = stubs_info {
+                (info.ind_idx_base, info.ind_idx_base + info.ind_count)
             } else {
                 (0, 0)
             };
@@ -1123,7 +1120,7 @@ impl MachO {
                 let name = some_or!(state.symbol, return true);
                 let seg = some_or!(state.seg, return true);
                 let stubs_idx = if state.which == WhichBind::LazyBind {
-                    if stubs_ind_idx >= stubs_ind_count {
+                    if stubs_ind_idx >= stubs_ind_end {
                         errln!("warning: update_indirectsym: lazy bind count > stub count");
                         None
                     } else {
@@ -1132,8 +1129,7 @@ impl MachO {
                 } else { None };
                 let mut ptr_idx = None;
                 let addr = seg.vmaddr + state.seg_off.unwrap();
-                for info in &[&la_info, &la_weak_info, &got_info] {
-                    let info = some_or!(info.as_ref(), continue);
+                for info in &pointers_sects_info {
                     let off = addr.wrapping_sub(info.sect_addr);
                     if off < info.sect_size {
                         ptr_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
@@ -1144,7 +1140,7 @@ impl MachO {
                 let sym_idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
                     (idx + base_sym_idx).narrow().unwrap()
                 } else {
-                    errln!("warning: update_indirectsym: name '{}' from lazy bind not found in undefsym", name);
+                    errln!("warning: update_indirectsym: name '{}' from {:?} not found in undefsym; can't fix indirect symbol table", name, state.which);
                     0
                 };
                 for &ind_idx in &[stubs_idx, ptr_idx] {
@@ -1155,6 +1151,9 @@ impl MachO {
                 }
                 true
             });
+            if stubs_ind_idx < stubs_ind_end {
+                errln!("warning: update_indirectsym: lazy bind count < stub count");
+            }
         }
         self.indirectsym = xindirectsym;
     }
