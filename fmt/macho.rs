@@ -1068,26 +1068,27 @@ impl MachO {
         // for non-lazy GOT, we have the exact addresses from bind/weak_bind (but the lack of
         // ordering between the two means we have to use them)
         let nindirectsym = self.indirectsym.len() / 4;
-        let mut got_addr = VMA(0);
-        let mut got_size = 0;
-        let mut got_seg_idx = 0;
-        // TODO get counts too
-        let (mut stubs_base, mut la_base, mut la_weak_base, mut got_base) = (None, None, None, None);
+        let pointer_size = self.eb.pointer_size;
+        struct IndirectPointingSectionInfo {
+            ind_idx_base: usize,
+            ind_count: usize,
+            sect_addr: VMA,
+            sect_size: u64,
+        }
+        let (mut stubs_info, mut la_info, mut la_weak_info, mut got_info) = (None, None, None, None);
         for sect in &self.eb.sections {
             let sp = &self.sect_private[sect.private];
-            let ptr = if sp.flags & SECTION_TYPE == S_SYMBOL_STUBS {
-                &mut stubs_base
+            let (ptr, item_size) = if sp.flags & SECTION_TYPE == S_SYMBOL_STUBS {
+                (&mut stubs_info, sp.reserved2 as usize)
             } else if sp.flags & SECTION_TYPE == S_LAZY_SYMBOL_POINTERS {
+                // xxx support multiple?
                 if sect.name.as_ref().unwrap() == "__la_weak_ptr" {
-                    &mut la_weak_base
+                    (&mut la_weak_info, pointer_size)
                 } else {
-                    &mut la_base
+                    (&mut la_info, pointer_size)
                 }
             } else if sp.flags & SECTION_TYPE == S_NON_LAZY_SYMBOL_POINTERS {
-                got_addr = sect.vmaddr;
-                got_size = sect.vmsize;
-                got_seg_idx = sect.seg_idx.unwrap();
-                &mut got_base
+                (&mut got_info, pointer_size)
             } else {
                 continue
             };
@@ -1095,92 +1096,65 @@ impl MachO {
                 errln!("warning: update_indirectsym: got more than one S_SYMBOL_STUBS/S_LAZY_SYMBOL_POINTERS/S_NON_LAZY_SYMBOL_POINTERS");
                 return;
             }
-            *ptr = Some(sp.reserved1 as usize);
-            if sp.reserved1 as usize > nindirectsym {
-                errln!("warning: update_indirectsym: got bad indirect symbol table index {} (nindirectsym={}) \
-                        for section {}", sp.reserved1, nindirectsym, sect.name.as_ref().unwrap());
-                return;
+            let info = IndirectPointingSectionInfo {
+                ind_idx_base: sp.reserved1 as usize,
+                ind_count: (sect.vmsize / item_size.ext()).narrow().unwrap(), // xxx
+                sect_addr: sect.vmaddr,
+                sect_size: sect.vmsize,
+            };
+            if !info.ind_idx_base.check_add(info.ind_count).is_some_and(|&end| end <= nindirectsym) {
+                errln!("warning: update_indirectsym: got bad indirect symbol table index/size for section {}", sect.name.as_ref().unwrap());
+                continue;
             }
+            *ptr = Some(info);
         }
         let mut xindirectsym = replace(&mut self.indirectsym, MCRef::default());
         {
             let indirectsym = xindirectsym.get_mut_decow();
             let end = self.eb.endian;
             let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
-            if let Some(stubs_base) = stubs_base {
-                let mut ind_idx_stubs = stubs_base;
-                let mut ind_idx_la: Option<_> = la_base;
-                let mut ind_idx_la_weak: Option<_> = la_weak_base;
-                self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, &mut |state: &ParseDyldBindState| {
-                    if state.source_dylib == SourceLib::Self_ { return true; }
-                    let name = some_or!(state.symbol, return true);
-                    let idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
-                        (idx + base_sym_idx).narrow().unwrap()
+            let (mut stubs_ind_idx, stubs_ind_count) = if let Some(ref info) = stubs_info {
+                (info.ind_idx_base, info.ind_count)
+            } else {
+                (0, 0)
+            };
+            self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState| {
+                if state.source_dylib == SourceLib::Self_ { return true; }
+                let name = some_or!(state.symbol, return true);
+                let seg = some_or!(state.seg, return true);
+                let stubs_idx = if state.which == WhichBind::LazyBind {
+                    if stubs_ind_idx >= stubs_ind_count {
+                        errln!("warning: update_indirectsym: lazy bind count > stub count");
+                        None
                     } else {
-                        errln!("warning: update_indirectsym: name '{}' from lazy bind not found in undefsym", name);
-                        0
-                    };
-                    let ii_stubs = ind_idx_stubs; ind_idx_stubs += 1;
-                    let is_weak = state.flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT != 0;
-                    let ii_la = if is_weak && ind_idx_la_weak.is_some() {
-                        println!("{}: la_weak", name);
-                        let i = ind_idx_la_weak.unwrap(); ind_idx_la_weak = Some(i + 1); i
-                    } else {
-                        let i = some_or!(ind_idx_la, {
-                            if ind_idx_la_weak.is_some() {
-                                errln!("warning: update_indirectsym: got stubs but no non-weak lazy symbol pointers; won't update this");
-                                return true
-                            } else {
-                                errln!("warning: update_indirectsym: got stubs but no lazy symbol pointers; won't update");
-                                return false
-                            }
-                        });
-                        ind_idx_la = Some(i + 1);
-                        i
-                    };
-                    for &ind_idx in &[ii_stubs, ii_la] {
-                        let ind_off = ind_idx * 4;
-                        if ind_idx >= indirectsym.len() {
-                            errln!("warning: update_indirectsym: bad indirect symbol table index {}", ind_idx);
-                            return false;
-                        }
-                        let buf = &mut indirectsym[ind_off..ind_off+4];
-                        util::copy_to_slice(buf, &idx, end);
+                        let i = stubs_ind_idx; stubs_ind_idx += 1; Some(i)
                     }
-                    true
-                });
-            } else if la_base.is_some() {
-                errln!("warning: update_indirectsym: got lazy symbol pointers without stubs; won't update");
-            }
-            if let Some(got_base) = got_base {
-                let cb = &mut |state: &ParseDyldBindState| {
-                    if state.source_dylib == SourceLib::Self_ { return true; }
-                    if state.seg_idx != got_seg_idx { return true; }
-                    let got_off = (state.seg.unwrap().vmaddr + state.seg_off.unwrap()).wrapping_sub(got_addr);
-                    if got_off >= got_size { return true; }
-                    let name = some_or!(state.symbol, return true);
-                    let ind_idx = some_or!(((got_off / self.eb.pointer_size.ext()) as usize).check_add(got_base), {
-                        errln!("warning: update_indirectsym: overflow adding GOT base indirectsym index for '{}'", name);
-                        return true;
-                    });
-                    let idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
-                        (idx + base_sym_idx).narrow().unwrap()
-                    } else {
-                        errln!("warning: update_indirectsym: name '{}' from {:?} bind not found in undefsym", name, state.which);
-                        return true
-                    };
-                    let ind_off = ind_idx * 4;
-                    if ind_idx >= indirectsym.len() {
-                        errln!("warning: update_indirectsym: invalid indirectsym index {} for '{}'", ind_idx, name);
-                        return false;
+                } else { None };
+                let mut ptr_idx = None;
+                let addr = seg.vmaddr + state.seg_off.unwrap();
+                for info in &[&la_info, &la_weak_info, &got_info] {
+                    let info = some_or!(info.as_ref(), continue);
+                    let off = addr.wrapping_sub(info.sect_addr);
+                    if off < info.sect_size {
+                        ptr_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
+                        break;
                     }
-                    let buf = &mut indirectsym[ind_off..ind_off+4];
-                    util::copy_to_slice(buf, &idx, end);
-                    true
+                }
+                if stubs_idx.is_none() && ptr_idx.is_none() { return true; }
+                let sym_idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
+                    (idx + base_sym_idx).narrow().unwrap()
+                } else {
+                    errln!("warning: update_indirectsym: name '{}' from lazy bind not found in undefsym", name);
+                    0
                 };
-                self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, cb);
-                self.parse_dyld_bind(self.dyld_weak_bind.get(), WhichBind::WeakBind, cb);
-            }
+                for &ind_idx in &[stubs_idx, ptr_idx] {
+                    let ind_idx = some_or!(ind_idx, continue);
+                    let ind_off = ind_idx * 4; // checked earlier
+                    let buf = &mut indirectsym[ind_off..ind_off+4];
+                    util::copy_to_slice(buf, &sym_idx, end);
+                }
+                true
+            });
         }
         self.indirectsym = xindirectsym;
     }
