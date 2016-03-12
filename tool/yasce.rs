@@ -31,10 +31,7 @@ fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Opti
         Ok(m) => m,
         Err(e) => { errln!("for '{}', parse Mach-O fail: {}", ii.path, e); return },
     };
-    if let Some(ic) = image_cache {
-        macho.fix_text_relocs_from_cache(ic, dc);
-    }
-    match macho.extract_as_necessary(Some(dc)) {
+    match macho.extract_as_necessary(Some(dc), image_cache) {
         Ok(()) => (),
         Err(e) => { errln!("for '{}', extract fail: {}", ii.path, e); return },
     }

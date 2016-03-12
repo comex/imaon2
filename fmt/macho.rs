@@ -2079,7 +2079,7 @@ impl MachO {
             });
         }
     }
-    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>) -> exec::ExecResult<()> {
+    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>, image_cache: Option<&ImageCache>) -> exec::ExecResult<()> {
         let _sw = stopwatch("extract_as_necessary");
         if self.hdr_offset != 0 {
             let x: Option<DyldCache>;
@@ -2096,6 +2096,9 @@ impl MachO {
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
             self.update_indirectsym(&res.undefsym_name_to_idx);
+            if let Some(ic) = image_cache {
+                self.fix_text_relocs_from_cache(ic, dc);
+            }
             self.unbind();
             self.fix_objc_from_cache(dc);
             self.check_no_other_lib_refs(dc);
