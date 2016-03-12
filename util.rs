@@ -668,15 +668,18 @@ impl MCRef {
         None
     }
 
-    /* wtf lifetime error
     pub fn get_mut_decow(&mut self) -> &mut [u8] {
+        // ugh!
+        let wtf: *mut Self = self;
         if let Some(sl) = self.get_mut() {
-            return sl;
+            sl
+        } else {
+            let wtf: &'static mut Self = unsafe { transmute(wtf) };
+            let vec = wtf.get().to_owned();
+            *wtf = MCRef::with_vec(vec);
+            wtf.get_mut().unwrap()
         }
-        let vec = self.get().to_owned();
-        *self = MCRef::with_vec(vec);
-        self.get_mut().unwrap()
-    } */
+    }
 
     // only safe to call if there are no mutable references
     pub unsafe fn get_cells(&self) -> &[Cell<u8>] {

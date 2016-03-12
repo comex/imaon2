@@ -575,6 +575,7 @@ struct ReaggregatedSyms {
     extdefsym: Vec<u8>,
     undefsym: Vec<u8>,
     strtab: Vec<u8>,
+    nextdefsym_diff: usize,
 }
 
 fn strx_to_name(strtab: &[u8], strx: u64) -> &ByteStr {
@@ -1056,6 +1057,20 @@ impl MachO {
             } else {
                 sect.fileoff += self.eb.segments[sect.seg_idx.unwrap()].fileoff;
             }
+        }
+    }
+
+    fn update_indirectsym(&mut self, diff: usize) {
+        // reallocate will stick this back into linkedit
+        let indirectsym = self.indirectsym.get_mut_decow();
+        let end = self.eb.endian;
+        for buf in indirectsym.chunks_mut(4) {
+            let idx: u32 = util::copy_from_slice(buf, end);
+            if diff > (std::u32::MAX - idx).ext() {
+                errln!("warning: update_indirectsym: overflow adding diff {} to symbol index {}; output will be wrong", diff, idx);
+            }
+            let new_idx: u32 = diff.wrapping_add(idx.ext()).trunc();
+            util::copy_to_slice(buf, &new_idx, end);
         }
     }
 
@@ -1542,6 +1557,7 @@ impl MachO {
             extdefsym: Vec::new(),
             undefsym: Vec::new(),
             strtab: vec![b'\0'],
+            nextdefsym_diff: 0,
         };
         // Why have this map?
         // 1. just in case a <redacted> is the only symbol we have for something, which shouldn't
@@ -1655,13 +1671,10 @@ impl MachO {
                     continue;
                 },
             };
-            copy_nlist_to_vec(if let SymbolValue::Undefined(_) = sym.val {
-                &mut res.undefsym
-            } else if sym.is_public {
-                &mut res.extdefsym
-            } else {
-                &mut res.localsym
-            }, &nl, end, is64);
+            assert!(sym.is_public);
+            copy_nlist_to_vec(&mut res.extdefsym, &nl, end, is64);
+            // undefsym indices will be pushed down, so need to update indirectsym
+            res.nextdefsym_diff += 1;
         }
         stopw.stop();
         res
@@ -1988,6 +2001,7 @@ impl MachO {
             self.undefsym = MCRef::with_data(&res.undefsym);
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
+            self.update_indirectsym(res.nextdefsym_diff);
             self.unbind();
             self.fix_objc_from_cache(dc);
             self.check_no_other_lib_refs(dc);
@@ -2219,7 +2233,8 @@ impl MachO {
                     }
                 }
                 // we fail
-                errln!("warning: fix_text_relocs_from_cache: couldn't find stub for symbol, name possibilities: {{");
+                errln!("warning: fix_text_relocs_from_cache: couldn't find stub for symbol (addr {} ref'd by {}), name possibilities: {{",
+                       target, source);
                 for idx in min_idx..max_idx+1 {
                     let sym_name = &syms[idx].name;
                     println!("  {}", sym_name);
