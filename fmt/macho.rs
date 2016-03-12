@@ -16,18 +16,21 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian, Lazy};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::any::Any;
+use std::hash::BuildHasherDefault;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
+use deps::fnv::FnvHasher;
 
 pub mod dyldcache;
-use dyldcache::{DyldCache, ImageCache, SegMapEntry};
+use dyldcache::{DyldCache, ImageCache, SegMapEntry, ImageCacheEntry};
 
 // dont bother with the unions
 deriving_swap!(
@@ -121,7 +124,7 @@ fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool
 }
 
 
-fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, arch: arch::Arch, is_text: &mut FnMut() -> bool, for_obj: bool) -> Result<x_nlist_64, String> {
+fn exec_sym_to_nlist_64(sym: &Symbol, strx: u32, ind_strx: Option<u32>, arch: arch::Arch, is_text: &mut FnMut() -> bool, for_obj: bool) -> Result<x_nlist_64, String> {
     // some stuff is missing, like common symbols
     let mut res: x_nlist_64 = Default::default();
     if sym.is_weak {
@@ -138,9 +141,14 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
             res.n_value = vma.0;
             res.n_type |= N_ABS as u8;
         },
-        &SymbolValue::Undefined(source) => {
-            res.n_value = 0;
-            res.n_type |= N_UNDF as u8;
+        &SymbolValue::Undefined(source) | &SymbolValue::ReExport(_, source) => {
+            if let &SymbolValue::Undefined(..) = &sym.val {
+                res.n_value = 0;
+                res.n_type |= N_UNDF as u8;
+            } else {
+                res.n_value = ind_strx.unwrap().ext();
+                res.n_type |= N_INDR as u8;
+            }
             let ord = match source {
                 SourceLib::None => 0,
                 SourceLib::Flat => {
@@ -162,10 +170,6 @@ fn exec_sym_to_nlist_64(sym: &exec::Symbol, strx: u32, ind_strx: Option<u32>, ar
             if !for_obj {
                 res.n_desc |= N_SYMBOL_RESOLVER as u16;
             }
-        },
-        &SymbolValue::ReExport(_) => {
-            res.n_value = ind_strx.unwrap().ext();
-            res.n_type |= N_INDR as u8;
         },
     }
     if res.n_value & 1 != 0 && arch == arch::ARM && is_text() {
@@ -360,7 +364,7 @@ impl exec::Exec for MachO {
         &self.eb
     }
 
-    fn get_symbol_list<'a>(&'a self, source: SymbolSource, specific: Option<&std::any::Any>) -> Vec<exec::Symbol<'a>> {
+    fn get_symbol_list<'a>(&'a self, source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol<'a>> {
         let _sw = stopwatch("get_symbol_list");
         assert!(specific.is_none());
         match source {
@@ -378,7 +382,7 @@ impl exec::Exec for MachO {
                 let mut out = Vec::new();
                 self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
                     if state.already_bound_this_symbol { return true; }
-                    out.push(exec::Symbol {
+                    out.push(Symbol {
                         name: some_or!(state.symbol, { return true; }).into(),
                         is_public: true,
                         // XXX what about BIND_SYMBOL_FLAGS_*WEAK*?
@@ -391,8 +395,12 @@ impl exec::Exec for MachO {
                 });
                 out
             },
-            SymbolSource::Exported => self.get_exported_symbol_list(),
+            SymbolSource::Exported => self.get_exported_symbol_list(None),
         }
+    }
+    fn lookup_export(&self, name: &ByteStr, specific: Option<&Any>) -> Vec<Symbol> {
+        assert!(specific.is_none());
+        self.get_exported_symbol_list(Some(name))
     }
 
     fn get_dep_libs(&self) -> Cow<[DepLib]> {
@@ -796,7 +804,7 @@ impl MachO {
         }
     }
 
-    fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<exec::Symbol<'a>>) {
+    fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<Symbol<'a>>) {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
             let slice = &symtab[off..off + self.nlist_size];
@@ -813,26 +821,28 @@ impl MachO {
             let vma = if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
             let is_obj = self.mh.filetype == MH_OBJECT;
             let ord = (nl.n_desc >> 8) as u32;
+            let source_lib = if is_obj || (n_type != N_UNDF && n_type != N_INDR) {
+                SourceLib::None
+            } else if (nl.n_desc as u32 & N_REF_TO_WEAK != 0) ||
+                      (self.load_dylib.len() < 254 && ord == DYNAMIC_LOOKUP_ORDINAL) {
+                SourceLib::Flat
+            } else if ord == SELF_LIBRARY_ORDINAL {
+                SourceLib::Self_
+            } else if ord == EXECUTABLE_ORDINAL {
+                SourceLib::MainExecutable
+            } else {
+                SourceLib::Ordinal((ord - 1) as u32)
+            };
             let val =
                 if nl.n_desc as u32 & N_SYMBOL_RESOLVER != 0 && is_obj {
                     SymbolValue::Resolver(vma, None)
                 } else if n_type == N_UNDF {
-                    SymbolValue::Undefined(if is_obj {
-                        SourceLib::None
-                    } else if (nl.n_desc as u32 & N_REF_TO_WEAK != 0) ||
-                              (self.load_dylib.len() < 254 && ord == DYNAMIC_LOOKUP_ORDINAL) {
-                        SourceLib::Flat
-                    } else if ord == SELF_LIBRARY_ORDINAL {
-                        SourceLib::Self_
-                    } else if ord == EXECUTABLE_ORDINAL {
-                        SourceLib::MainExecutable
-                    } else {
-                        SourceLib::Ordinal((ord - 1) as u32)
-                    })
+                    SymbolValue::Undefined(source_lib)
                 } else if n_type == N_INDR {
                     assert!(nl.n_value <= 0xfffffffe); // XXX why?
                     let indr_name = util::from_cstr(&strtab[nl.n_value as usize..]);
-                    SymbolValue::ReExport(into_cow(indr_name))
+                    // is the source_lib right?
+                    SymbolValue::ReExport(into_cow(indr_name), source_lib)
                 } else if n_type == N_ABS {
                     SymbolValue::Abs(vma)
                 } else {
@@ -859,7 +869,7 @@ impl MachO {
                     val
                 };
             if !(skip_redacted && name == ByteStr::from_bytes(b"<redacted>")) {
-                out.push(exec::Symbol {
+                out.push(Symbol {
                     name: into_cow(name),
                     is_public: public,
                     is_weak: weak,
@@ -873,7 +883,7 @@ impl MachO {
     }
 
     pub fn page_size(&self) -> u64 {
-        0x1000 // XXX
+        if self.eb.arch == arch::AArch64 { 0x4000 } else { 0x1000 }
     }
 
     pub fn rewhole(&mut self) {
@@ -1425,6 +1435,10 @@ impl MachO {
                            .wrapping_add(read_addr);
                 let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
                     let ord = leb!(it);
+                    if ord >= self.load_dylib.len().ext() {
+                        errln!("warning: parse_dyld_export: invalid reexport ordinal {} (count={})", ord, self.load_dylib.len());
+                        continue;
+                    }
                     let name;
                     if it.0.len() == 0 {
                         name = ByteStr::from_str("");
@@ -1602,7 +1616,7 @@ impl MachO {
             let nl = match exec_sym_to_nlist_64(
                 &sym,
                 add_string(&mut res.strtab, name),
-                if let SymbolValue::ReExport(ref imp_name) = sym.val {
+                if let SymbolValue::ReExport(ref imp_name, _) = sym.val {
                     Some(add_string(&mut res.strtab, imp_name))
                 } else { None },
                 arch,
@@ -2141,6 +2155,8 @@ impl MachO {
 
 
         let mut target_cache: HashMap<VMA, Option<VMA>, _> = util::new_fnv_hashmap();
+        let bmap: Lazy<_> = Lazy::new();
+        let this: &MachO = self;
         for (source, kind, target) in guess {
             let new_target = target_cache.entry(target).or_insert_with(|| {
                 let (target, sme) = some_or!(resolve_arm64_trampolines(dc, ic, target, source, self.eb.endian),
@@ -2161,11 +2177,24 @@ impl MachO {
                 });
                 let sym_name = &syms[idx].name;
                 // todo data relocs
-                let res = some_or!(my_stubs_by_name.get(&**sym_name), {
-                    errln!("warning: fix_text_relocs_from_cache: resolved symbol to {}, but couldn't find local stub for it", sym_name);
+                if let Some(&res) = my_stubs_by_name.get(&**sym_name) {
+                    return Some(res);
+                }
+                // No exact name match.  But it might be the target of a reexport (possibly
+                // multiple levels of reexport), which is annoying - it's not even
+                // unambiguous.  We have to check all our imports to see if they resolve to
+                // some reexport.
+                let bmap = bmap.get(|| this.backwards_reexport_map(ic));
+                let orig_name = some_or!(bmap.get(&**sym_name), {
+                    errln!("warning: fix_text_relocs_from_cache: resolved reference at {} to {} -> '{}', but there was no stub for it and it doesn't seem like a re-export; not patching",
+                           source, target, sym_name);
                     return None;
                 });
-                Some(*res)
+                if let Some(&res) = my_stubs_by_name.get(orig_name) {
+                    return Some(res);
+                }
+                errln!("warning: fix_text_relocs_from_cache: resolved symbol to {} and then backwards to {}, one of my imports, but that import had no stub?", sym_name, orig_name);
+                None
             });
             if let Some(new_target) = *new_target {
                 let rc = RelocContext {
@@ -2185,15 +2214,78 @@ impl MachO {
         } // <-
         writer.finish(&mut self.eb.segments);
     }
-    pub fn get_exported_symbol_list(&self) -> Vec<exec::Symbol<'static>> {
+    pub fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, BuildHasherDefault<FnvHasher>> {
+        println!("BRM");
+        let mut res = util::new_fnv_hashmap();
+        let mut prev_source_info: Option<(usize, &ImageCacheEntry)> = None;
+        self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
+            if state.already_bound_this_symbol { return true; }
+            let orig_name = some_or!(state.symbol, { return true; });
+            let source_dylib: usize = match state.source_dylib {
+                SourceLib::Ordinal(ord) => ord.ext(),
+                _ => return true,
+            };
+            let mut ice = match prev_source_info {
+                Some((prev_dylib, prev_ice)) if prev_dylib == source_dylib
+                    => prev_ice,
+                _ => {
+                    let path = &self.load_dylib[source_dylib].path;
+                    let ice = some_or!(ic.lookup_path(path), {
+                        errln!("backwards_reexport_map: didn't find {} in cache", path);
+                        return true;
+                    });
+                    prev_source_info = Some((source_dylib, ice));
+                    ice
+                },
+            };
+            let mut cur_name_owned: Option<ByteString> = None;
+            loop {
+                let mo = some_or!(ice.mo.as_ref().ok(), { continue; });
+                let new = (|| {
+                    let cur_name = if let Some(ref name) = cur_name_owned { &name[..] } else { orig_name };
+                    for export in mo.lookup_export(cur_name, None) {
+                        if let SymbolValue::ReExport(n, source_dylib) = export.val {
+                            // it's owned to start with so
+                            let source_dylib = match source_dylib {
+                                SourceLib::Ordinal(o) => o,
+                                _ => panic!()
+                            };
+                            return Some((n.into_owned(), source_dylib as usize))
+                        }
+                    }
+                    None
+                })();
+                if let Some((new_name, source_dylib)) = new {
+                    // no cache here, but this should be rare...
+                    let path = &mo.load_dylib[source_dylib].path;
+                    ice = some_or!(ic.lookup_path(path), {
+                        errln!("backwards_reexport_map: didn't find {} in cache (after first step)", path);
+                        return true;
+                    });
+                    cur_name_owned = Some(new_name);
+                } else {
+                    // otherwise, it's the end of the line.  did we get past the first lookup?
+                    if let Some(name) = cur_name_owned {
+                        println!("! {} -> {}", name, orig_name);
+                        res.insert(name, orig_name);
+                    }
+                    break;
+                }
+            }
+            true
+        });
+        res
+    }
+    pub fn get_exported_symbol_list(&self, search_for: Option<&ByteStr>) -> Vec<Symbol<'static>> {
         let mut out = Vec::new();
-        self.parse_dyld_export(self.dyld_export.get(), None, &mut |state: &ParseDyldExportState| {
-            out.push(exec::Symbol {
+        self.parse_dyld_export(self.dyld_export.get(), search_for, &mut |state: &ParseDyldExportState| {
+            out.push(Symbol {
                 name: state.name.to_owned().into(),
                 is_public: true,
                 is_weak: state.flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION != 0,
-                val: if let Some((_, ref name)) = state.reexport {
-                    SymbolValue::ReExport((*name).to_owned().into())
+                val: if let Some((ord, ref name)) = state.reexport {
+                    let ord: u32 = ord.narrow().unwrap();
+                    SymbolValue::ReExport((*name).to_owned().into(), SourceLib::Ordinal(ord))
                 } else if let Some(resolver) = state.resolver {
                     SymbolValue::Resolver(resolver, Some(state.addr))
                 } else { match state.flags & EXPORT_SYMBOL_FLAGS_KIND_MASK {

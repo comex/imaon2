@@ -184,7 +184,7 @@ pub enum SymbolValue<'a> {
     ThreadLocal(VMA),
     Undefined(SourceLib),
     Resolver(VMA, /* stub */ Option<VMA>),
-    ReExport(Cow<'a, ByteStr>),
+    ReExport(Cow<'a, ByteStr>, SourceLib),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -240,6 +240,11 @@ pub trait Exec : 'static {
 
     // Todo: add a monomorphizable iterator version of this
     fn get_symbol_list(&self, _source: SymbolSource, specific: Option<&Any>) -> Vec<Symbol> {
+        assert!(specific.is_none());
+        vec!()
+    }
+
+    fn lookup_export(&self, name: &ByteStr, specific: Option<&Any>) -> Vec<Symbol> {
         assert!(specific.is_none());
         vec!()
     }

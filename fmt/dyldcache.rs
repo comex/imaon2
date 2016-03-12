@@ -1,5 +1,6 @@
 extern crate util;
 extern crate exec;
+extern crate deps;
 use macho_bind;
 use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy};
 use exec::ErrorKind::BadData;
@@ -10,8 +11,10 @@ use std::cmp::{min, Ordering};
 use std::ops::Range;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
+use std::hash::BuildHasherDefault;
 use std::any::Any;
 use std;
+use deps::fnv::FnvHasher;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info};
 use ::MachO;
 
@@ -551,6 +554,7 @@ impl ExecProber for DyldSingleProber {
 pub struct ImageCache {
     pub seg_map: Vec<SegMapEntry>,
     pub cache: Vec<ImageCacheEntry>,
+    pub path_map: HashMap<ByteString, usize, BuildHasherDefault<FnvHasher>>,
 }
 
 pub struct ImageCacheEntry {
@@ -569,6 +573,7 @@ impl ImageCache {
     pub fn new(dc: &DyldCache) -> ImageCache {
         let mut cache = Vec::with_capacity(dc.image_info.len());
         let mut seg_map = Vec::new();
+        let mut path_map = util::new_fnv_hashmap();
         for (i, ii) in dc.image_info.iter().enumerate() {
             let res = dc.load_single_image(ii);
             if let Ok(ref mo) = res {
@@ -581,13 +586,14 @@ impl ImageCache {
                     });
                 }
             }
+            path_map.insert(ii.path.clone(), cache.len());
             cache.push(ImageCacheEntry {
                 mo: res,
                 syms: Lazy::new(),
             });
         }
         seg_map.sort_by_key(|entry| entry.addr);
-        ImageCache { seg_map: seg_map, cache: cache }
+        ImageCache { seg_map: seg_map, cache: cache, path_map: path_map }
     }
     pub fn lookup_addr(&self, addr: VMA) -> Option<&SegMapEntry> {
         self.seg_map.binary_search_by(|entry| {
@@ -601,13 +607,16 @@ impl ImageCache {
             }
         }).ok().map(|i| &self.seg_map[i])
     }
+    pub fn lookup_path<'a>(&'a self, path: &ByteStr) -> Option<&'a ImageCacheEntry> {
+        self.path_map.get(path).map(|&idx| &self.cache[idx])
+    }
 }
 
 impl ImageCacheEntry {
     pub fn get_syms(&self) -> &Vec<exec::Symbol> {
         self.syms.get(|| -> Vec<exec::Symbol<'static>> {
             let mo = self.mo.as_ref().unwrap();
-            let mut list = mo.get_exported_symbol_list();
+            let mut list = mo.get_exported_symbol_list(None);
             list.retain(|sym| match sym.val {
                 SymbolValue::Addr(_) => true,
                 _ => false
