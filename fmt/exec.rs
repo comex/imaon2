@@ -187,6 +187,18 @@ pub enum SymbolValue<'a> {
     ReExport(Cow<'a, ByteStr>, SourceLib),
 }
 
+impl<'a> SymbolValue<'a> {
+    pub fn some_vma(&self) -> Option<VMA> {
+        match self {
+            &SymbolValue::Addr(vma) |
+            &SymbolValue::Abs(vma) |
+            &SymbolValue::ThreadLocal(vma) |
+            &SymbolValue::Resolver(vma, _) => Some(vma),
+            _ => None
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SourceLib {
     None,
@@ -244,7 +256,7 @@ pub trait Exec : 'static {
         vec!()
     }
 
-    fn lookup_export(&self, name: &ByteStr, specific: Option<&Any>) -> Vec<Symbol> {
+    fn lookup_export(&self, _name: &ByteStr, specific: Option<&Any>) -> Vec<Symbol> {
         assert!(specific.is_none());
         vec!()
     }

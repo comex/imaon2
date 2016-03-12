@@ -210,7 +210,7 @@ pub struct DscTabs {
     pub count: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadDylibKind {
     Normal = LC_LOAD_DYLIB as isize,
     Weak = LC_LOAD_WEAK_DYLIB as isize,
@@ -359,6 +359,12 @@ fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 22] {
     ]
 }
 
+// herp derp this is unsafe because of Any not liking non-'static
+pub struct MachOLookupExportOptions {
+    // for LC_REEXPORT_DYLIB
+    using_image_cache: Option<&'static ImageCache>,
+}
+
 impl exec::Exec for MachO {
     fn get_exec_base<'a>(&'a self) -> &'a exec::ExecBase {
         &self.eb
@@ -399,8 +405,29 @@ impl exec::Exec for MachO {
         }
     }
     fn lookup_export(&self, name: &ByteStr, specific: Option<&Any>) -> Vec<Symbol> {
-        assert!(specific.is_none());
-        self.get_exported_symbol_list(Some(name))
+        let mut res = self.get_exported_symbol_list(Some(name));
+        if let Some(opts) = specific {
+            let opts: &MachOLookupExportOptions = opts.downcast_ref().unwrap();
+            if res.len() != 0 { return res; }
+            if let Some(ic) = opts.using_image_cache {
+                // todo cache?
+                for ld in &self.load_dylib {
+                    if ld.kind != LoadDylibKind::Reexport { continue; }
+                    // yuck yuck yuck slow
+                    if let Some(ice) = ic.lookup_path(&ld.path) {
+                        if let Ok(ref mo) = ice.mo {
+                            // TODO this can loop
+                            for new in mo.lookup_export(name, specific) { res.push(new); }
+                        } else {
+                            errln!("warning: lookup_export: found bad image for LC_REEXPORT_DYLIB entry {}", ld.path);
+                        }
+                    } else {
+                        errln!("warning: lookup_export: couldn't lookup path for LC_REEXPORT_DYLIB entry {}", ld.path);
+                    }
+                }
+            }
+        }
+        res
     }
 
     fn get_dep_libs(&self) -> Cow<[DepLib]> {
@@ -1429,13 +1456,9 @@ impl MachO {
                 if flags > 0x1f {
                     errln!("warning: parse_dyld_export: unknown flags (flags=0x{:x})", flags);
                 }
-                let read_addr = leb!(it);
-                //println!("{} {:x}", base_addr, read_addr);
-                let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
-                           .wrapping_add(read_addr);
-                let reexport = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
+                let (reexport, addr) = if flags & EXPORT_SYMBOL_FLAGS_REEXPORT != 0 {
                     let ord = leb!(it);
-                    if ord >= self.load_dylib.len().ext() {
+                    if ord == 0 || ord > self.load_dylib.len().ext() {
                         errln!("warning: parse_dyld_export: invalid reexport ordinal {} (count={})", ord, self.load_dylib.len());
                         continue;
                     }
@@ -1451,8 +1474,14 @@ impl MachO {
                     };
                     // export same?
                     let name = if name.len() == 0 { &prefix[..] } else { name };
-                    Some((ord, name))
-                } else { None };
+                    (Some((ord - 1, name)), VMA(0))
+                } else {
+                    let read_addr = leb!(it);
+                    //println!("{} {:x}", base_addr, read_addr);
+                    let addr = (if kind == EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE { VMA(0) } else { base_addr })
+                               .wrapping_add(read_addr);
+                    (None, addr)
+                };
                 let resolver = if reexport.is_none() && flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER != 0 {
                     Some(base_addr + leb!(it))
                 } else { None };
@@ -1601,14 +1630,8 @@ impl MachO {
         for sym in self.get_symbol_list(SymbolSource::Exported, None) {
             let name = &*sym.name;
             // this is not quite right due to different types
-            if let Some(addr) = match sym.val {
-                SymbolValue::Addr(vma) => Some(vma.0),
-                SymbolValue::Abs(vma) => Some(vma.0),
-                SymbolValue::ThreadLocal(vma) => Some(vma.0),
-                SymbolValue::Resolver(vma, _) => Some(vma.0),
-                _ => None
-            } {
-                if seen_symbols.contains(&(addr, name)) {
+            if let Some(addr) = sym.val.some_vma() {
+                if seen_symbols.contains(&(addr.0, name)) {
                     continue;
                 }
                 errln!("XXX not skipping {}", name);
@@ -2167,33 +2190,45 @@ impl MachO {
                     return None;
                 };
                 let syms = ice.get_syms();
-                let idx = some_or!(syms.binary_search_by(
-                    |sym| match sym.val {
-                        SymbolValue::Addr(vma) => vma.cmp(&target),
-                        _ => panic!()
-                    }).ok(), {
+                let idx = some_or!(syms.binary_search_by(|sym| sym.val.some_vma().unwrap().cmp(&target)).ok(), {
                     errln!("warning: fix_text_relocs_from_cache: found image for {} (ref'd by {}), but no symbol", target, source);
                     return None;
                 });
-                let sym_name = &syms[idx].name;
-                // todo data relocs
-                if let Some(&res) = my_stubs_by_name.get(&**sym_name) {
-                    return Some(res);
+                let min_idx = (0..idx).rev().take_while(|&idx2| syms[idx2].val.some_vma().unwrap() == target)
+                                      .last().unwrap_or(idx);
+                let max_idx = (idx..syms.len()).take_while(|&idx2| syms[idx2].val.some_vma().unwrap() == target)
+                                      .last().unwrap_or(idx);
+                for idx in min_idx..max_idx+1 {
+                    let sym_name = &syms[idx].name;
+                    // todo data relocs
+                    if let Some(&res) = my_stubs_by_name.get(&**sym_name) {
+                        return Some(res);
+                    }
                 }
                 // No exact name match.  But it might be the target of a reexport (possibly
                 // multiple levels of reexport), which is annoying - it's not even
                 // unambiguous.  We have to check all our imports to see if they resolve to
                 // some reexport.
                 let bmap = bmap.get(|| this.backwards_reexport_map(ic));
-                let orig_name = some_or!(bmap.get(&**sym_name), {
-                    errln!("warning: fix_text_relocs_from_cache: resolved reference at {} to {} -> '{}', but there was no stub for it and it doesn't seem like a re-export; not patching",
-                           source, target, sym_name);
-                    return None;
-                });
-                if let Some(&res) = my_stubs_by_name.get(orig_name) {
-                    return Some(res);
+                for idx in min_idx..max_idx+1 {
+                    let sym_name = &syms[idx].name;
+                    if let Some(orig_name) = bmap.get(&**sym_name) {
+                        if let Some(&res) = my_stubs_by_name.get(orig_name) {
+                            return Some(res);
+                        }
+                    }
                 }
-                errln!("warning: fix_text_relocs_from_cache: resolved symbol to {} and then backwards to {}, one of my imports, but that import had no stub?", sym_name, orig_name);
+                // we fail
+                errln!("warning: fix_text_relocs_from_cache: couldn't find stub for symbol, name possibilities: {{");
+                for idx in min_idx..max_idx+1 {
+                    let sym_name = &syms[idx].name;
+                    println!("  {}", sym_name);
+                    if let Some(orig_name) = bmap.get(&**sym_name) {
+                        // really this should have been found as a stub
+                        println!("  <- {}", orig_name);
+                    }
+                }
+                errln!("}}");
                 None
             });
             if let Some(new_target) = *new_target {
@@ -2215,7 +2250,7 @@ impl MachO {
         writer.finish(&mut self.eb.segments);
     }
     pub fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, BuildHasherDefault<FnvHasher>> {
-        println!("BRM");
+        let opts = MachOLookupExportOptions { using_image_cache: Some(unsafe { transmute::<&'a ImageCache, &'static ImageCache>(ic) }) };
         let mut res = util::new_fnv_hashmap();
         let mut prev_source_info: Option<(usize, &ImageCacheEntry)> = None;
         self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
@@ -2243,7 +2278,7 @@ impl MachO {
                 let mo = some_or!(ice.mo.as_ref().ok(), { continue; });
                 let new = (|| {
                     let cur_name = if let Some(ref name) = cur_name_owned { &name[..] } else { orig_name };
-                    for export in mo.lookup_export(cur_name, None) {
+                    for export in mo.lookup_export(cur_name, Some(&opts as &Any)) {
                         if let SymbolValue::ReExport(n, source_dylib) = export.val {
                             // it's owned to start with so
                             let source_dylib = match source_dylib {
@@ -2266,8 +2301,10 @@ impl MachO {
                 } else {
                     // otherwise, it's the end of the line.  did we get past the first lookup?
                     if let Some(name) = cur_name_owned {
-                        println!("! {} -> {}", name, orig_name);
-                        res.insert(name, orig_name);
+                        //println!("! {} -> {}", name, orig_name);
+                        if &name != orig_name {
+                            res.insert(name, orig_name);
+                        }
                     }
                     break;
                 }

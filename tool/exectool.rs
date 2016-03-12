@@ -154,7 +154,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
                 SymbolValue::Abs(vma) =>         print!("{:<16}", vma),
                 SymbolValue::Undefined(..) =>    print!("[undef]         "),
                 SymbolValue::Resolver(vma, _) => print!("{:<16}", vma),
-                SymbolValue::ReExport(_) =>      print!("[re-export]     "),
+                SymbolValue::ReExport(_, _) =>   print!("[re-export]     "),
                 SymbolValue::ThreadLocal(vma) => print!("{:<16}", vma),
             }
             print!(" {}", name);
@@ -165,7 +165,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
                 SymbolValue::ThreadLocal(..) =>         print!(" [thread]"),
                 SymbolValue::Resolver(_, None) =>       print!(" [resolver]"),
                 SymbolValue::Resolver(_, Some(stub)) => print!(" [resolver stub={:<16}]", stub),
-                SymbolValue::ReExport(ref name) =>      print!(" => {}", name),
+                SymbolValue::ReExport(ref name, sl) =>  print!(" => {} (source={:?})", name, sl),
                 _ => ()
             }
             println!("");
