@@ -26,12 +26,13 @@ extern crate deps;
 use deps::threadpool::ThreadPool;
 use deps::num_cpus;
 
-fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Option<&ImageCache>) {
+fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Option<&ImageCache>,
+               minimal_processing: bool) {
     let mut macho = match dc.load_single_image(ii) {
         Ok(m) => m,
         Err(e) => { errln!("for '{}', parse Mach-O fail: {}", ii.path, e); return },
     };
-    match macho.extract_as_necessary(Some(dc), image_cache) {
+    match macho.extract_as_necessary(Some(dc), image_cache, minimal_processing) {
         Ok(()) => (),
         Err(e) => { errln!("for '{}', extract fail: {}", ii.path, e); return },
     }
@@ -51,7 +52,7 @@ fn bstr_to_path(a: &ByteStr) -> Result<&Path, std::str::Utf8Error> {
 fn usage() -> ! {
     println!(
     "Yet Another Shared Cache Extractor
-    Usage: yasce <cache> [basename | full path | --all | blank to list files] [-o dir/file] [-v]"
+    Usage: yasce <cache> [basename | full path | --all | blank to list files] [-o dir/file] [-v] [-m/--minimal-processing]"
     );
     util::exit();
 }
@@ -63,9 +64,12 @@ fn main() {
     let mut output_name = None;
     let mut verbose = false;
     let mut extract_all = false;
+    let mut minimal_processing = false;
     let dash_o = OsStr::new("-o");
     let dash_v = OsStr::new("-v");
+    let dash_m = OsStr::new("-m");
     let dash_dash_all = OsStr::new("--all");
+    let dash_dash_minimal_processing = OsStr::new("--minimal-processing");
     let dash_dash = OsStr::new("--");
     while let Some(arg) = args_it.next() {
         if arg == dash_o {
@@ -78,6 +82,8 @@ fn main() {
             verbose = true;
         } else if arg == dash_dash_all {
             extract_all = true;
+        } else if arg == dash_m || arg == dash_dash_minimal_processing {
+            minimal_processing = true;
         } else if arg == dash_dash {
             while let Some(arg) = args_it.next() {
                 base_args.push(arg);
@@ -122,7 +128,7 @@ fn main() {
                     return;
                 }
                 extract_one(&dc, ii, get_output_path(ii, &output_name),
-                            (*image_cache).as_ref());
+                            (*image_cache).as_ref(), minimal_processing);
                 which_extracted = Some(&ii.path);
             }
         }
@@ -139,7 +145,7 @@ fn main() {
                     continue;
                 }
                 extract_one(&dc, ii, get_output_path(ii, &output_name),
-                            (*image_cache).as_ref());
+                            (*image_cache).as_ref(), minimal_processing);
                 which_extracted = Some(&ii.path);
             }
         }
@@ -213,13 +219,13 @@ fn main() {
                 pool.execute(move || {
                     let ii = &xdc_.image_info[i];
                     extract_one(&xdc_, ii, &output_path,
-                                (*image_cache_).as_ref());
+                                (*image_cache_).as_ref(), minimal_processing);
                     tx_.send(()).unwrap();
                 });
             } else {
                 println!("-> {}", ii.path);
                 extract_one(&xdc, ii, &output_path,
-                            (*image_cache).as_ref());
+                            (*image_cache).as_ref(), minimal_processing);
             }
         }
         if let Some((_, _, ref rx)) = stuff {

@@ -576,7 +576,7 @@ struct ReaggregatedSyms {
     extdefsym: Vec<u8>,
     undefsym: Vec<u8>,
     strtab: Vec<u8>,
-    undefsym_name_to_idx: HashMap<ByteString, usize, Fnv>,
+    sym_name_to_idx: HashMap<ByteString, (usize, u8), Fnv>,
 }
 
 fn strx_to_name(strtab: &[u8], strx: u64) -> &ByteStr {
@@ -1061,7 +1061,7 @@ impl MachO {
         }
     }
 
-    fn update_indirectsym(&mut self, undefsym_name_to_idx: &HashMap<ByteString, usize, Fnv>) {
+    fn update_indirectsym(&mut self, sym_name_to_idx: &HashMap<ByteString, (usize, u8), Fnv>) {
         // reallocate will stick this back into linkedit order of nlists has been preserved, so we
         // *could* just add whatever we shoved into extdefsym to each index... except imports of
         // reexports, which correspond to nlists that were removed, get 0 here!
@@ -1109,7 +1109,6 @@ impl MachO {
         {
             let indirectsym = xindirectsym.get_mut_decow();
             let end = self.eb.endian;
-            let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
             self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState| {
                 if state.source_dylib == SourceLib::Self_ { return true; }
                 let name = some_or!(state.symbol, return true);
@@ -1124,10 +1123,12 @@ impl MachO {
                     }
                 }
                 let ind_idx = some_or!(ind_idx, return true);
-                let sym_idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
-                    (idx + base_sym_idx).narrow().unwrap()
+                let sym_idx: u32 = if let Some(&(mut idx, which)) = sym_name_to_idx.get(name) {
+                    if which >= 1 { idx += self.localsym.len() / self.nlist_size; }
+                    if which >= 2 { idx += self.extdefsym.len() / self.nlist_size; }
+                    idx.narrow().unwrap()
                 } else {
-                    errln!("warning: update_indirectsym: name '{}' from {:?} not found in undefsym; can't fix indirect symbol table", name, state.which);
+                    errln!("warning: update_indirectsym: name '{}' from {:?} not found in nlist symbol table; can't fix indirect symbol table", name, state.which);
                     0
                 };
                 let ind_off = ind_idx * 4; // checked earlier
@@ -1655,7 +1656,7 @@ impl MachO {
             extdefsym: Vec::new(),
             undefsym: Vec::new(),
             strtab: vec![b'\0'],
-            undefsym_name_to_idx: util::new_fnv_hashmap(),
+            sym_name_to_idx: util::new_fnv_hashmap(),
         };
         // Why have this map?
         // 1. just in case a <redacted> is the only symbol we have for something, which shouldn't
@@ -1730,14 +1731,14 @@ impl MachO {
                         if int_nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { 1 } else { 0 };
                     seen_symbols.insert((addr, name));
                 }
-                let which = if n_type == N_UNDF {
-                    res.undefsym_name_to_idx.insert(name.to_owned(), res.undefsym.len() / nlist_size);
-                    &mut res.undefsym
+                let (which, which_idx) = if n_type == N_UNDF {
+                    (&mut res.undefsym, 2)
                 } else if int_nl.n_type as u32 & N_EXT != 0 {
-                    &mut res.extdefsym
+                    (&mut res.extdefsym, 1)
                 } else {
-                    &mut res.localsym
+                    (&mut res.localsym, 0)
                 };
+                res.sym_name_to_idx.insert(name.to_owned(), (which.len() / nlist_size, which_idx));
                 copy_nlist_to_vec(which, &int_nl, end, is64);
             }
         }
@@ -2083,9 +2084,9 @@ impl MachO {
             });
         }
     }
-    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>, image_cache: Option<&ImageCache>) -> exec::ExecResult<()> {
+    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>, image_cache: Option<&ImageCache>, minimal_processing: bool) -> exec::ExecResult<()> {
         let _sw = stopwatch("extract_as_necessary");
-        if self.hdr_offset != 0 {
+        if self.hdr_offset != 0 && !minimal_processing {
             let x: Option<DyldCache>;
             let dc = if let Some(dc) = dc { dc } else {
                 let inner_sections = true; // xxx
@@ -2099,7 +2100,7 @@ impl MachO {
             self.undefsym = MCRef::with_data(&res.undefsym);
             self.strtab = MCRef::with_data(&res.strtab);
             self.xsym_to_symtab();
-            self.update_indirectsym(&res.undefsym_name_to_idx);
+            self.update_indirectsym(&res.sym_name_to_idx);
             if let Some(ic) = image_cache {
                 // must come after indirectsym
                 self.fix_text_relocs_from_cache(ic, dc);
