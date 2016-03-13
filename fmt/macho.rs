@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn, step_by)]
+#![feature(collections, libc, iter_arith, const_fn, step_by, copy_from_slice)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -19,6 +19,7 @@ use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian, Lazy, Fnv};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
+use exec::arch::Arch;
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet, HashMap};
@@ -1064,19 +1065,21 @@ impl MachO {
         // reallocate will stick this back into linkedit order of nlists has been preserved, so we
         // *could* just add whatever we shoved into extdefsym to each index... except imports of
         // reexports, which correspond to nlists that were removed, get 0 here!
-        // luckily, stubs are in the same order as dyld lazy_bind info, so use that
-        // for non-lazy GOT, we have the exact addresses from bind/weak_bind (but the lack of
-        // ordering between the two means we have to use them)
+        // so just redo it from scratch:
+        // - for pointers, we have the exact addresses from bind info
+        // - stubs point to pointers, so we can disassemble the stub (they also seem to be in the
+        // same order as the bind info, so I originally tried to fill it in that way, but I had
+        // some issues with this - maybe fixable, but this is better)
         let nindirectsym = self.indirectsym.len() / 4;
         let pointer_size = self.eb.pointer_size;
         struct IndirectPointingSectionInfo {
             ind_idx_base: usize,
-            ind_count: usize,
+            item_size: usize,
             sect_addr: VMA,
             sect_size: u64,
         }
-        let mut stubs_info = None;
         let mut pointers_sects_info = Vec::new();
+        let mut stubs_sects_info = Vec::new();
         for sect in &self.eb.sections {
             let sp = &self.sect_private[sect.private];
             let section_type = sp.flags & SECTION_TYPE;
@@ -1085,22 +1088,19 @@ impl MachO {
                 S_LAZY_SYMBOL_POINTERS | S_NON_LAZY_SYMBOL_POINTERS => pointer_size,
                 _ => continue
             };
+            let ind_count: usize = (sect.vmsize / item_size.ext()).narrow().unwrap(); // xxx
             let info = IndirectPointingSectionInfo {
                 ind_idx_base: sp.reserved1 as usize,
-                ind_count: (sect.vmsize / item_size.ext()).narrow().unwrap(), // xxx
+                item_size: item_size,
                 sect_addr: sect.vmaddr,
                 sect_size: sect.vmsize,
             };
-            if !info.ind_idx_base.check_add(info.ind_count).is_some_and(|&end| end <= nindirectsym) {
+            if !info.ind_idx_base.check_add(ind_count).is_some_and(|&end| end <= nindirectsym) {
                 errln!("warning: update_indirectsym: got bad indirect symbol table index/size for section {}", sect.name.as_ref().unwrap());
                 continue;
             }
             if section_type == S_SYMBOL_STUBS {
-                if stubs_info.is_some() {
-                    errln!("warning: update_indirectsym: got more than one S_SYMBOL_STUBS");
-                } else {
-                    stubs_info = Some(info);
-                }
+                stubs_sects_info.push(info);
             } else {
                 pointers_sects_info.push(info);
             }
@@ -1110,49 +1110,61 @@ impl MachO {
             let indirectsym = xindirectsym.get_mut_decow();
             let end = self.eb.endian;
             let base_sym_idx = (self.localsym.len() + self.extdefsym.len()) / self.nlist_size;
-            let (mut stubs_ind_idx, stubs_ind_end) = if let Some(ref info) = stubs_info {
-                (info.ind_idx_base, info.ind_idx_base + info.ind_count)
-            } else {
-                (0, 0)
-            };
             self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState| {
                 if state.source_dylib == SourceLib::Self_ { return true; }
                 let name = some_or!(state.symbol, return true);
                 let seg = some_or!(state.seg, return true);
-                let stubs_idx = if state.which == WhichBind::LazyBind {
-                    if stubs_ind_idx >= stubs_ind_end {
-                        errln!("warning: update_indirectsym: lazy bind count > stub count");
-                        None
-                    } else {
-                        let i = stubs_ind_idx; stubs_ind_idx += 1; Some(i)
-                    }
-                } else { None };
-                let mut ptr_idx = None;
+                let mut ind_idx = None;
                 let addr = seg.vmaddr + state.seg_off.unwrap();
                 for info in &pointers_sects_info {
                     let off = addr.wrapping_sub(info.sect_addr);
                     if off < info.sect_size {
-                        ptr_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
+                        ind_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
                         break;
                     }
                 }
-                if stubs_idx.is_none() && ptr_idx.is_none() { return true; }
+                let ind_idx = some_or!(ind_idx, return true);
                 let sym_idx: u32 = if let Some(idx) = undefsym_name_to_idx.get(name) {
                     (idx + base_sym_idx).narrow().unwrap()
                 } else {
                     errln!("warning: update_indirectsym: name '{}' from {:?} not found in undefsym; can't fix indirect symbol table", name, state.which);
                     0
                 };
-                for &ind_idx in &[stubs_idx, ptr_idx] {
-                    let ind_idx = some_or!(ind_idx, continue);
-                    let ind_off = ind_idx * 4; // checked earlier
-                    let buf = &mut indirectsym[ind_off..ind_off+4];
-                    util::copy_to_slice(buf, &sym_idx, end);
-                }
+                let ind_off = ind_idx * 4; // checked earlier
+                let buf = &mut indirectsym[ind_off..ind_off+4];
+                util::copy_to_slice(buf, &sym_idx, end);
                 true
             });
-            if stubs_ind_idx < stubs_ind_end {
-                errln!("warning: update_indirectsym: lazy bind count < stub count");
+            for info in &stubs_sects_info {
+                let data = self.eb.read(info.sect_addr, info.sect_size);
+                let data = data.get();
+                if (data.len() as u64) < info.sect_size {
+                    errln!("warning: update_indirectsym: couldn't read stubs section data");
+                }
+                for ((stub, addr), new_ind_idx) in data.chunks(info.item_size)
+                                    .zip((info.sect_addr.0..).step_by(info.item_size as u64))
+                                    .zip(info.ind_idx_base..) {
+                    let addr = VMA(addr);
+                    if stub.len() < info.item_size { break; }
+                    let target_addr = some_or!(decode_stub(stub, addr, self.eb.endian, self.eb.arch),
+                                               continue);
+                    let mut old_ind_idx = None;
+                    for info in &pointers_sects_info {
+                        let off = target_addr.wrapping_sub(info.sect_addr);
+                        if off < info.sect_size {
+                            old_ind_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
+                            break;
+                        }
+                    }
+                    let old_ind_idx = some_or!(old_ind_idx, {
+                        errln!("warning: update_indirectsym: stub at {} target {} not in a known symbol pointers section",
+                               addr, target_addr);
+                        continue
+                    });
+                    let mut tmp: [u8; 4] = [0; 4];
+                    tmp.copy_from_slice(&indirectsym[old_ind_idx * 4 .. old_ind_idx * 4 + 4]);
+                    indirectsym[new_ind_idx * 4 .. new_ind_idx * 4 + 4].copy_from_slice(&tmp);
+                }
             }
         }
         self.indirectsym = xindirectsym;
@@ -2186,7 +2198,10 @@ impl MachO {
             }
             let sectdata = self.eb.read(sect.vmaddr, sect.filesize);
             let sectdata = sectdata.get();
-            self.subtract_dic_from_addr_range(sect.vmaddr, sect.filesize, |start, size| {
+            if (sectdata.len() as u64) < sect.filesize {
+                errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
+            }
+            self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
                 let mut data =
                     &sectdata[(start - sect.vmaddr) as usize ..
                               (start + size - sect.vmaddr) as usize];
@@ -2442,6 +2457,58 @@ impl MachO {
             true
         });
         out
+    }
+}
+
+fn decode_stub(stub: &[u8], stub_addr: VMA, end: Endian, arch: Arch) -> Option<VMA> {
+    match arch {
+        arch::X86 | arch::X86_64 => {
+            assert_eq!(end, LittleEndian);
+            if stub.len() != 6 { return None; }
+            if &stub[0..2] != &[0xff, 0x25] { return None; }
+            let rel: i32 = util::copy_from_slice(&stub[2..], LittleEndian);
+            let mut res = stub_addr.wrapping_add(rel as u64);
+            if arch == arch::X86 { res = res.trunc32(); }
+            Some(res)
+        },
+        arch::ARM => {
+            match stub.len() {
+                12 => {
+                    let insns: [u32; 3] = [0xe59fc004, 0xe08fc00c, 0xe59cf000];
+                    let real_insns: [u32; 4] = util::copy_from_slice(stub, end);
+                    if insns != &real_insns[..3] { return None; }
+                    Some((stub_addr + 8).wrapping_add(real_insns[3] as u64).trunc32())
+                },
+                16 => {
+                    let insns: [u32; 2] = [0xe59fc000, 0xe59cf000];
+                    let real_insns: [u32; 3] = util::copy_from_slice(stub, end);
+                    if insns != &real_insns[..2] { return None; }
+                    Some(VMA(real_insns[2].ext()))
+                },
+                _ => None
+            }
+
+        },
+        arch::AArch64 => {
+            if stub.len() != 12 { return None; }
+            let insns: [u32; 3] = util::copy_from_slice(stub, end);
+            if insns[0] & 0x9f00001f != 0x90000010 ||
+               insns[1] & 0xffc003ff != 0xf9400210 ||
+               insns[2] != 0xd61f0200 { return None; }
+            let mut page_rel: u64 = (insns[0] as u64 & 0x60000000) >> 17 |
+                                    (insns[0] as u64 & 0xffffe0) << 9;
+            if page_rel & (1u64 << 32) != 0 {
+                page_rel |= 0xffffffffu64 << 32;
+            }
+            let page = (stub_addr.0 & !0xfff).wrapping_add(page_rel);
+            let pageoff = ((insns[1] & 0x3ffc00) >> 10) * 8;
+            if pageoff >= 0x1000 { return None; }
+            Some(VMA(page + pageoff as u64))
+        },
+        _ => {
+            errln!("warning: decode_stub: unknown arch {:?}", arch);
+            None
+        }
     }
 }
 

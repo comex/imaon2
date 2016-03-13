@@ -88,6 +88,9 @@ impl VMA {
     pub fn saturating_add(self, addend: u64) -> VMA {
         VMA(self.0.saturating_add(addend))
     }
+    pub fn trunc32(self) -> VMA {
+        VMA(self.0 & 0xffffffff)
+    }
 }
 // TODO - should this be signed or something?
 impl std::ops::Sub<VMA> for VMA {

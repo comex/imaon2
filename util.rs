@@ -286,6 +286,7 @@ macro_rules! impl_for_array{($cnt:expr) => (
 )}
 impl_for_array!(1);
 impl_for_array!(2);
+impl_for_array!(3);
 impl_for_array!(4);
 impl_for_array!(16);
 impl<T> Swap for Option<T> {
