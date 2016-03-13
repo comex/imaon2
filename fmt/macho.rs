@@ -1751,7 +1751,6 @@ impl MachO {
                 if seen_symbols.contains(&(addr.0, name)) {
                     continue;
                 }
-                errln!("XXX not skipping {}", name);
             }
             let nl = match exec_sym_to_nlist_64(
                 &sym,
