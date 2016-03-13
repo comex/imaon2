@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, const_fn, step_by)]
+#![feature(collections, libc, const_fn)]
 #[macro_use]
 extern crate macros;
 extern crate util;
@@ -16,20 +16,18 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, LittleEndian, Lazy, Fnv};
+use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
-use exec::arch::Arch;
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, Symbol};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashSet};
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::any::Any;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
 
 pub mod dyldcache;
-use dyldcache::{DyldCache, ImageCache, SegMapEntry, ImageCacheEntry};
+use dyldcache::{DyldCache, ImageCache};
 
 // dont bother with the unions
 deriving_swap!(
@@ -74,7 +72,7 @@ pub fn u32_to_prot(ip: u32) -> exec::Prot {
 
 #[inline(always)]
 // probably 100% counterproductive optimization
-fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
+pub fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
     let len = slice.len();
     let is64 = if len == size_of::<x_nlist_64>() { true }
           else if len == size_of::<x_nlist>() { false }
@@ -107,7 +105,7 @@ fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
     }
 }
 
-fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool) {
+pub fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool) {
     if is64 {
         util::copy_to_vec(vec, nl, end);
     } else {
@@ -123,7 +121,7 @@ fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool
 }
 
 
-fn exec_sym_to_nlist_64(sym: &Symbol, strx: u32, ind_strx: Option<u32>, arch: arch::Arch, is_text: &mut FnMut() -> bool, for_obj: bool) -> Result<x_nlist_64, String> {
+pub fn exec_sym_to_nlist_64(sym: &Symbol, strx: u32, ind_strx: Option<u32>, arch: arch::Arch, is_text: &mut FnMut() -> bool, for_obj: bool) -> Result<x_nlist_64, String> {
     // some stuff is missing, like common symbols
     let mut res: x_nlist_64 = Default::default();
     if sym.is_weak {
@@ -219,15 +217,15 @@ pub enum LoadDylibKind {
 
 #[derive(Clone)]
 pub struct LoadDylib {
-    path: ByteString,
-    kind: LoadDylibKind,
-    timestamp: u32,
-    current_version: PackedVersion,
-    compatibility_version: PackedVersion,
+    pub path: ByteString,
+    pub kind: LoadDylibKind,
+    pub timestamp: u32,
+    pub current_version: PackedVersion,
+    pub compatibility_version: PackedVersion,
 }
 
 #[derive(Clone, Copy)]
-struct PackedVersion(u32);
+pub struct PackedVersion(pub u32);
 impl std::fmt::Display for PackedVersion {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         write!(fmt, "{}.{}.{}", self.0 >> 16, (self.0 >> 8) & 255, self.0 & 255)
@@ -236,10 +234,10 @@ impl std::fmt::Display for PackedVersion {
 
 #[derive(Clone)]
 pub struct SectPrivate {
-    idx_in_seg: usize,
-    flags: u32,
-    reserved1: u32,
-    reserved2: u32,
+    pub idx_in_seg: usize,
+    pub flags: u32,
+    pub reserved1: u32,
+    pub reserved2: u32,
 }
 
 #[derive(Default, Clone)]
@@ -286,7 +284,7 @@ pub struct MachO {
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
-enum WhichBind {
+pub enum WhichBind {
     Bind = 0,
     WeakBind = 1,
     LazyBind = 2
@@ -361,7 +359,7 @@ fn make_linkedit_bits(is64: bool) -> [LinkeditBit; 22] {
 // herp derp this is unsafe because of Any not liking non-'static
 pub struct MachOLookupExportOptions {
     // for LC_REEXPORT_DYLIB
-    using_image_cache: Option<&'static ImageCache>,
+    pub using_image_cache: Option<&'static ImageCache>,
 }
 
 impl exec::Exec for MachO {
@@ -550,17 +548,17 @@ impl<T> OKOrTruncated<T> for Option<T> {
 }
 
 pub struct ParseDyldBindState<'s> {
-    source_dylib: SourceLib,
-    seg: Option<&'s exec::Segment>,
-    seg_idx: usize,
-    seg_off: Option<u64>,
-    seg_size: u64,
-    addend: i64,
-    typ: u8,
-    symbol: Option<&'s ByteStr>,
-    already_bound_this_symbol: bool,
-    flags: u32,
-    which: WhichBind,
+    pub source_dylib: SourceLib,
+    pub seg: Option<&'s exec::Segment>,
+    pub seg_idx: usize,
+    pub seg_off: Option<u64>,
+    pub seg_size: u64,
+    pub addend: i64,
+    pub typ: u8,
+    pub symbol: Option<&'s ByteStr>,
+    pub already_bound_this_symbol: bool,
+    pub flags: u32,
+    pub which: WhichBind,
 }
 struct ParseDyldExportState<'a> {
     name: &'a ByteStr,
@@ -569,26 +567,6 @@ struct ParseDyldExportState<'a> {
     resolver: Option<VMA>,
     reexport: Option<(u64, &'a ByteStr)>,
     offset: usize,
-}
-
-struct ReaggregatedSyms {
-    localsym: Vec<u8>,
-    extdefsym: Vec<u8>,
-    undefsym: Vec<u8>,
-    strtab: Vec<u8>,
-    sym_name_to_idx: HashMap<ByteString, (usize, u8), Fnv>,
-}
-
-fn strx_to_name(strtab: &[u8], strx: u64) -> &ByteStr {
-    // todo: fix push_nlist_symbols to use this kind of logic
-    if strx == 0 {
-        ByteStr::from_str("")
-    } else if strx >= strtab.len() as u64 {
-        errln!("strx_to_name: strx out of range ({}/{})", strx, strtab.len());
-        ByteStr::from_str("<?>")
-    } else {
-        util::from_cstr(&strtab[strx as usize..])
-    }
 }
 
 impl MachO {
@@ -1061,118 +1039,8 @@ impl MachO {
         }
     }
 
-    fn update_indirectsym(&mut self, sym_name_to_idx: &HashMap<ByteString, (usize, u8), Fnv>) {
-        // reallocate will stick this back into linkedit order of nlists has been preserved, so we
-        // *could* just add whatever we shoved into extdefsym to each index... except imports of
-        // reexports, which correspond to nlists that were removed, get 0 here!
-        // so just redo it from scratch:
-        // - for pointers, we have the exact addresses from bind info
-        // - stubs point to pointers, so we can disassemble the stub (they also seem to be in the
-        // same order as the bind info, so I originally tried to fill it in that way, but I had
-        // some issues with this - maybe fixable, but this is better)
-        let nindirectsym = self.indirectsym.len() / 4;
-        let pointer_size = self.eb.pointer_size;
-        struct IndirectPointingSectionInfo {
-            ind_idx_base: usize,
-            item_size: usize,
-            sect_addr: VMA,
-            sect_size: u64,
-        }
-        let mut pointers_sects_info = Vec::new();
-        let mut stubs_sects_info = Vec::new();
-        for sect in &self.eb.sections {
-            let sp = &self.sect_private[sect.private];
-            let section_type = sp.flags & SECTION_TYPE;
-            let item_size = match section_type {
-                S_SYMBOL_STUBS => sp.reserved2 as usize,
-                S_LAZY_SYMBOL_POINTERS | S_NON_LAZY_SYMBOL_POINTERS => pointer_size,
-                _ => continue
-            };
-            let ind_count: usize = (sect.vmsize / item_size.ext()).narrow().unwrap(); // xxx
-            let info = IndirectPointingSectionInfo {
-                ind_idx_base: sp.reserved1 as usize,
-                item_size: item_size,
-                sect_addr: sect.vmaddr,
-                sect_size: sect.vmsize,
-            };
-            if !info.ind_idx_base.check_add(ind_count).is_some_and(|&end| end <= nindirectsym) {
-                errln!("warning: update_indirectsym: got bad indirect symbol table index/size for section {}", sect.name.as_ref().unwrap());
-                continue;
-            }
 
-            if section_type == S_SYMBOL_STUBS {
-                stubs_sects_info.push(info);
-            } else {
-                pointers_sects_info.push(info);
-            }
-        }
-        let mut xindirectsym = replace(&mut self.indirectsym, MCRef::default());
-        {
-            let indirectsym = xindirectsym.get_mut_decow();
-            let end = self.eb.endian;
-            self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState| {
-                if state.source_dylib == SourceLib::Self_ { return true; }
-                let name = some_or!(state.symbol, return true);
-                let seg = some_or!(state.seg, return true);
-                let mut ind_idx = None;
-                let addr = seg.vmaddr + state.seg_off.unwrap();
-                for info in &pointers_sects_info {
-                    let off = addr.wrapping_sub(info.sect_addr);
-                    if off < info.sect_size {
-                        ind_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
-                        break;
-                    }
-                }
-                let ind_idx = some_or!(ind_idx, return true);
-                let sym_idx: u32 = if let Some(&(mut idx, which)) = sym_name_to_idx.get(name) {
-                    if which >= 1 { idx += self.localsym.len() / self.nlist_size; }
-                    if which >= 2 { idx += self.extdefsym.len() / self.nlist_size; }
-                    idx.narrow().unwrap()
-                } else {
-                    errln!("warning: update_indirectsym: name '{}' from {:?} not found in nlist symbol table; can't fix indirect symbol table", name, state.which);
-                    0
-                };
-                let ind_off = ind_idx * 4; // checked earlier
-                let buf = &mut indirectsym[ind_off..ind_off+4];
-                util::copy_to_slice(buf, &sym_idx, end);
-                true
-            });
-            for info in &stubs_sects_info {
-                let data = self.eb.read(info.sect_addr, info.sect_size);
-                let data = data.get();
-                if (data.len() as u64) < info.sect_size {
-                    errln!("warning: update_indirectsym: couldn't read stubs section data");
-                }
-                for ((stub, addr), new_ind_idx) in data.chunks(info.item_size)
-                                    .zip((info.sect_addr.0..).step_by(info.item_size as u64))
-                                    .zip(info.ind_idx_base..) {
-                    let addr = VMA(addr);
-                    if stub.len() < info.item_size { break; }
-                    let target_addr = some_or!(decode_stub(stub, addr, self.eb.endian, self.eb.arch),
-                                               continue);
-                    let mut old_ind_idx = None;
-                    for info in &pointers_sects_info {
-                        let off = target_addr.wrapping_sub(info.sect_addr);
-                        if off < info.sect_size {
-                            old_ind_idx = Some(info.ind_idx_base + (off as usize) / pointer_size);
-                            break;
-                        }
-                    }
-                    let old_ind_idx = some_or!(old_ind_idx, {
-                        errln!("warning: update_indirectsym: stub at {} target {} not in a known symbol pointers section",
-                               addr, target_addr);
-                        continue
-                    });
-                    let mut tmp: [u8; 4] = [0; 4];
-                    tmp.copy_from_slice(&indirectsym[old_ind_idx * 4 .. old_ind_idx * 4 + 4]);
-                    indirectsym[new_ind_idx * 4 .. new_ind_idx * 4 + 4].copy_from_slice(&tmp);
-                }
-            }
-        }
-        self.indirectsym = xindirectsym;
-    }
-
-    fn xsym_to_symtab(&mut self) {
+    pub fn xsym_to_symtab(&mut self) {
         let mut new_vec = self.localsym.get().to_owned();
         new_vec.extend_slice(self.extdefsym.get());
         new_vec.extend_slice(self.undefsym.get());
@@ -1647,472 +1515,7 @@ impl MachO {
         }
     }
 
-    fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> ReaggregatedSyms {
-        // Three sources: the localSymbol section of the cache (dsc_tabs), our own symtab, and the export table
-        let end = self.eb.endian;
-        let is64 = self.is64;
-        let arch = self.eb.arch;
-        let mut res = ReaggregatedSyms {
-            localsym: Vec::new(),
-            extdefsym: Vec::new(),
-            undefsym: Vec::new(),
-            strtab: vec![b'\0'],
-            sym_name_to_idx: util::new_fnv_hashmap(),
-        };
-        // Why have this map?
-        // 1. just in case a <redacted> is the only symbol we have for something, which shouldn't
-        //    ever happen, but...
-        // 2. to account for exports that are still in the symbol table.  dsc_extractor assumes it
-        //    only needs to care about reexports; I think absolute symbols should also be in that
-        //    list, but it's more robust to manually check for overlap.
-        let mut seen_symbols: HashSet<(u64, &ByteStr), _> = util::new_fnv_hashset();
 
-        let mut str_to_strtab_pos: HashMap<ByteString, u32, _> = util::new_fnv_hashmap();
-        let mut add_string = |strtab: &mut Vec<u8>, s: &ByteStr| -> u32 {
-            *str_to_strtab_pos.entry(s.to_owned()).or_insert_with(|| {
-                let pos = strtab.len();
-                if pos >= (std::u32::MAX as usize) - s.len() {
-                    errln!("add_string: strtab way too big");
-                    return 0;
-                }
-                strtab.extend_from_slice(&*s);
-                strtab.push(b'\0');
-                pos as u32
-            })
-        };
-        {
-            // nlist-to-nlist part: this whole thing is similar to get_symbol_list, but i want to copy directly
-            // also, order needs to be preserved to avoid messing up indirectsyms
-            // ^ not anymore, but whatever
-            let _sw = stopwatch("reaggregate_nlist_syms_from_cache: nl-to-nl");
-            let internal_symtab = self.symtab.get();
-            let internal_strtab = self.strtab.get();
-            let nlist_size = self.nlist_size;
-            let (external_symtab, external_strtab) =
-                if let Some(DscTabs { ref symtab, ref strtab, start, count }) = self.dsc_tabs {
-                    let (start, count) = (start as usize, count as usize);
-                    (&symtab.get()[start*nlist_size..(start+count)*nlist_size],
-                     strtab.get())
-                } else { (&[] as &[u8], &[] as &[u8]) };
-
-            let mut external_chunks = external_symtab.chunks(nlist_size);
-
-            for nlb in internal_symtab.chunks(nlist_size) {
-                let mut int_nl: x_nlist_64 = copy_nlist_from_slice(nlb, end);
-                let int_name = strx_to_name(internal_strtab, int_nl.n_strx.ext());
-                let is_redacted = int_name == "<redacted>";
-                let mut name = int_name;
-                if is_redacted {
-                    if let Some(ext_nlb) = external_chunks.next() {
-                        let ext_nl: x_nlist_64 = copy_nlist_from_slice(ext_nlb, end);
-                        let ext_name = strx_to_name(external_strtab, ext_nl.n_strx.ext());
-                        if ext_nl.n_type != int_nl.n_type ||
-                           ext_nl.n_sect != int_nl.n_sect ||
-                           ext_nl.n_desc != int_nl.n_desc ||
-                           ext_nl.n_value != int_nl.n_value {
-                            errln!("warning: reaggregate_nlist_syms_from_cache: data mismatch for redacted symbol vs. {}; probably lost sync \
-                                    (value={:x}/{:x})",
-                                   ext_name, int_nl.n_value, ext_nl.n_value);
-                        } else {
-                            name = ext_name;
-                        }
-                    } else {
-                        errln!("warning: reaggregate_nlist_syms_from_cache: got redacted symbol with value={:x} but ran out of localsyms",
-                               int_nl.n_value);
-                    }
-                }
-                int_nl.n_strx = add_string(&mut res.strtab, name);
-                let n_type = int_nl.n_type as u32 & N_TYPE;
-                if n_type == N_INDR {
-                    // shouldn't happen
-                    let imp_name = strx_to_name(internal_strtab, int_nl.n_value);
-                    int_nl.n_value = add_string(&mut res.strtab, imp_name) as u64;
-                } else {
-                    let addr = int_nl.n_value |
-                        if int_nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { 1 } else { 0 };
-                    seen_symbols.insert((addr, name));
-                }
-                let (which, which_idx) = if n_type == N_UNDF {
-                    (&mut res.undefsym, 2)
-                } else if int_nl.n_type as u32 & N_EXT != 0 {
-                    (&mut res.extdefsym, 1)
-                } else {
-                    (&mut res.localsym, 0)
-                };
-                res.sym_name_to_idx.insert(name.to_owned(), (which.len() / nlist_size, which_idx));
-                copy_nlist_to_vec(which, &int_nl, end, is64);
-            }
-        }
-        let stopw = stopwatch("reaggregate_nlist_syms_from_cache: sym-to-nl");
-        // for the conversion I may as well just use it
-        for sym in self.get_symbol_list(SymbolSource::Exported, None) {
-            let name = &*sym.name;
-            // this is not quite right due to different types
-            if let Some(addr) = sym.val.some_vma() {
-                if seen_symbols.contains(&(addr.0, name)) {
-                    continue;
-                }
-            }
-            let nl = match exec_sym_to_nlist_64(
-                &sym,
-                add_string(&mut res.strtab, name),
-                if let SymbolValue::ReExport(ref imp_name, _) = sym.val {
-                    Some(add_string(&mut res.strtab, imp_name))
-                } else { None },
-                arch,
-                &mut || { // is_text
-                    // cheat because absolute symbols are probably not text :$
-                    false
-                },
-                false // for_obj
-            ) {
-                Ok(nl) => nl,
-                Err(e) => {
-                    errln!("warning: when converting exported symbols: {}", e);
-                    continue;
-                },
-            };
-            assert!(sym.is_public);
-            copy_nlist_to_vec(&mut res.extdefsym, &nl, end, is64);
-        }
-        stopw.stop();
-        res
-    }
-
-    pub fn unbind(&mut self) {
-        let _sw = stopwatch("unbind");
-        // helps IDA, because it treats these as 'rel' (addend = whatever's in that slot already)
-        // when they're actually 'rela' (explicit addend).
-        let mut segw = SegmentWriter::new(&mut self.eb.segments);
-
-        self.parse_each_dyld_bind(&mut |state| {
-            let seg_off = some_or!(state.seg_off, { return true; }) as usize;
-            // xxx perf
-            segw.make_seg_rw(state.seg_idx);
-            let nc = segw.access_rw(state.seg_idx).unwrap();
-            if !self.is64 ||
-               state.typ == (BIND_TYPE_TEXT_ABSOLUTE32 as u8) ||
-               state.typ == (BIND_TYPE_TEXT_PCREL32 as u8) {
-                util::copy_to_slice(&nc[seg_off..seg_off+4], &0u32, LittleEndian);
-            } else {
-                util::copy_to_slice(&nc[seg_off..seg_off+8], &0u64, LittleEndian);
-            }
-            true
-        });
-
-        segw.finish(&mut self.eb.segments);
-    }
-    fn sect_bounds_named(&self, sectname: &str) -> (VMA, u64) {
-        let sectname = ByteStr::from_str(sectname);
-        for section in &self.eb.sections {
-            if section.name.as_ref().unwrap() == sectname {
-                return (section.vmaddr, section.vmsize);
-            }
-        }
-        (VMA(0), 0)
-    }
-    pub fn fix_objc_from_cache<'dc>(&mut self, dc: &'dc DyldCache) {
-        /* Yay, 200 line long function...
-           Could be optimized a bit more.
-           The optimizations dyld does:
-            Harmless/idempotent:
-            - IvarOffsetOptimizer
-            - MethodListSorter 
-            Proto refs moved in:
-            - __objc_classlist -> class in __objc_data -> class data in __objc_const -> baseProtocols
-            -                      ^- isa (metaclass) -^
-            - __objc_protorefs (every word)
-            - __objc_protolist -> protocol in __data -> protocols in __objc_const?
-            And:
-            - Selectors moved to other binaries.
-        */
-
-        let _sw = stopwatch("fix_objc_from_cache");
-
-        let mut segw = SegmentWriter::new(&mut self.eb.segments);
-        { // <-
-        for (i, seg) in self.eb.segments.iter().enumerate() {
-            if let Some(ref name) = seg.name {
-                if name == "__TEXT" || name.starts_with(b"__DATA") {
-                    segw.make_seg_rw(i);
-                }
-            }
-        }
-        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [u8]> {
-            if vma.0 == 4 { panic!() }
-            let res = dc.eb.read_sane(vma, size);
-            if let None = res {
-                errln!("fix_objc_from_cache: read error at {}", vma);
-            }
-            res
-        };
-        //let rw = |addr: VMA, size: u64| -> Option<&[Cell<u8>]>
-        // WTF - rustc can't infer return lifetimes for even simple closures
-        // http://is.gd/2uRGhH
-        fn rw(segw: &SegmentWriter, addr: VMA, size: u64) -> Option<&[Cell<u8>]> {
-            match segw.get_sane_rw(addr, size) {
-                Ok(slice) => Some(slice),
-                Err(SWGetSaneError::NotWritable) => {
-                    errln!("fix_objc_from_cache: pointer {} unexpectedly not in __DATA", addr);
-                    None
-                },
-                Err(SWGetSaneError::Unmapped) => {
-                    errln!("fix_objc_from_cache: pointer {} unmapped", addr);
-                    None
-                },
-            }
-        };
-
-        let pointer_size64 = self.eb.pointer_size as u64;
-
-        macro_rules! read_ptr { ($loc:expr, $action:stmt) => {
-            self.eb.ptr_from_slice(some_or!(outer_read($loc, pointer_size64), $action))
-        } }
-
-        let mut sel_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
-
-        {
-            let (mut methname_addr, methname_size) = self.sect_bounds_named("__objc_methname");
-            let mut methname = segw.get_sane_ro(methname_addr, methname_size).unwrap();
-            loop {
-                let name = some_or!(util::from_cstr_strict(methname), break);
-                let inc = name.len() + 1;
-                sel_name_to_addr.insert(name, methname_addr);
-                methname = &methname[inc..];
-                methname_addr = methname_addr + inc.ext();
-            }
-        }
-
-        let proto_name = |proto_ptr: VMA| -> Option<&'dc ByteStr> {
-            let name_addr = read_ptr!(some_or!(proto_ptr.check_add(pointer_size64), {
-                errln!("fix_objc_from_cache: integer overflow");
-                return None;
-            }), return None);
-            let res = dc.eb.read_cstr_sane(VMA(name_addr));
-            if res.is_none() {
-                errln!("fix_objc_from_cache: can't read name at {} for protocol at {}", name_addr, proto_ptr);
-            }
-            res
-        };
-
-        let visit_selector_pp = |selector_pp: VMA| {
-            let selector_data = some_or!(rw(&segw, selector_pp, pointer_size64), return);
-            let old_strp = VMA(self.eb.ptr_from_slice(selector_data));
-            // todo cache by address?
-            let name = some_or!(dc.eb.read_cstr_sane(old_strp), {
-                errln!("fix_objc_from_cache: can't read selector name in other image at {}", old_strp);
-                return;
-            });
-            if let Some(&my_addr) = sel_name_to_addr.get(name) {
-                self.eb.ptr_to_slice(selector_data, my_addr.0);
-            } else {
-                errln!("fix_objc_from_cache: can't find selector named {} in __objc_methname, referenced from {}", name, selector_pp);
-            }
-        };
-
-        let visit_method_list = |method_list: VMA| {
-            if method_list.0 == 0 { return; }
-            let (entsize, count): (u32, u32) =
-                util::copy_from_slice(some_or!(outer_read(method_list, 8), return),
-                                      self.eb.endian);
-            let entsize = entsize & !3;
-            let mut sel_pp = method_list + 8;
-            for _ in 0..count {
-                // methods start with selector ptr
-                visit_selector_pp(sel_pp);
-                sel_pp = some_or!(sel_pp.check_add(entsize as u64),
-                                  { errln!("visit_method_list: integer overflow"); break; });
-            }
-        };
-
-        let mut proto_name_to_addr: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
-        {
-            let (protolist_addr, protolist_size) = self.sect_bounds_named("__objc_protolist");
-            let protolist = segw.get_sane_ro(protolist_addr, protolist_size).unwrap();
-            for proto_ptr_buf in protolist.chunks(self.eb.pointer_size) {
-                let proto_ptr = VMA(self.eb.ptr_from_slice(proto_ptr_buf));
-                let name = some_or!(proto_name(proto_ptr), continue);
-                proto_name_to_addr.insert(name, proto_ptr);
-                for i in 3..7 {
-                    visit_method_list(VMA(read_ptr!(proto_ptr + i * pointer_size64, continue)));
-                }
-            }
-        }
-
-        let visit_protocol_pp = |protocol_pp: VMA| {
-            let protocol_data = some_or!(rw(&segw, protocol_pp, pointer_size64), return);
-            let protocol_ptr = VMA(self.eb.ptr_from_slice(protocol_data));
-            let name = some_or!(proto_name(protocol_ptr), return);
-            if let Some(&my_addr) = proto_name_to_addr.get(&name) {
-                self.eb.ptr_to_slice(protocol_data, my_addr.0);
-            } else {
-                errln!("fix_objc_from_cache: can't find protocol named {} in __objc_protolist, referenced from {}", name, protocol_pp);
-            }
-        };
-
-        let visit_proto_list = |list: VMA| {
-            if list.0 == 0 { return; }
-            let protocol_count = read_ptr!(list, return);
-            let mut protocol_pp = list.saturating_add(pointer_size64);
-            for _ in 0..protocol_count {
-                visit_protocol_pp(protocol_pp);
-                protocol_pp = protocol_pp.saturating_add(pointer_size64);
-            }
-        };
-
-        {
-            for &proto in proto_name_to_addr.values() {
-                let proto_list = VMA(read_ptr!(proto.saturating_add(2 * pointer_size64), continue));
-                visit_proto_list(proto_list);
-            }
-        }
-
-        {
-            let (classlist_addr, classlist_size) = self.sect_bounds_named("__objc_classlist");
-            let classlist = segw.get_sane_ro(classlist_addr, classlist_size).unwrap();
-            for cls_ptr_buf in classlist.chunks(self.eb.pointer_size) {
-                let mut cls_ptr = VMA(dc.eb.ptr_from_slice(cls_ptr_buf));
-                let mut is_meta = false;
-                loop {
-                    let cls_data_ptr = VMA(read_ptr!(cls_ptr + 4 * pointer_size64, break));
-                    // protocols
-                    let base_protocols = VMA(read_ptr!(cls_data_ptr + 8 + 4 * pointer_size64, break));
-                    visit_proto_list(base_protocols);
-                    // methods
-                    let base_methods = VMA(read_ptr!(cls_data_ptr + 8 + 3 * pointer_size64, break));
-                    visit_method_list(base_methods);
-
-
-                    //
-                    if !is_meta {
-                        let isa = VMA(read_ptr!(cls_ptr, break));
-                        cls_ptr = isa;
-                        is_meta = true;
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-        }
-        {
-            let (catlist_addr, catlist_size) = self.sect_bounds_named("__objc_catlist");
-            let catlist = segw.get_sane_ro(catlist_addr, catlist_size).unwrap();
-            for cat_ptr_buf in catlist.chunks(self.eb.pointer_size) {
-                let cat_ptr = VMA(self.eb.ptr_from_slice(cat_ptr_buf));
-                if cat_ptr.check_add(4 * pointer_size64).is_none() {
-                    errln!("fix_objc_from_cache: integer overflow");
-                    continue;
-                }
-                let instance_methods = VMA(read_ptr!(cat_ptr + 2 * pointer_size64, continue));
-                visit_method_list(instance_methods);
-                let class_methods = VMA(read_ptr!(cat_ptr + 3 * pointer_size64, continue));
-                visit_method_list(class_methods);
-            }
-        }
-
-        {
-            let (base_addr, len) = self.sect_bounds_named("__objc_protorefs");
-            for addr in (0..len).step_by(pointer_size64) {
-                visit_protocol_pp(addr + base_addr);
-            }
-        }
-        {
-            let (base_addr, len) = self.sect_bounds_named("__objc_selrefs");
-            for addr in (0..len).step_by(pointer_size64) {
-                visit_selector_pp(addr + base_addr);
-            }
-        }
-        {
-            // If this is libobjc itself, we should clear the preoptimization stuff - in the
-            // original dylib it's all 0 except the 4 byte version at the start of RO
-            let (opt_ro_addr, opt_ro_size) = self.sect_bounds_named("__objc_opt_ro");
-            if opt_ro_size != 0 {
-                if opt_ro_size < 4 {
-                    errln!("fix_objc_from_cache: __objc_opt_ro size too small");
-                } else {
-                    segw.get_sane_rw(opt_ro_addr + 4, opt_ro_size - 4).unwrap()
-                        .set_memory(0);
-                }
-            }
-            let (opt_rw_addr, opt_rw_size) = self.sect_bounds_named("__objc_opt_rw");
-            if opt_rw_size != 0 {
-                segw.get_sane_rw(opt_rw_addr + 4, opt_rw_size - 4).unwrap()
-                    .set_memory(0);
-            }
-        }
-        } // <-
-        segw.finish(&mut self.eb.segments);
-
-    }
-    fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache) {
-        fn sect_name(sections: &[exec::Segment], addr: VMA) -> &ByteStr {
-             if let Some((seg, _, _)) = exec::addr_to_seg_off_range(sections, addr) {
-                &**seg.name.as_ref().unwrap()
-             } else { ByteStr::from_str("??") }
-        }
-
-        let sli = match dc.get_slide_info() {
-            Ok(Some(sli)) => sli,
-            Ok(None) => {
-                // no slide info so can't do it, oh well...
-                return;
-            },
-            Err(e) => {
-                errln!("check_no_other_lib_refs: couldn't get slide info: {}", e);
-                return;
-            },
-        };
-        let arch = self.eb.arch;
-        for segment in &self.eb.segments {
-            let content = segment.data.as_ref().unwrap().get();
-            let pointer_size = self.eb.pointer_size;
-            sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
-                let offset = (ptr - segment.vmaddr) as usize;
-                let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
-                if val == 0 { return; }
-                if arch == arch::AArch64 {
-                    // http://sourcerytools.com/pipermail/cxx-abi-dev/2013-November/002623.html
-                    val &= !(0xffu64 << 56);
-                }
-                let val = VMA(val);
-                if exec::addr_to_seg_off_range(&dc.eb.segments, val).is_none() {
-                    errln!("odd {} -> {}, sourcesect = {}, destsect = {}", ptr, val,
-                           sect_name(&self.eb.sections, ptr),
-                           sect_name(&dc.eb.sections, val));
-                }
-            });
-        }
-    }
-    pub fn extract_as_necessary(&mut self, dc: Option<&DyldCache>, image_cache: Option<&ImageCache>, minimal_processing: bool) -> exec::ExecResult<()> {
-        let _sw = stopwatch("extract_as_necessary");
-        if self.hdr_offset != 0 && !minimal_processing {
-            let x: Option<DyldCache>;
-            let dc = if let Some(dc) = dc { dc } else {
-                let inner_sections = true; // xxx
-                x = Some(try!(DyldCache::new(self.eb.whole_buf.as_ref().unwrap().clone(), inner_sections, /*unslide*/ false)));
-                x.as_ref().unwrap()
-            };
-            // we're in a cache...
-            let res = self.reaggregate_nlist_syms_from_cache();
-            self.localsym = MCRef::with_data(&res.localsym);
-            self.extdefsym = MCRef::with_data(&res.extdefsym);
-            self.undefsym = MCRef::with_data(&res.undefsym);
-            self.strtab = MCRef::with_data(&res.strtab);
-            self.xsym_to_symtab();
-            self.update_indirectsym(&res.sym_name_to_idx);
-            if let Some(ic) = image_cache {
-                // must come after indirectsym
-                self.fix_text_relocs_from_cache(ic, dc);
-            }
-            self.unbind();
-            self.fix_objc_from_cache(dc);
-            self.check_no_other_lib_refs(dc);
-        }
-        try!(self.reallocate());
-        self.rewhole();
-        Ok(())
-    }
     pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> Option<u64> {
         let mut guess: Option<u64> = None;
         let dyld_export = self.dyld_export.get();
@@ -2153,287 +1556,6 @@ impl MachO {
         });
         guess
     }
-    pub fn subtract_dic_from_addr_range<'a, F>(&'a self, outer_start: VMA, outer_size: u64, mut cb: F)
-        where F: FnMut(VMA, u64) {
-        // simple enough
-        let dic = self.data_in_code.get();
-        let endian = self.eb.endian;
-        let text_addr = some_or!(self.dyld_base, {
-            errln!("warning: can't get data_in_code because no reasonable-looking text segment");
-            return;
-        });
-        let outer_end = outer_start + outer_size;
-        let mut prev_dice_end = outer_start;
-        for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
-            let dice: data_in_code_entry = util::copy_from_slice(chunk, endian);
-            if dice.length == 0 { continue; }
-            let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
-            let dice_end_addr = some_or!(text_addr.check_add(end_offset), {
-                errln!("warning: bad data_in_code end offset {:x}", end_offset);
-                continue;
-            });
-            let dice_start_addr = text_addr + (dice.offset as u64);
-            if dice_start_addr >= outer_end {
-                break;
-            }
-            if prev_dice_end < dice_start_addr {
-                cb(prev_dice_end, dice_start_addr - prev_dice_end);
-            }
-            prev_dice_end = dice_end_addr;
-        }
-        if prev_dice_end < outer_end {
-            cb(prev_dice_end, outer_end - prev_dice_end);
-        }
-    }
-    // currently for cache extraction on arm64 only
-    pub fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)> {
-        let mut relocs = Vec::new();
-        if self.eb.arch != arch::AArch64 {
-            return relocs;
-        }
-        let end = self.eb.endian;
-        let pointer_size = self.eb.pointer_size;
-        for sect in &self.eb.sections {
-            if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
-                continue;
-            }
-            let sectdata = self.eb.read(sect.vmaddr, sect.filesize);
-            let sectdata = sectdata.get();
-            if (sectdata.len() as u64) < sect.filesize {
-                errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
-            }
-            self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
-                let mut data =
-                    &sectdata[(start - sect.vmaddr) as usize ..
-                              (start + size - sect.vmaddr) as usize];
-                let mut addr = start;
-                while data.len() >= 4 {
-                    let insn: u32 = util::copy_from_slice(&data[..4], end);
-                    // the important part
-                    let kind = if insn & 0x7c000000 == 0x14000000 {
-                        Some(RelocKind::Arm64Br26)
-                    /*
-                    } else if insn & 0x9f000000 == 0x90000000 {
-                        Some(RelocKind::Arm64Adrp)
-                        xxx this won't quite work because we need the corresponding adr to find the symbol
-                        */
-                    } else { None };
-                    if let Some(kind) = kind {
-                        let rc = RelocContext {
-                            kind: kind,
-                            pointer_size: pointer_size.ext(),
-                            base_addr: addr,
-                        };
-                        let target = rc.word_to_addr(insn.ext()).unwrap();
-                        if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
-                            relocs.push((addr, kind, target));
-                        }
-                    }
-
-                    data = &data[4..];
-                    addr = addr + 4;
-                }
-            });
-        }
-        relocs
-    }
-    pub fn stub_name_list(&self) -> Vec<(&ByteStr, VMA)> {
-        let mut res = Vec::new();
-        let indirectsym = self.indirectsym.get();
-        let indirectsym_count = indirectsym.len() / 4;
-        let symtab = self.symtab.get();
-        let strtab = self.strtab.get();
-        let end = self.eb.endian;
-        let nlist_size = self.nlist_size;
-        for sect in &self.eb.sections {
-            let sp = &self.sect_private[sect.private];
-            if sp.flags & SECTION_TYPE != S_SYMBOL_STUBS { continue; }
-            let (ind_idx, stub_size) = (sp.reserved1 as usize, sp.reserved2 as usize);
-            let stub_count = sect.filesize / stub_size.ext();
-            if ind_idx > indirectsym_count {
-                errln!("warning: stub_name_list: reserved1 ({}) > stub count ({}) for section {:?}",
-                       ind_idx, stub_count, sect.name);
-                continue;
-            }
-            let stub_count = if stub_count > (indirectsym_count - ind_idx).ext() {
-                errln!("warning: stub_name_list: reserved1 ({}) + stub count ({}) goes off end of indirect table \
-                        for section {:?}", ind_idx, stub_count, sect.name);
-                indirectsym_count - ind_idx
-            } else { stub_count as usize };
-            let mut stub_addr = sect.vmaddr;
-            for indirect_buf in indirectsym[ind_idx * 4 .. (ind_idx + stub_count) * 4].chunks(4) {
-                let sym_idx: u32 = util::copy_from_slice(indirect_buf, end);
-                let off = (sym_idx as usize).saturating_mul(nlist_size);
-                let sa = stub_addr;
-                stub_addr = stub_addr.wrapping_add(stub_size.ext());
-                let nlist_buf = some_or!(symtab.slice_opt(off, off + nlist_size), {
-                    errln!("warning: stub_name_list: bad symbol table index {}", sym_idx);
-                    continue;
-                });
-                let nl = copy_nlist_from_slice(nlist_buf, end);
-                let name = strx_to_name(strtab, nl.n_strx.ext());
-                res.push((name, sa));
-            }
-        }
-        res
-    }
-    pub fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache) {
-        let pointer_size = self.eb.pointer_size.ext();
-        let end = self.eb.endian;
-        let guess = self.guess_text_relocs();
-        if guess.len() == 0 { return; }
-
-        let mut writer = SegmentWriter::new(&mut self.eb.segments);
-        for sect in &self.eb.sections {
-            if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
-                writer.make_seg_rw(sect.seg_idx.unwrap());
-            }
-        }
-        { // <-
-
-        let mut my_stubs_by_name: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
-        for (name, stub_addr) in self.stub_name_list() {
-            my_stubs_by_name.insert(name, stub_addr);
-        }
-
-
-        let mut target_cache: HashMap<VMA, Option<VMA>, _> = util::new_fnv_hashmap();
-        let bmap: Lazy<_> = Lazy::new();
-        let this: &MachO = self;
-        for (source, kind, target) in guess {
-            let new_target = target_cache.entry(target).or_insert_with(|| {
-                let (target, sme) = some_or!(resolve_arm64_trampolines(dc, ic, target, source, self.eb.endian),
-                                             return None);
-                let ice = &ic.cache[sme.image_idx];
-                if let Err(ref e) = ice.mo {
-                    errln!("warning: fix_text_relocs_from_cache: addr {} (ref'd by {}) points to bad image ({})", target, source, e);
-                    return None;
-                };
-                let syms = ice.get_syms();
-                let idx = some_or!(syms.binary_search_by(|sym| sym.val.some_vma().unwrap().cmp(&target)).ok(), {
-                    errln!("warning: fix_text_relocs_from_cache: found image for {} (ref'd by {}), but no symbol", target, source);
-                    return None;
-                });
-                let min_idx = (0..idx).rev().take_while(|&idx2| syms[idx2].val.some_vma().unwrap() == target)
-                                      .last().unwrap_or(idx);
-                let max_idx = (idx..syms.len()).take_while(|&idx2| syms[idx2].val.some_vma().unwrap() == target)
-                                      .last().unwrap_or(idx);
-                for idx in min_idx..max_idx+1 {
-                    let sym_name = &syms[idx].name;
-                    // todo data relocs
-                    if let Some(&res) = my_stubs_by_name.get(&**sym_name) {
-                        return Some(res);
-                    }
-                }
-                // No exact name match.  But it might be the target of a reexport (possibly
-                // multiple levels of reexport), which is annoying - it's not even
-                // unambiguous.  We have to check all our imports to see if they resolve to
-                // some reexport.
-                let bmap = bmap.get(|| this.backwards_reexport_map(ic));
-                for idx in min_idx..max_idx+1 {
-                    let sym_name = &syms[idx].name;
-                    if let Some(orig_name) = bmap.get(&**sym_name) {
-                        if let Some(&res) = my_stubs_by_name.get(orig_name) {
-                            return Some(res);
-                        }
-                    }
-                }
-                // we fail
-                errln!("warning: fix_text_relocs_from_cache: couldn't find stub for symbol (addr {} ref'd by {}), name possibilities: {{",
-                       target, source);
-                for idx in min_idx..max_idx+1 {
-                    let sym_name = &syms[idx].name;
-                    println!("  {}", sym_name);
-                    if let Some(orig_name) = bmap.get(&**sym_name) {
-                        // really this should have been found as a stub
-                        println!("  <- {}", orig_name);
-                    }
-                }
-                errln!("}}");
-                None
-            });
-            if let Some(new_target) = *new_target {
-                let rc = RelocContext {
-                    kind: kind,
-                    pointer_size: pointer_size,
-                    base_addr: source,
-                };
-
-                let cell_ptr = writer.get_sane_rw(source, 4).unwrap();
-                let insn: u32 = util::copy_from_slice(cell_ptr, end);
-                let insn = rc.addr_to_word(new_target, insn.ext()).unwrap() as u32;
-                //println!("patching {} -> {:x} newt={}", source, insn, new_target);
-
-                util::copy_to_slice(cell_ptr, &insn, end);
-            }
-        }
-        } // <-
-        writer.finish(&mut self.eb.segments);
-    }
-    pub fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv> {
-        let opts = MachOLookupExportOptions { using_image_cache: Some(unsafe { transmute::<&'a ImageCache, &'static ImageCache>(ic) }) };
-        let mut res = util::new_fnv_hashmap();
-        let mut prev_source_info: Option<(usize, &ImageCacheEntry)> = None;
-        self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState<'a>| {
-            if state.already_bound_this_symbol { return true; }
-            let orig_name = some_or!(state.symbol, { return true; });
-            let source_dylib: usize = match state.source_dylib {
-                SourceLib::Ordinal(ord) => ord.ext(),
-                _ => return true,
-            };
-            let mut ice = match prev_source_info {
-                Some((prev_dylib, prev_ice)) if prev_dylib == source_dylib
-                    => prev_ice,
-                _ => {
-                    let path = &self.load_dylib[source_dylib].path;
-                    let ice = some_or!(ic.lookup_path(path), {
-                        errln!("backwards_reexport_map: didn't find {} in cache", path);
-                        return true;
-                    });
-                    prev_source_info = Some((source_dylib, ice));
-                    ice
-                },
-            };
-            let mut cur_name_owned: Option<ByteString> = None;
-            loop {
-                let mo = some_or!(ice.mo.as_ref().ok(), { continue; });
-                let new = (|| {
-                    let cur_name = if let Some(ref name) = cur_name_owned { &name[..] } else { orig_name };
-                    for export in mo.lookup_export(cur_name, Some(&opts as &Any)) {
-                        if let SymbolValue::ReExport(n, source_dylib) = export.val {
-                            // it's owned to start with so
-                            let source_dylib = match source_dylib {
-                                SourceLib::Ordinal(o) => o,
-                                _ => panic!()
-                            };
-                            return Some((n.into_owned(), source_dylib as usize))
-                        }
-                    }
-                    None
-                })();
-                if let Some((new_name, source_dylib)) = new {
-                    // no cache here, but this should be rare...
-                    let path = &mo.load_dylib[source_dylib].path;
-                    ice = some_or!(ic.lookup_path(path), {
-                        errln!("backwards_reexport_map: didn't find {} in cache (after first step)", path);
-                        return true;
-                    });
-                    cur_name_owned = Some(new_name);
-                } else {
-                    // otherwise, it's the end of the line.  did we get past the first lookup?
-                    if let Some(name) = cur_name_owned {
-                        //println!("! {} -> {}", name, orig_name);
-                        if &name != orig_name {
-                            res.insert(name, orig_name);
-                        }
-                    }
-                    break;
-                }
-            }
-            true
-        });
-        res
-    }
     pub fn get_exported_symbol_list(&self, search_for: Option<&ByteStr>) -> Vec<Symbol<'static>> {
         let mut out = Vec::new();
         self.parse_dyld_export(self.dyld_export.get(), search_for, &mut |state: &ParseDyldExportState| {
@@ -2458,85 +1580,6 @@ impl MachO {
             true
         });
         out
-    }
-}
-
-fn decode_stub(stub: &[u8], stub_addr: VMA, end: Endian, arch: Arch) -> Option<VMA> {
-    match arch {
-        arch::X86 | arch::X86_64 => {
-            assert_eq!(end, LittleEndian);
-            if stub.len() != 6 { return None; }
-            if &stub[0..2] != &[0xff, 0x25] { return None; }
-            let rel: i32 = util::copy_from_slice(&stub[2..], LittleEndian);
-            let mut res = stub_addr.wrapping_add(rel as u64);
-            if arch == arch::X86 { res = res.trunc32(); }
-            Some(res)
-        },
-        arch::ARM => {
-            match stub.len() {
-                16 => {
-                    let insns: [u32; 3] = [0xe59fc004, 0xe08fc00c, 0xe59cf000];
-                    let real_insns: [u32; 4] = util::copy_from_slice(stub, end);
-                    if insns != &real_insns[..3] { return None; }
-                    Some((stub_addr + 8).wrapping_add(real_insns[3] as u64).trunc32())
-                },
-                12 => {
-                    let insns: [u32; 2] = [0xe59fc000, 0xe59cf000];
-                    let real_insns: [u32; 3] = util::copy_from_slice(stub, end);
-                    if insns != &real_insns[..2] { return None; }
-                    Some(VMA(real_insns[2].ext()))
-                },
-                _ => None
-            }
-
-        },
-        arch::AArch64 => {
-            if stub.len() != 12 { return None; }
-            let insns: [u32; 3] = util::copy_from_slice(stub, end);
-            if insns[0] & 0x9f00001f != 0x90000010 ||
-               insns[1] & 0xffc003ff != 0xf9400210 ||
-               insns[2] != 0xd61f0200 { return None; }
-            let mut page_rel: u64 = (insns[0] as u64 & 0x60000000) >> 17 |
-                                    (insns[0] as u64 & 0xffffe0) << 9;
-            if page_rel & (1u64 << 32) != 0 {
-                page_rel |= 0xffffffffu64 << 32;
-            }
-            let page = (stub_addr.0 & !0xfff).wrapping_add(page_rel);
-            let pageoff = ((insns[1] & 0x3ffc00) >> 10) * 8;
-            if pageoff >= 0x1000 { return None; }
-            Some(VMA(page + pageoff as u64))
-        },
-        _ => {
-            errln!("warning: decode_stub: unknown arch {:?}", arch);
-            None
-        }
-    }
-}
-
-fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<(VMA, &'a SegMapEntry)> {
-    let mut num = 0usize;
-    let mut prev = refd_by;
-    loop {
-        if let Some(sme) = ic.lookup_addr(target) {
-            return Some((target, sme));
-        }
-        // if it's in an image, then it could be a B but not a trampoline, so need to check this first
-        let insn_buf = some_or!(dc.eb.read_sane(target, 4), {
-            errln!("resolve_arm64_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
-                   target, num, refd_by, prev);
-            return None;
-        });
-        let insn: u32 = util::copy_from_slice(insn_buf, end);
-        // stricter mask as BL is no good
-        if insn & 0xfc000000 != 0x14000000 {
-            errln!("resolve_arm64_trampolines: address {} not found in image, but is not a B (insn = 0x{:08x}) \
-                    (ref'd by {}, most recently by {})", target, insn, refd_by, prev);
-            return None;
-        }
-        prev = target;
-        let rc = RelocContext { kind: RelocKind::Arm64Br26, pointer_size: 8, base_addr: target };
-        target = rc.word_to_addr(insn.ext()).unwrap();
-        num += 1;
     }
 }
 

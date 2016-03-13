@@ -101,10 +101,14 @@ $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))
 all: out-td
 endif
 
+DYLD_THING_FOR_LIBCLANG  := \
+	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH
+
 $(OUT)/cargo-build: Cargo.toml
 	test -e Cargo.lock && cargo update || true
-	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH \
-	RUSTC=$(RUSTC) cargo build $(CARGO_BUILD_FLAGS)
+	$(DYLD_THING_FOR_LIBCLANG) \
+	RUSTC=$(RUSTC) \
+	cargo build $(CARGO_BUILD_FLAGS)
 	touch $@ # xxx
 
 XC_LIBCLANG_PATH := /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
@@ -117,6 +121,7 @@ $(OUT)/static-bindgen: externals/rust-bindgen/bindgen Makefile staticize.sh
 	./staticize.sh "$@" "$<"
 
 $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-o/* fmt/bindgen.py
+	$(DYLD_THING_FOR_LIBCLANG) \
 	python2.7 fmt/bindgen.py "$<" -match mach/ -match mach-o/ -Iexternals/mach-o \
 		-force-type 'LC_' u32 \
 		> "$@" || (rm -f "$@"; false)
@@ -124,8 +129,10 @@ $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-
 $(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs fmt/reloc.rs,util)
 $(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
 $(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util deps)
+$(call define_crate,$(LIB),macho_dsc_extraction,fmt/macho_dsc_extraction.rs,macho exec util)
 $(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
+	$(DYLD_THING_FOR_LIBCLANG) \
 	python2.7 fmt/bindgen.py "$<" -match elf.h \
 		-enum2string 'EM_' 'e_machine_to_str' 'lower strip_prefix' \
 		-enum2string 'DT_' 'd_tag_to_str' '' \
@@ -139,8 +146,8 @@ endif
 
 $(call define_crate,$(LIB),db,db/sexpr.rs,util)
 
-$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
-$(call define_crate,bin,yasce,tool/yasce.rs,macho)
+$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho macho_dsc_extraction elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
+$(call define_crate,bin,yasce,tool/yasce.rs,macho macho_dsc_extraction)
 
 clean:
 	rm -rf $(OUT) $(TARGET_DIR)/$(CARGO_BUILD_TYPE)

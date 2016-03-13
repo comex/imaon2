@@ -5,7 +5,7 @@ use macho_bind;
 use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv};
 use exec::ErrorKind::BadData;
 use exec::arch;
-use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, SymbolValue};
+use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
 use std::mem::{size_of};
 use std::cmp::{min, Ordering};
 use std::ops::Range;
@@ -557,7 +557,7 @@ pub struct ImageCache {
 
 pub struct ImageCacheEntry {
     pub mo: ExecResult<MachO>,
-    syms: Lazy<Vec<exec::Symbol<'static>>>,
+    pub addr_syms: Lazy<Box<Any+Send>>, // see macho_dsc_extraction
 }
 
 pub struct SegMapEntry {
@@ -587,7 +587,7 @@ impl ImageCache {
             path_map.insert(ii.path.clone(), cache.len());
             cache.push(ImageCacheEntry {
                 mo: res,
-                syms: Lazy::new(),
+                addr_syms: Lazy::new(),
             });
         }
         seg_map.sort_by_key(|entry| entry.addr);
@@ -610,21 +610,3 @@ impl ImageCache {
     }
 }
 
-impl ImageCacheEntry {
-    pub fn get_syms(&self) -> &Vec<exec::Symbol> {
-        self.syms.get(|| -> Vec<exec::Symbol<'static>> {
-            let mo = self.mo.as_ref().unwrap();
-            let mut list = mo.get_exported_symbol_list(None);
-            list.retain(|sym| match sym.val {
-                SymbolValue::Addr(_) => true,
-                _ => false
-            });
-            // there can be references to someone else's lazy stub?? TODO
-            list.sort_by_key(|sym| match sym.val {
-                SymbolValue::Addr(vma) => vma,
-                _ => panic!()
-            });
-            list
-        })
-    }
-}

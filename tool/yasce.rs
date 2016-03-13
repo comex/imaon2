@@ -17,6 +17,7 @@ use std::sync::mpsc::channel;
 extern crate macros;
 extern crate util;
 extern crate macho;
+extern crate macho_dsc_extraction;
 extern crate exec;
 use macho::dyldcache::{DyldCache, ImageInfo, ImageCache};
 use util::{ByteString, ByteStr};
@@ -32,7 +33,7 @@ fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Opti
         Ok(m) => m,
         Err(e) => { errln!("for '{}', parse Mach-O fail: {}", ii.path, e); return },
     };
-    match macho.extract_as_necessary(Some(dc), image_cache, minimal_processing) {
+    match macho_dsc_extraction::extract_as_necessary(&mut macho, Some(dc), image_cache, minimal_processing) {
         Ok(()) => (),
         Err(e) => { errln!("for '{}', extract fail: {}", ii.path, e); return },
     }

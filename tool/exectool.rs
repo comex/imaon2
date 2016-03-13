@@ -9,6 +9,7 @@ extern crate util;
 extern crate bsdlike_getopts as getopts;
 extern crate exec;
 extern crate macho;
+extern crate macho_dsc_extraction;
 extern crate elf;
 extern crate dis;
 #[macro_use]
@@ -247,7 +248,7 @@ fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {
     if let Some(out_file) = m.opt_str("extract") {
         // TODO generic
         let macho = get_macho(ex);
-        macho.extract_as_necessary(None, None, /*minimal_processing*/ false).unwrap();
+        macho_dsc_extraction::extract_as_necessary(macho, None, None, /*minimal_processing*/ false).unwrap();
         let mut fp = fs::File::create(&Path::new(&out_file)).unwrap();
         fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();
     }
