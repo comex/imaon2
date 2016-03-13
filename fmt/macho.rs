@@ -1099,6 +1099,7 @@ impl MachO {
                 errln!("warning: update_indirectsym: got bad indirect symbol table index/size for section {}", sect.name.as_ref().unwrap());
                 continue;
             }
+
             if section_type == S_SYMBOL_STUBS {
                 stubs_sects_info.push(info);
             } else {
