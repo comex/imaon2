@@ -32,11 +32,22 @@ pub struct DisassemblerInput<'a> {
     pub pc: exec::VMA,
 }
 
+pub struct TrawlLead {
+    addr: exec::VMA,
+    kind: TrawlLeadKind,
+}
+pub enum TrawlLeadKind {
+    ReadInsn { len: u32 },
+    TailInsn,
+    JumpRef,
+    OtherRef,
+}
+
 pub trait Disassembler : 'static {
     fn arch(&self) -> &arch::ArchAndOptions;
     fn can_disassemble_to_str(&self) -> bool { false }
-    fn disassemble_insn_to_str(&self, _input: DisassemblerInput) -> Option<(String, u32)> { unimplemented!() }
-    fn disassemble_multiple_to_str(&self, input: DisassemblerInput) -> Vec<(String, exec::VMA, u32)> {
+    fn disassemble_insn_to_str(&self, _input: DisassemblerInput) -> Option<(Option<String>, u32)> { unimplemented!() }
+    fn disassemble_multiple_to_str(&self, input: DisassemblerInput) -> Vec<(Option<String>, exec::VMA, u32)> {
         let mut result = Vec::new();
         let mut off = 0;
         let nia = self.arch().natural_insn_align();
@@ -45,12 +56,16 @@ pub trait Disassembler : 'static {
                 result.push((dissed, input.pc + (off as u64), length));
                 off += length as usize;
             } else {
+                result.push((None, input.pc + (off as u64), nia as usize));
                 off += nia as usize;
             }
         }
         result
     }
     // todo - disassemble_all_to_str?
+
+    fn can_trawl(&self) -> bool { false}
+    fn trawl(&self, _input: DisasemblerInput, &mut [TrawlLead]) { unimplemented!() }
 }
 pub trait DisassemblerStatics : Disassembler + Sized {
     fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<Self, CreateDisError>;

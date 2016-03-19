@@ -153,7 +153,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
 
     if(insns.length == 1) {
         let insn = insns[0];
-        if ((insn.instKnownMask & ~knownMask) == 0) {
+        if((insn.instKnownMask & ~knownMask) == 0) {
             return data.cache[cacheKey] = {
                 insn: insn,
                 knownMask: knownMask,
@@ -444,8 +444,8 @@ function tableToRust(node) {
     console.log(ppTable(node));
 }
 
-// [(pos1, pos2)] -> [(pos1, pos2, len)]
-function bitPairsToRuns(bits) {
+// [(posInA, posInB)] -> [(posinA, posInB, len)]
+function pairsToRuns(bits) {
     let mine = [];
     for(let bit of bits) {
         let last = mine[mine.length - 1];
@@ -475,7 +475,7 @@ function instToOpRuns(inst, removeDupes) {
     }
     let out = {};
     for(let op in ops) {
-        out[op] = bitPairsToRuns(ops[op]);
+        out[op] = pairsToRuns(ops[op]);
     }
     return out;
 }
@@ -533,7 +533,7 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
                 pairs.push([lo, hi]);
         }
     }
-    let runs = bitPairsToRuns(pairs);
+    let runs = pairsToRuns(pairs);
     let out = '';
     for(let run of runs) {
         let mask = (1 << run[2]) - 1;
@@ -546,91 +546,211 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
     return out;
 }
 
+function gotoOrGen(data, label, comment, gen) {
+    comment = comment ? (' /* '+comment+' */') : '';
+    if(lang === rustLang) {
+
+    } else {
+        if(data.seen[label]) {
+            data.seen[label]++;
+            return lang.goto_(label, comment);
+        } else {
+            data.seen[label] = 1;
+            return gen();
+        }
+    }
+}
+
+let cLang = {
+    switch_: (expr, cases) => {
+        let stmts = ['switch (' + cLang.render(expr) + ') {'];
+        for(let [whens, what] of cases) {
+            let runs = pairsToRuns(whens.map(when => [when, when]));
+            for (let [start, _, len] of runs)
+                stmts.push('case ' + (len == 1 ? start : (start + ' ... ' + (start + len - 1))) + ':');
+            let i = stmts.length-1;
+            stmts[i] = cLang.hangingBlockChain([[stmts[i], what]]);
+        }
+        stmts.push('}');
+        return stmts;
+    },
+    if_: (cond, then, else_) => {
+        let chain = [['if (' + cLang.render(cond) + ')', then]];
+        if(else_ !== undefined)
+            chain.push(['else', else_]);
+        return cLang.hangingBlockChain(chain);
+    },
+    not_: expr => cLang.unary('!', expr),
+    and: (a, b) => cLang.binary(13, '&&', a, b),
+
+    return_: expr => cLang.stmt('return ' + cLang.render(expr) + ';'),
+
+    unary: (prefix, expr) => cLang.expr(3, null, prefix + cLang.renderEx(3, null, expr)),
+    binary: (precedence, infix, a, b) =>
+        cLang.expr(precedence, infix,
+            cLang.renderEx(precedence, null, a) + ' ' + infix + ' ' +
+            cLang.renderEx(precedence, infix, b)),
+
+    render: x => cLang.renderEx(99, null, x),
+    renderEx: (precedence, rightSideOf, expr) => {
+        if(expr.charCodeAt) {
+            let prec = expr.match(/^[a-zA-Z0-9_\.]+$/) ? 1 : 98;
+            expr = cLang.expr(prec, null, expr);
+        }
+        if(expr.precedence === undefined || expr.stmt)
+            throw 'not expr or string';
+        if(expr.precedence < precedence ||
+            (expr.precedence == precedence &&
+             rightSideOf !== null &&
+             rightSideOf === expr.infixChainEndingIn))
+            return expr.text;
+        else
+            return '(' + expr.text + ')';
+    },
+
+    expr: (precedence, infixChainEndingIn, text) =>
+        ({precedence: precedence, infixChainEndingIn, text}),
+    stmt: stmt => {
+        if(stmt.charCodeAt)
+            stmt = {text: stmt};
+        else if(stmt.precedence !== undefined)
+            stmt.text += ';';
+        stmt.stmt = true;
+        return stmt;
+    },
+    stmtList: stmts => Array.isArray(stmts) ? stmts : [stmts],
+
+    hangingBlockChain: chain =>
+        cLang.stmt({'hangingBlockChain': true, 'chain': chain}),
+    finalRender: (indent, stmtList) => {
+        let lines = [];
+        let neededLabels = {};
+        cLang.scanLabels(stmtList, neededLabels);
+        cLang.finalRenderEx(stmtList, indent, lines, neededLabels);
+        return lines.join('\n');
+    },
+    scanLabels: (stmtList, neededLabels) => {
+        stmtList = cLang.stmtList(stmtList);
+        for (let stmt of stmtList) {
+            if(stmt.goto_)
+                neededLabels[stmt.goto_] = true;
+            else if(stmt.hangingBlockChain) {
+                for (let [intro, substmts] of stmt.chain)
+                    cLang.scanLabels(substmts, neededLabels);
+            }
+        }
+    },
+    finalRenderEx: (stmtList, indent, lines, neededLabels) => {
+        stmtList = cLang.stmtList(stmtList);
+        for (let stmt of stmtList) {
+            stmt = cLang.stmt(stmt);
+            if(stmt.label !== undefined && !neededLabels[stmt.label])
+                continue;
+            let linesLength = lines.length;
+            if(stmt.hangingBlockChain) {
+                let lastWasCloseBrace = false;
+                for (let [intro, substmts] of stmt.chain) {
+                    if(!lastWasCloseBrace)
+                        lines.push(indent);
+                    else if(intro)
+                        lines[lines.length-1] += ' ';
+                    let introIdx = lines.length - 1;
+                    lines[introIdx] += intro;
+                    cLang.finalRenderEx(substmts, indent + '    ', lines, neededLabels);
+                    if(lines.length > introIdx + 2) {
+                        if(lines[introIdx])
+                            lines[introIdx] += ' ';
+                        lines[introIdx] += '{';
+                        lines.push(indent + '}');
+                        lastWasCloseBrace = true;
+                    }
+                }
+            } else {
+                lines.push(indent + stmt.text);
+            }
+        }
+    },
+    label: name => ({'stmt': true, 'label': name, 'text': name + ':;'}),
+    goto_: (name, extra) => ({'stmt': true, 'goto_': name, 'text': 'goto ' + name + ';' + extra}),
+};
+
+let rustLang = {};
+let lang = cLang;
+
+
 let indentStep = '    ';
 function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
-    let bits = [];
     let patternify = n => data.pattern.replace(/XXX/g, n);
-    let push = x => bits.push(indent + x);
     if(node.fail) {
-        push('return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
+        return gotoOrGen(data, '_unidentified', '', () =>
+            lang.return_(patternify('unidentified') + '(' + data.extraArgs + ')'));
     } else if(node.insn) {
         let insn = node.insn;
         let unknown = insn.instDependsMask & ~node.knownMask;
+        let f = next => next;
         if(unknown && !skipConstraintTest) {
-            push('if (!(' + genConstraintTest(insn, unknown, indent + '      ') + '))', false);
-            push('    return ' + patternify('unidentified') + '(' + data.extraArgs + ');');
+            f = next => [
+                lang.if_(lang.not(genConstraintTest(insn, unknown)),
+                         gotoOrGen(data, '_unidentified', '', () =>
+                            lang.return_(patternify('unidentified') + '(' + data.extraArgs + ')'))),
+                next
+            ];
         }
         // ok, it's definitely this instruction
         let name = insn.groupName || insn.name;
         let label = 'insn_' + name;
         let hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
-        if(data.seen[label]) {
-            push('goto ' + label + '; /* ' + hexComment + ' */');
-            data.seen[label]++;
-        } else {
+        return f(gotoOrGen(data, label, hexComment, () => {
             let runsByOp = instToOpRuns(insn.inst);
             let args = [data.extraArgs];
             let funcName = patternify(name);
-            push('LABEL ' + label + '');
-            data.seen[label] = 1;
+            let out = [lang.label(label)];
             for(let op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
-                push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
+                out.push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
                 args.push(op);
             }
-            push('return ' + funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */');
             // be helpful
             if(data.prototypes) {
                 let prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
                 data.prototypes[prototype] = null;
             }
-        }
+            out.push(lang.return_(funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */'));
+            return out;
+        }));
     } else if(node.isBinary) {
         let insn = node.buckets[0].insn;
         let unknown = insn.instConstrainedMask & ~node.knownMask;
-        let test = 'if ((op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
-        if(unknown) {
-            test += genConstraintTest(insn, unknown, indent + '    ', true);
-            test += ') { /* binary + constraints, yay */';
-        } else {
-            test += ') {';
-        }
-        push(test);
-        bits.push(tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true));
-        push('} else {');
-        bits.push(tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
-        push('}');
+        let test = '(op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
+        if(unknown)
+            test = lang.and(test, genConstraintTest(insn, unknown, indent + '    ', true));
+        return lang.if_(test,
+            tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true),
+            tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
     } else {
-        push('switch ((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1) + ') {');
-        let buckets = node.buckets.slice(0);
+        let switchOn = '((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
+        let cases = [];
         let ncases = 0;
+        let buckets = node.buckets.slice(0);
         for(let i = 0; i < buckets.length; i++) {
             let subnode = buckets[i];
             if(subnode === null)
                 continue;
-            push('case ' + i + ':');
+            let thisCases = [i];
             ncases++;
             for(let j = i + 1; j < buckets.length; j++) {
                 if(buckets[j] === subnode) {
-                    push('case ' + j + ':');
+                    thisCases.push(j);
                     ncases++;
                     buckets[j] = null;
                 }
             }
-            let rec = tableToSimpleCRec(subnode, data, indent + indentStep);
-            if(rec.indexOf('\n') !== -1) {
-                bits[bits.length - 1] += ' {';
-                bits.push(rec);
-                push('}');
-            } else {
-                bits.push(rec);
-            }
+            cases.push([thisCases, tableToSimpleCRec(subnode, data, indent + indentStep)]);
         }
         if((1 << node.length) != ncases)
             throw new Error('bad buckets length'); // just to be sure
-        push('}');
+        return lang.switch_(switchOn, cases);
     }
-    return bits.join('\n');
 }
 
 function tableToSimpleC(node, pattern, extraArgs) {
@@ -642,14 +762,7 @@ function tableToSimpleC(node, pattern, extraArgs) {
         useGoto: true,
     };
     let ret = tableToSimpleCRec(node, data, indentStep);
-    ret = ret.replace(/\n[^\n]*LABEL ([^\n]+)/g, m => {
-        let bits = m.split('LABEL ');
-        let whitespace = bits[0], lbl = bits[1];
-        if(data.seen[lbl] > 1)
-            return whitespace + lbl + ':;';
-        else
-            return '';
-    });
+    ret = lang.finalRender('    ', ret);
     let ps = '\n';
     let protoNames = [];
     for(let proto in data.prototypes)
@@ -852,12 +965,12 @@ function checkLengths(insns) {
             continue;
         }
 
-        if (!good) {
+        if(!good) {
             console.log('checkLengths: Strange instruction ' + insn.name + '(' + insn.inst.length + ';' + insn.decoderNamespace + ')');
             bad = true;
         }
     }
-    if (bad)
+    if(bad)
         throw 'bad';
 }
 

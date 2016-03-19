@@ -4,7 +4,14 @@ RUSTC := rustc
 TARGET :=
 
 ifneq ($(USE_LLVM),)
-LLVM := /usr/src/rust/src/llvm
+    ifeq ($(USE_LLVM),1)
+        NODE := node --harmony --use_strict --harmony_destructuring
+        LLVM := /usr/src/rust/src/llvm
+    else ifeq ($(USE_LLVM),0)
+        override USE_LLVM=
+    else
+        $(error USE_LLVM should be blank, 0, or 1)
+    endif
 endif
 
 override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
@@ -41,7 +48,8 @@ else
 TARGET_DIR := $(CURDIR)/target
 endif
 
-$(shell mkdir -p $(OUT))
+OUT_COMMON := ./out-common
+$(shell mkdir -p $(OUT) $(OUT_COMMON))
 cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
@@ -90,11 +98,11 @@ tables/llvm-tblgen: tables/build-tblgen.sh $(LLVM)
 
 LLVM_TARGETS := X86/X86 ARM/ARM Sparc/Sparc Mips/Mips AArch64/AArch64 PowerPC/PPC
 define td_target_
-$(OUT)/out-$(1).td: $(LLVM)/lib/Target/$(1) $(LLVM) tables/llvm-tblgen
+$(OUT_COMMON)/out-$(1).td: $(LLVM)/lib/Target/$(1) $(LLVM) tables/llvm-tblgen
 	tables/llvm-tblgen -I$(LLVM)/include -I$$< $$</$(2).td -o $$@
-$(OUT)/out-$(1).json: $(OUT)/out-$(1).td tables/untable.js tables/untable.peg
-	node tables/untable.js $$< $$@
-out-td: $(OUT)/out-$(1).td $(OUT)/out-$(1).json
+$(OUT_COMMON)/out-$(1).json: $(OUT_COMMON)/out-$(1).td tables/untable.js tables/untable.peg
+	$(NODE) tables/untable.js $$< $$@
+out-td: $(OUT_COMMON)/out-$(1).td $(OUT_COMMON)/out-$(1).json
 endef
 td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
