@@ -549,10 +549,23 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 function gotoOrGen(data, label, comment, gen) {
     comment = comment ? (' /* '+comment+' */') : '';
     if(lang instanceof RustLang) {
-        return gen();
+        // lol
+        if(!data.seen[label]) {
+            data.prefixLines.push("    '"+label+': loop {');
+            let action = lang.finalRender('        ', gen(), /*mayImplicitlyReturn*/ false);
+            data.suffixLines = [].concat.apply([], [
+                ["    } // '" + label,
+                 '    /* action */ {'],
+                action,
+                ['    }'],
+                data.suffixLines
+            ]);
+            data.seen[label] = true;
+        }
+        return "break '" + label + ';';
     } else {
         if(data.seen[label]) {
-            data.seen[label]++;
+            //data.seen[label]++;
             return lang.goto_(label, comment);
         } else {
             data.seen[label] = 1;
@@ -640,7 +653,7 @@ class CLang extends SuperLang {
         let neededLabels = {};
         this.scanLabels(stmtList, neededLabels);
         this.finalRenderEx(stmtList, indent, lines, neededLabels);
-        return lines.join('\n');
+        return lines;
     }
     scanLabels(stmtList, neededLabels) {
         stmtList = this.stmtList(stmtList);
@@ -731,7 +744,7 @@ class RustLang extends SuperLang {
     finalRender(indent, stmtList, mayImplicitlyReturn) {
         let lines = [];
         this.finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn);
-        return lines.join('\n');
+        return lines;
     }
     finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn, isSilentGroupOfLast) {
         if(mayImplicitlyReturn === undefined) throw '!';
@@ -879,10 +892,13 @@ function tableToSimpleC(node, pattern, extraArgs) {
         extraArgs: extraArgs,
         prototypes: {},
         seen: {},
-        useGoto: true,
+        // for rust
+        prefixLines: [],
+        suffixLines: [],
     };
     let ret = tableToSimpleCRec(node, data, indentStep);
     ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
+    ret = data.prefixLines.concat(ret).concat(data.suffixLines).join('\n')
     let ps = '\n';
     let protoNames = [];
     for(let proto in data.prototypes)
