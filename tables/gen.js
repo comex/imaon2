@@ -548,54 +548,29 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
 
 function gotoOrGen(data, label, comment, gen) {
     comment = comment ? (' /* '+comment+' */') : '';
-    if(lang === rustLang) {
-
+    if(lang instanceof RustLang) {
+        return gen();
     } else {
         if(data.seen[label]) {
             data.seen[label]++;
             return lang.goto_(label, comment);
         } else {
             data.seen[label] = 1;
-            return gen();
+            return [lang.label(label)].concat(gen());
         }
     }
 }
 
-let cLang = {
-    switch_: (expr, cases) => {
-        let stmts = ['switch (' + cLang.render(expr) + ') {'];
-        for(let [whens, what] of cases) {
-            let runs = pairsToRuns(whens.map(when => [when, when]));
-            for (let [start, _, len] of runs)
-                stmts.push('case ' + (len == 1 ? start : (start + ' ... ' + (start + len - 1))) + ':');
-            let i = stmts.length-1;
-            stmts[i] = cLang.hangingBlockChain([[stmts[i], what]]);
-        }
-        stmts.push('}');
-        return stmts;
-    },
-    if_: (cond, then, else_) => {
-        let chain = [['if (' + cLang.render(cond) + ')', then]];
-        if(else_ !== undefined)
-            chain.push(['else', else_]);
-        return cLang.hangingBlockChain(chain);
-    },
-    not_: expr => cLang.unary('!', expr),
-    and: (a, b) => cLang.binary(13, '&&', a, b),
+class SuperLang {
+    comment(comment, hanging) {
+        return {'stmt': true, 'comment': true, 'text': comment, 'hangingOnFollowing': hanging || false};
+    }
 
-    return_: expr => cLang.stmt('return ' + cLang.render(expr) + ';'),
-
-    unary: (prefix, expr) => cLang.expr(3, null, prefix + cLang.renderEx(3, null, expr)),
-    binary: (precedence, infix, a, b) =>
-        cLang.expr(precedence, infix,
-            cLang.renderEx(precedence, null, a) + ' ' + infix + ' ' +
-            cLang.renderEx(precedence, infix, b)),
-
-    render: x => cLang.renderEx(99, null, x),
-    renderEx: (precedence, rightSideOf, expr) => {
+    render(x) { return this.renderEx(99, null, x); }
+    renderEx(precedence, rightSideOf, expr) {
         if(expr.charCodeAt) {
             let prec = expr.match(/^[a-zA-Z0-9_\.]+$/) ? 1 : 98;
-            expr = cLang.expr(prec, null, expr);
+            expr = this.expr(prec, null, expr);
         }
         if(expr.precedence === undefined || expr.stmt)
             throw 'not expr or string';
@@ -606,44 +581,85 @@ let cLang = {
             return expr.text;
         else
             return '(' + expr.text + ')';
-    },
+    }
+    not_(expr) { return this.unary('!', expr); }
+    and(a, b) { return this.binary(13, '&&', a, b); }
 
-    expr: (precedence, infixChainEndingIn, text) =>
-        ({precedence: precedence, infixChainEndingIn, text}),
-    stmt: stmt => {
+    unary(prefix, expr) {
+        return this.expr(3, null, prefix + this.renderEx(3, null, expr));
+    }
+    binary(precedence, infix, a, b) {
+        return this.expr(precedence, infix,
+            this.renderEx(precedence, null, a) + ' ' + infix + ' ' +
+            this.renderEx(precedence, infix, b));
+    }
+
+    expr(precedence, infixChainEndingIn, text) {
+        return {precedence: precedence, infixChainEndingIn, text};
+    }
+    stmt(stmt) {
         if(stmt.charCodeAt)
             stmt = {text: stmt};
         else if(stmt.precedence !== undefined)
             stmt.text += ';';
         stmt.stmt = true;
         return stmt;
-    },
-    stmtList: stmts => Array.isArray(stmts) ? stmts : [stmts],
+    }
+    stmtList(stmts) {
+        return Array.isArray(stmts) ? stmts : [stmts];
+    }
+    hangingBlockChain(chain) {
+        return this.stmt({'hangingBlockChain': true, 'chain': chain});
+    }
+    label(name) { throw 'no label'; }
+    goto_(name, extra) { throw 'no goto'; }
+}
 
-    hangingBlockChain: chain =>
-        cLang.stmt({'hangingBlockChain': true, 'chain': chain}),
-    finalRender: (indent, stmtList) => {
+class CLang extends SuperLang {
+    return_(expr) { return this.stmt('return ' + this.render(expr) + ';') }
+    switch_(expr, cases) {
+        let stmts = ['switch (' + this.render(expr) + ') {'];
+        for(let [whens, what] of cases) {
+            let runs = pairsToRuns(whens.map(when => [when, when]));
+            for (let [start, _, len] of runs)
+                stmts.push('case ' + (len == 1 ? start : (start + ' ... ' + (start + len - 1))) + ':');
+            let i = stmts.length-1;
+            stmts[i] = this.hangingBlockChain([[stmts[i], what]]);
+        }
+        stmts.push('}');
+        return stmts;
+    }
+    if_(cond, then, else_) {
+        let chain = [['if (' + this.render(cond) + ')', then]];
+        if(else_ !== undefined)
+            chain.push(['else', else_]);
+        return this.hangingBlockChain(chain);
+    }
+    finalRender(indent, stmtList) {
         let lines = [];
         let neededLabels = {};
-        cLang.scanLabels(stmtList, neededLabels);
-        cLang.finalRenderEx(stmtList, indent, lines, neededLabels);
+        this.scanLabels(stmtList, neededLabels);
+        this.finalRenderEx(stmtList, indent, lines, neededLabels);
         return lines.join('\n');
-    },
-    scanLabels: (stmtList, neededLabels) => {
-        stmtList = cLang.stmtList(stmtList);
+    }
+    scanLabels(stmtList, neededLabels) {
+        stmtList = this.stmtList(stmtList);
         for (let stmt of stmtList) {
             if(stmt.goto_)
                 neededLabels[stmt.goto_] = true;
             else if(stmt.hangingBlockChain) {
                 for (let [intro, substmts] of stmt.chain)
-                    cLang.scanLabels(substmts, neededLabels);
+                    this.scanLabels(substmts, neededLabels);
             }
         }
-    },
-    finalRenderEx: (stmtList, indent, lines, neededLabels) => {
-        stmtList = cLang.stmtList(stmtList);
+    }
+    finalRenderEx(stmtList, indent, lines, neededLabels) {
+        stmtList = this.stmtList(stmtList);
+        let hangingComment = null;
         for (let stmt of stmtList) {
-            stmt = cLang.stmt(stmt);
+            let lastHangingComment = hangingComment;
+            hangingComment = null;
+            stmt = this.stmt(stmt);
             if(stmt.label !== undefined && !neededLabels[stmt.label])
                 continue;
             let linesLength = lines.length;
@@ -656,7 +672,7 @@ let cLang = {
                         lines[lines.length-1] += ' ';
                     let introIdx = lines.length - 1;
                     lines[introIdx] += intro;
-                    cLang.finalRenderEx(substmts, indent + '    ', lines, neededLabels);
+                    this.finalRenderEx(substmts, indent + '    ', lines, neededLabels);
                     if(lines.length > introIdx + 2) {
                         if(lines[introIdx])
                             lines[introIdx] += ' ';
@@ -665,17 +681,120 @@ let cLang = {
                         lastWasCloseBrace = true;
                     }
                 }
+            } else if(stmt.comment) {
+                let text = '/* ' + stmt.text + ' */';
+                if(stmt.hangingOnFollowing)
+                    hangingComment = text;
+                else
+                    lines.push(indent + text);
             } else {
                 lines.push(indent + stmt.text);
             }
+            if(lastHangingComment !== null)
+                lines[lines.length-1] += ' ' + lastHangingComment;
         }
-    },
-    label: name => ({'stmt': true, 'label': name, 'text': name + ':;'}),
-    goto_: (name, extra) => ({'stmt': true, 'goto_': name, 'text': 'goto ' + name + ';' + extra}),
-};
+    }
+    label(name) {
+        return {'stmt': true, 'label': name, 'text': name + ':;'};
+    }
+    goto_(name, extra) {
+        return {'stmt': true, 'goto_': name, 'text': 'goto ' + name + ';' + extra};
+    }
+}
+class RustLang extends SuperLang {
+    return_(expr) {
+        return {'stmt': 'true', 'isReturn': true,
+                'text': this.render(expr)};
+    }
+    switch_(expr, cases) {
+        let stmts = ['match ' + expr + ' {'];
+        for(let [whens, what] of cases) {
+            let runs = pairsToRuns(whens.map(when => [when, when]));
+            let pat = [];
+            for(let [start, _, len] of runs)
+                pat.push(len == 1 ? (start+'') : (start + '...' + (start+len-1)));
+            let left = pat.join(' | ') + ' =>';
+            what = this.stmtList(what);
+            stmts.push({'stmt': 'true', 'matchCase': true,
+                        'left': left, 'right': what});
+        }
+        stmts.push('}');
+        return {'stmt': true, 'silentGroup': true, 'stmts': stmts};
+    }
+    if_(cond, then, else_) {
+        let inheritsReturn = else_ !== undefined;
+        let chain = [['if ' + this.render(cond), then, inheritsReturn]];
+        if(else_ !== undefined)
+            chain.push(['else', else_, inheritsReturn]);
+        return this.hangingBlockChain(chain);
+    }
+    finalRender(indent, stmtList, mayImplicitlyReturn) {
+        let lines = [];
+        this.finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn);
+        return lines.join('\n');
+    }
+    finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn, isSilentGroupOfLast) {
+        if(mayImplicitlyReturn === undefined) throw '!';
+        stmtList = this.stmtList(stmtList);
+        let hangingComment = null;
+        for (let i = 0; i < stmtList.length; i++) {
+            let stmt = stmtList[i];
+            stmt = this.stmt(stmt);
+            let lastHangingComment = hangingComment;
+            hangingComment = null;
+            let isLast = i == stmtList.length - 1 || isSilentGroupOfLast;
+            if(stmt.hangingBlockChain) {
+                let lastWasCloseBrace = false;
+                for (let [intro, substmts, inheritsReturn] of stmt.chain) {
+                    if(inheritsReturn === undefined) throw '!';
+                    if(!lastWasCloseBrace)
+                        lines.push(indent);
+                    else if(intro)
+                        lines[lines.length-1] += ' ';
+                    let introIdx = lines.length - 1;
+                    lines[introIdx] += intro + ' {';
+                    let subMIR = mayImplicitlyReturn && inheritsReturn && isLast;
+                    this.finalRenderEx(substmts, indent + '    ', lines, subMIR, false);
+                    lines.push(indent + '}');
+                    lastWasCloseBrace = true;
+                }
+            } else if(stmt.matchCase) {
+                let introIdx = lines.length;
+                lines.push(indent + '    ' + stmt.left);
+                let subMIR = mayImplicitlyReturn && isLast;
+                let xindent = indent + '        ';
+                this.finalRenderEx(stmt.right, xindent, lines, subMIR, false);
+                if(lines.length > introIdx + 2) {
+                    lines[introIdx] += ' {';
+                    lines.push(indent + '    }');
+                } else if(lines.length == introIdx + 2) {
+                    lines[introIdx] += ' ' + lines[introIdx+1].substr(xindent.length);
+                    lines.splice(introIdx+1);
+                }
+                lines[lines.length - 1] += ',';
+            } else if(stmt.silentGroup) {
+                this.finalRenderEx(stmt.stmts, indent, lines, mayImplicitlyReturn, isLast);
+            } else if(stmt.isReturn) {
+                if(mayImplicitlyReturn && isLast)
+                    lines.push(indent + stmt.text);
+                else
+                    lines.push(indent + 'return ' + stmt.text + ';');
+            } else if(stmt.comment) {
+                let text = '// ' + stmt.text;
+                if(stmt.hangingOnFollowing)
+                    hangingComment = text;
+                else
+                    lines.push(indent + text);
+            } else {
+                lines.push(indent + stmt.text);
+            }
+            if(lastHangingComment !== null)
+                lines[lines.length-1] += ' ' + lastHangingComment;
+        }
+    }
+}
 
-let rustLang = {};
-let lang = cLang;
+let lang = new CLang();
 
 
 let indentStep = '    ';
@@ -704,7 +823,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             let runsByOp = instToOpRuns(insn.inst);
             let args = [data.extraArgs];
             let funcName = patternify(name);
-            let out = [lang.label(label)];
+            let out = [];
             for(let op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
                 out.push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
@@ -715,7 +834,8 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
                 let prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
                 data.prototypes[prototype] = null;
             }
-            out.push(lang.return_(funcName + '(' + args.join(', ') + '); /* ' + hexComment + ' */'));
+            out.push(lang.comment(hexComment, /*hangingOnFollowing*/ true));
+            out.push(lang.return_(funcName + '(' + args.join(', ') + ')'));
             return out;
         }));
     } else if(node.isBinary) {
@@ -762,7 +882,7 @@ function tableToSimpleC(node, pattern, extraArgs) {
         useGoto: true,
     };
     let ret = tableToSimpleCRec(node, data, indentStep);
-    ret = lang.finalRender('    ', ret);
+    ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
     let ps = '\n';
     let protoNames = [];
     for(let proto in data.prototypes)
@@ -989,6 +1109,7 @@ let getopt = require('node-getopt').create([
     ['',  'dis-pattern=PATTERN', 'Pattern for function names from generated disassemblers, where XXX is replaced with our name'],
     ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
     ['',  'print-insns', 'Just print them'],
+    ['l', 'out-lang=LANG', 'Output language (C, Rust)'],
     ['h', 'help', 'help'],
 ]).bindHelp();
 getopt.setHelp(getopt.getHelp().replace('\n', ' input-file\n'));
@@ -1022,6 +1143,15 @@ for(let insn of insns) {
 }
 
 checkLengths(insns);
+
+
+if(opt.options['out-lang']) {
+    switch(opt.options['out-lang']) {
+        case 'c': lang = new CLang(); break;
+        case 'rust': lang = new RustLang(); break;
+        default: throw 'invalid out-lang';
+    }
+}
 
 let ns = '*';
 if(typeof opt.options['namespace'] !== 'undefined') {
