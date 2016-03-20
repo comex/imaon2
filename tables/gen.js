@@ -497,9 +497,16 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
     return parts.join(' | ');
 }
 
-function opRunsToBitsliceLiteral(runs, reverse) {
-    let runLits = runs.map(run => '{'+run+'}');
-    return '{.nruns = ' + runs.length + ', .runs = (struct bitslice_run[]) {' + runLits.join(', ') + '}}';
+function opRunsToBitsliceLiteral(name, runs) {
+    if(lang instanceof RustLang) {
+        while(runs.length < 5)
+            runs.push([0,0,0]);
+        let runLits = runs.map(run => `Run(${run})`);
+        return `let ${name} = Bitslice { runs: [${runLits.join(', ')}] };`;
+    } else {
+        let runLits = runs.map(run => '{'+run+'}');
+        return `struct bitslice ${name} = {.nruns = ${runs.length}, .runs = (struct bitslice_run[]) {${runLits.join(', ')}}};`;
+    }
 }
 
 function genGeneratedWarning() {
@@ -523,7 +530,7 @@ function genGeneratedWarning() {
 `;
 }
 
-function genConstraintTest(insn, unknown, indent, andandFirstToo) {
+function genConstraintTest(insn, unknown) {
     let ceb = insn.instConstrainedEqualBits;
     let pairs = [];
     for(let lo in ceb) {
@@ -534,16 +541,17 @@ function genConstraintTest(insn, unknown, indent, andandFirstToo) {
         }
     }
     let runs = pairsToRuns(pairs);
-    let out = '';
+    let test = null;
     for(let run of runs) {
         let mask = (1 << run[2]) - 1;
         let part = '((op >> ' + run[0] + ') & 0x' + hexnopad(mask) + ') == ' +
                    '((op >> ' + run[1] + ') & 0x' + hexnopad(mask) + ')';
-        if(out || andandFirstToo)
-            out += ' &&\n' + indent;
-        out += part;
+        if(test !== null)
+            test = lang.and(test, part);
+        else
+            test = part;
     }
-    return out;
+    return test;
 }
 
 function gotoOrGen(data, label, comment, gen) {
@@ -562,7 +570,7 @@ function gotoOrGen(data, label, comment, gen) {
             ]);
             data.seen[label] = true;
         }
-        return "break '" + label + ';';
+        return "break '" + label;
     } else {
         if(data.seen[label]) {
             //data.seen[label]++;
@@ -725,11 +733,14 @@ class RustLang extends SuperLang {
             let pat = [];
             for(let [start, _, len] of runs)
                 pat.push(len == 1 ? (start+'') : (start + '...' + (start+len-1)));
-            let left = pat.join(' | ') + ' =>';
+            let left = pat.join(' | ');
             what = this.stmtList(what);
             stmts.push({'stmt': 'true', 'matchCase': true,
                         'left': left, 'right': what});
         }
+        // for now, Rust doesn't understand exhaustive integer alternatives
+        stmts.push({'stmt': 'true', 'matchCase': true,
+                    'left': '_', 'right': 'unreachable()'});
         stmts.push('}');
         return {'stmt': true, 'silentGroup': true, 'stmts': stmts};
     }
@@ -772,7 +783,7 @@ class RustLang extends SuperLang {
                 }
             } else if(stmt.matchCase) {
                 let introIdx = lines.length;
-                lines.push(indent + '    ' + stmt.left);
+                lines.push(indent + '    ' + stmt.left + ' =>');
                 let subMIR = mayImplicitlyReturn && isLast;
                 let xindent = indent + '        ';
                 this.finalRenderEx(stmt.right, xindent, lines, subMIR, false);
@@ -838,7 +849,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             let out = [];
             for(let op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
-                out.push('struct bitslice ' + op + ' = ' + opRunsToBitsliceLiteral(runsByOp[op], 'op', false) + ';');
+                out.push(opRunsToBitsliceLiteral(op, runsByOp[op]));
                 args.push(op);
             }
             // be helpful
@@ -855,12 +866,12 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
         let unknown = insn.instConstrainedMask & ~node.knownMask;
         let test = '(op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
         if(unknown)
-            test = lang.and(test, genConstraintTest(insn, unknown, indent + '    ', true));
+            test = lang.and(test, genConstraintTest(insn, unknown));
         return lang.if_(test,
             tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true),
             tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
     } else {
-        let switchOn = '((op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
+        let switchOn = '(op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
         let cases = [];
         let ncases = 0;
         let buckets = node.buckets.slice(0);
@@ -1142,7 +1153,7 @@ let inputInsns = input.instructions;
 
 let insns = inputInsns.filter(insn => insn.instKnownMask != 0);
 
-var specialCases = {
+let specialCases = {
     t2IT: (insn) => {
         // For some dumb reason this is marked as 32-bit despite being 16-bit.
         insn.decoderNamespace = 'Thumb';
@@ -1152,7 +1163,7 @@ var specialCases = {
     tBLXi: (insn) => insn.decoderNamespace = 'Thumb2',
 }
 for(let insn of insns) {
-    var sc;
+    let sc;
     if(sc = specialCases[insn.name])
         sc(insn);
 }
@@ -1204,12 +1215,12 @@ if(opt.options['gen-disassembler']) {
     console.log(ppTable(node));
 }
 if(opt.options['gen-hook-disassembler']) {
-    genHookDisassembler(true);
-}
-if(opt.options['gen-hook-jump-disassembler']) {
     genHookDisassembler(false);
 }
-function genHookDisassembler(includeNonJumps) {
+if(opt.options['gen-hook-jump-disassembler']) {
+    genHookDisassembler(true);
+}
+function genHookDisassembler(onlyStatic) {
     let cantBePcModes = {
         // Thumb (most of the modes, for obvious reasons)
         't_addrmode_is4': true,
@@ -1231,62 +1242,72 @@ function genHookDisassembler(includeNonJumps) {
             return null;
         }
         let isBranch = insn.isBranch;
-        /*
-        if(includeNonJumps) {
-            if(isBranch)
-                ;
-            else if(isInterestingLoad) {
-                // force Rt to 15, xxx i'm not using this for now
-            } else
-                return null;
-        }
-        */
-        if(!isBranch && !includeNonJumps)
-            return null;
         let isAdd = !!insn.name.match(/^[^A-Z]*AD[DR]/);
         let isMov = !!insn.name.match(/^[^A-Z]*MOV/);
         let isLoad = !!insn.name.match(/^[^A-Z]*(LD|POP)/);
         let isStore = !!insn.name.match(/^[^A-Z]*(ST|PUSH)/);
         let isArmv8 = insn.namespace == 'AArch64';
+        let mayBeEffectiveBranch = isBranch; // unused
+
         let interestingVars = {}; // vn -> num bits
+        let interestingWrites = []; // see onlyStatic
         insn.inst.forEach((bit, i) => {
             // this is currently ARM specific, obviously
             if(!Array.isArray(bit))
                 return;
             let interesting;
             switch(insn.namespace) {
-            case 'ARM':
-                interesting =
-                    bit[0] == 'addr' ||
-                    bit[0] == 'offset' ||
-                    bit[0] == 'label' ||
-                    ((isAdd || isMov || isStore || isLoad) && (bit[0].match(/^Rd?[nm]?$/) || bit[0] == 'shift')) ||
-                    (isBranch && (bit[0] == 'target' || bit[0] == 'Rm' || bit[0] == 'dst')) ||
-                    ((isStore || isLoad) && bit[0] == 'regs') ||
-                    bit[0] == 'Rt' ||
-                    insn.name == 't2IT' ||
-                    (bit[0] == 'p' && insn.name.match(/Bcc/)) ||
-                    bit[0] == 'func'; /* get calls */
+            case 'ARM': {
+                let interestingAddrRef = 
+                        (isBranch && (bit[0] == 'target' || bit[0] == 'func')) ||
+                        bit[0] == 'label' ||
+                        bit[0] == 'addr';
+                let interestingIndirectBranch = isBranch && (bit[0] == 'Rm' || bit[0] == 'dst');
+                let interestingWrite =
+                    (isLoad && bit[0] == 'Rt') ||
+                    bit[0].match(/^Rd/);
+                if(onlyStatic)
+                    interesting = interestingAddrRef || interestingWrite;
+                else
+                    interesting = interestingAddrRef || interestingIndirectBranch ||
+                        bit[0] == 'offset' ||
+                        ((isAdd || isMov || isStore || isLoad) && (bit[0].match(/^Rd?[nm]?$/) || bit[0] == 'shift')) ||
+                        ((isStore || isLoad) && bit[0] == 'regs') ||
+                        bit[0] == 'Rt' ||
+                        insn.name == 't2IT' ||
+                        (bit[0] == 'p' && insn.name.match(/Bcc/));
+                if(onlyStatic && interestingWrite) {
+                    mayBeEffectiveBranch = true;
+                    interestingWrites.push(i);
+                }
                 break;
-            case 'AArch64':
+            }
+            case 'AArch64': {
                 // yay, highly restricted use of PC
-                interesting = bit[0] == 'label' || bit[0] == 'addr' ||
-                    (isBranch && (bit[0] == 'target' || bit[0] == 'cond')) ||
-                    (insn.name.match(/^(LDR.*l|ADRP?)$/) && (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
-                    (insn.name.match(/^(RET|BLR)$/) && bit[0] == 'Rn');
+                let interestingAddrRef = bit[0] == 'label' || bit[0] == 'addr' ||
+                    (isBranch && (bit[0] == 'target' || bit[0] == 'cond'));
+                if(onlyStatic)
+                    interesting = interestingAddrRef;
+                else
+                    interesting = interestingAddrRef ||
+                        (insn.name.match(/^(LDR.*l|ADRP?)$/) &&
+                            (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
+                        (insn.name.match(/^(RET|BLR)$/) && bit[0] == 'Rn');
                 break;
+            }
             default:
                 throw 'unknown namespace';
             }
             if(interesting)
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
         });
+
         visitDag(insn.inOperandList, tuple => {
             if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
                 delete interestingVars[tuple[2].substr(1)];
         });
         if(insn.namespace == 'ARM') {
-            // pointless special case - yay thumb
+            // pointless special case optimization for when it can't involve PC - yay thumb
             let haveAnyNonR3s = false;
             for(let vn in interestingVars) {
                 if(!(vn[0] == 'R' && interestingVars[vn] < 4)) {
@@ -1296,6 +1317,11 @@ function genHookDisassembler(includeNonJumps) {
             }
             if(!haveAnyNonR3s)
                 return null;
+        }
+        if(onlyStatic && interestingWrites.length == 4) {
+            // only one target and 4 bits, so it must be all 1s
+            for(let i of interestingWrites)
+                insn.inst[i] = '1'; // PC = all 1s
         }
         insn.inst.forEach((bit, i) => {
             if(Array.isArray(bit) && !interestingVars[bit[0]])

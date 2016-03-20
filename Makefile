@@ -103,11 +103,18 @@ $(OUT_COMMON)/out-$(1).td: $(LLVM)/lib/Target/$(1) $(LLVM) tables/llvm-tblgen
 $(OUT_COMMON)/out-$(1).json: $(OUT_COMMON)/out-$(1).td tables/untable.js tables/untable.peg
 	$(NODE) tables/untable.js $$< $$@
 out-td: $(OUT_COMMON)/out-$(1).td $(OUT_COMMON)/out-$(1).json
+
 endef
 td_target = $(call td_target_,$(word 1,$(1)),$(word 2,$(1)))
 $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))))
 all: out-td
-endif
+
+
+GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-hook-disassembler --dis-pattern='self.XXX' --out-lang=rust
+$(OUT_COMMON)/jump-dis-arm.inc.rs: $(OUT_COMMON)/out-ARM.json tables/gen.js
+	$(GEN_JUMP_DIS) -n _arm $< > $@ || rm -f $@
+
+endif # end USE_LLVM
 
 DYLD_THING_FOR_LIBCLANG  := \
 	DYLD_LIBRARY_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib:$$DYLD_LIBRARY_PATH
