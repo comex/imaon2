@@ -633,9 +633,8 @@ class CLang extends SuperLang {
     switch_(expr, cases) {
         let stmts = ['switch (' + this.render(expr) + ') {'];
         for(let [whens, what] of cases) {
-            let runs = pairsToRuns(whens.map(when => [when, when]));
-            for (let [start, _, len] of runs)
-                stmts.push('case ' + (len == 1 ? start : (start + ' ... ' + (start + len - 1))) + ':');
+            for (let when of whens)
+                stmts.push('case ' + when + ':');
             let i = stmts.length-1;
             stmts[i] = this.hangingBlockChain([[stmts[i], what]]);
         }
