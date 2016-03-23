@@ -6,6 +6,7 @@ let path = require('path');
 //    (but ES6 Map is *less* efficient!?)
 let HashMap = require('hashmap').HashMap;
 let child_process = require('child_process');
+let survey = {};
 
 function hex(n, len) {
     let s = '';
@@ -498,7 +499,7 @@ function opRunsToExtractionFormula(runs, inExpr, reverse) {
 }
 
 function opRunsToBitsliceLiteral(name, runs) {
-    if(lang instanceof RustLang) {
+    if(lang.isRust) {
         while(runs.length < 5)
             runs.push([0,0,0]);
         let runLits = runs.map(run => `Run(${run})`);
@@ -556,7 +557,7 @@ function genConstraintTest(insn, unknown) {
 
 function gotoOrGen(data, label, comment, gen) {
     comment = comment ? (' /* '+comment+' */') : '';
-    if(lang instanceof RustLang) {
+    if(lang.isRust) {
         // lol
         if(!data.seen[label]) {
             data.prefixLines.push("    '"+label+': loop {');
@@ -570,11 +571,14 @@ function gotoOrGen(data, label, comment, gen) {
             ]);
             data.seen[label] = true;
         }
-        return "break '" + label;
+        return "break '" + label + comment;
     } else {
         if(data.seen[label]) {
             //data.seen[label]++;
-            return lang.goto_(label, comment);
+            return [
+                lang.comment(comment, /*hangingOnFollowing*/ true),
+                lang.goto_(label)
+            ];
         } else {
             data.seen[label] = 1;
             return [lang.label(label)].concat(gen());
@@ -702,11 +706,13 @@ class CLang extends SuperLang {
                     }
                 }
             } else if(stmt.comment) {
-                let text = '/* ' + stmt.text + ' */';
-                if(stmt.hangingOnFollowing)
-                    hangingComment = text;
-                else
-                    lines.push(indent + text);
+                if (stmt.text) {
+                    let text = '/* ' + stmt.text + ' */';
+                    if(stmt.hangingOnFollowing)
+                        hangingComment = text;
+                    else
+                        lines.push(indent + text);
+                }
             } else {
                 lines.push(indent + stmt.text);
             }
@@ -817,15 +823,18 @@ class RustLang extends SuperLang {
     }
 }
 
-let lang = new CLang();
+RustLang.prototype.isRust = true;
+CLang.prototype.isRust = false;
 
+let lang = new CLang();
 
 let indentStep = '    ';
 function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
-    let patternify = n => data.pattern.replace(/XXX/g, n);
+    let patternifyForDef = n => data.pattern.replace(/XXX/g, n);
+    let patternifyForCall = lang.isRust ? (n => 'h.'+patternifyForDef(n)) : patternifyForDef;
     if(node.fail) {
         return gotoOrGen(data, '_unidentified', '', () =>
-            lang.return_(patternify('unidentified') + '(' + data.extraArgs + ')'));
+            lang.return_(patternifyForCall('unidentified') + '(' + data.extraArgs + ')'));
     } else if(node.insn) {
         let insn = node.insn;
         let unknown = insn.instDependsMask & ~node.knownMask;
@@ -834,9 +843,8 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             f = next => [
                 lang.if_(lang.not(genConstraintTest(insn, unknown)),
                          gotoOrGen(data, '_unidentified', '', () =>
-                            lang.return_(patternify('unidentified') + '(' + data.extraArgs + ')'))),
-                next
-            ];
+                            lang.return_(patternifyForCall('unidentified') + '(' + data.extraArgs + ')'))),
+            ].concat(next)
         }
         // ok, it's definitely this instruction
         let name = insn.groupName || insn.name;
@@ -844,8 +852,8 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
         let hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
         return f(gotoOrGen(data, label, hexComment, () => {
             let runsByOp = instToOpRuns(insn.inst);
-            let args = [data.extraArgs];
-            let funcName = patternify(name);
+            let args = data.extraArgs ? [data.extraArgs] : [];
+            let funcName = patternifyForCall(name);
             let out = [];
             for(let op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
@@ -854,10 +862,14 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             }
             // be helpful
             if(data.prototypes) {
-                let prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
+                let prototype;
+                if(lang.isRust)
+                    prototype = '    fn ' + patternifyForDef(name) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
+
+                else
+                    prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
                 data.prototypes[prototype] = null;
             }
-            out.push(lang.comment(hexComment, /*hangingOnFollowing*/ true));
             out.push(lang.return_(funcName + '(' + args.join(', ') + ')'));
             return out;
         }));
@@ -909,13 +921,25 @@ function tableToSimpleC(node, pattern, extraArgs) {
     let ret = tableToSimpleCRec(node, data, indentStep);
     ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
     ret = data.prefixLines.concat(ret).concat(data.suffixLines).join('\n')
-    let ps = '\n';
+    if(lang.isRust) {
+        ret = 'fn decode<Res, H: Handler<Res>>(op: u32, h: &mut H) -> Res {\n' + ret + '\n}';
+
+    }
     let protoNames = [];
     for(let proto in data.prototypes)
         protoNames.push(proto);
     protoNames.sort();
-    if(protoNames)
-        ps += '/*\n' + protoNames.join('\n') + '\n*/\n';
+    let ps = '\n';
+    if(protoNames || lang.isRust) {
+        if(lang.isRust) {
+            ps += 'trait Handler<Res> {\n' + protoNames.join('\n') + '\n' +
+                '    fn unidentified(&mut self) -> Res;\n' +
+                '}\n';
+
+        } else {
+            ps += '/*\n' + protoNames.join('\n') + '\n*/\n';
+        }
+    }
     return ret + ps;
 }
 
@@ -1216,6 +1240,7 @@ if(opt.options['gen-disassembler']) {
 }
 if(opt.options['gen-hook-disassembler']) {
     genHookDisassembler(false);
+    console.log(survey);
 }
 if(opt.options['gen-hook-jump-disassembler']) {
     genHookDisassembler(true);
@@ -1231,7 +1256,6 @@ function genHookDisassembler(onlyStatic) {
         't_addrmode_rrs2': true,
         't_addrmode_rrs4': true,
         't_addrmode_sp': true,
-
     };
     let insns2 = coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
@@ -1258,8 +1282,9 @@ function genHookDisassembler(onlyStatic) {
             let interesting;
             switch(insn.namespace) {
             case 'ARM': {
-                let interestingAddrRef = 
-                        (isBranch && (bit[0] == 'target' || bit[0] == 'func')) ||
+                let interestingAddrRef =
+                        (isBranch && bit[0] == 'target') ||
+                        (bit[0] == 'func' && bit[0].match(/BL(?!X)/)) ||
                         bit[0] == 'label' ||
                         bit[0] == 'addr';
                 let interestingIndirectBranch = isBranch && (bit[0] == 'Rm' || bit[0] == 'dst');
@@ -1301,11 +1326,42 @@ function genHookDisassembler(onlyStatic) {
             if(interesting)
                 interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
         });
-
+        let varToType = {};
+        {
+            insn.inst.forEach((bit, i) => {
+                if(Array.isArray(bit))
+                    varToType[bit[0]] = '?';
+            });
+            let cb = tuple => {
+                if(tuple[0] == ':' && tuple[2][0] == '$') {
+                    let varr = tuple[2].substr(1);
+                    let mode = tuple[1];
+                    let old = varToType[varr];
+                    if(old === undefined)
+                        return;
+                    if(old != '?')
+                        throw `multiple modes? for ${insn.name} new=${mode} old=${old}`;
+                    varToType[varr] = mode;
+                }
+            };
+            visitDag(insn.inOperandList, cb);
+            visitDag(insn.outOperandList, cb);
+            for(let varr in varToType) {
+                if(varToType[varr] == '?') {
+                    if(!insn.name.match(/^t2TB[BH]$/))
+                        throw `unknown type for ${insn.name} var ${varr}`;
+                }
+            }
+        }
+        for(let varr in interestingVars)
+            survey[varToType[varr]] = null;
+        // XXX remove
         visitDag(insn.inOperandList, tuple => {
             if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
                 delete interestingVars[tuple[2].substr(1)];
         });
+            
+
         if(insn.namespace == 'ARM') {
             // pointless special case optimization for when it can't involve PC - yay thumb
             let haveAnyNonR3s = false;
@@ -1371,7 +1427,9 @@ function genHookDisassembler(onlyStatic) {
         xseen[insn.groupName] = true;
         console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(insn2 => insn2.name).join(', ') + ' */');
     }
-    console.log(tableToSimpleC(node, opt.options['dis-pattern'] || 'XXX', opt.options['dis-extra-args'] || 'ctx'));
+    console.log(tableToSimpleC(node,
+                               opt.options['dis-pattern'] || 'XXX',
+                               opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')));
 }
 if(opt.options['gen-sema']) {
     genSema(insns, ns);

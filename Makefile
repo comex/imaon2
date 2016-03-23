@@ -110,8 +110,8 @@ $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))
 all: out-td
 
 
-GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-hook-disassembler --dis-pattern='self.XXX' --out-lang=rust
-$(OUT_COMMON)/jump-dis-arm.inc.rs: $(OUT_COMMON)/out-ARM.json tables/gen.js
+GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-hook-jump-disassembler --out-lang=rust
+$(OUT_COMMON)/jump-dis-arm.inc.rs: $(OUT_COMMON)/out-ARM.json tables/gen.js Makefile
 	$(GEN_JUMP_DIS) -n _arm $< > $@ || rm -f $@
 
 endif # end USE_LLVM
