@@ -327,7 +327,6 @@ function genDisassembler(insns, ns, options) {
     let data = options;
     data.uid = uid;
     data.cache = {};
-    data.insnNodeCache = {};
     data.failNode = {fail: true};
     data.bitLength = insns[0].inst.length;
     //console.log('genDisassembler:', uid, bitLength);
@@ -335,9 +334,48 @@ function genDisassembler(insns, ns, options) {
     addConflictGroups(insns);
     //console.log(insns.length);
     let node = genDisassemblerRec(insns, 0, 0, true, 0, data);
+    if(options.uniqueNodes||1) {
+        uniqueTableNodes(node);
+    }
     checkTableMissingInsns(node, insns);
     return node;
     //console.log(stuff);
+}
+
+function uniqueTableNodes(node) {
+    let nextId = 0;
+    let cache = {};
+    function rec1(node) {
+        if(node.cacheKey !== undefined)
+            return node.cacheKey;
+        let minNode = {isBinary: node.isBinary,
+                       insn: node.insn !== undefined ? node.insn.name : null,
+                       buckets: node.buckets !== undefined ?
+                        node.buckets.map(rec1)
+                        : null
+                      };
+        node.id = ++nextId;
+        node.cacheKey = JSON.stringify(minNode);
+        return node.cacheKey;
+    }
+    function rec2(node) {
+        if(node.mapsTo)
+            return node.mapsTo;
+        let otherNode;
+        if(otherNode = cache[node.cacheKey]) {
+            node.mapsTo = otherNode;
+            return otherNode;
+        } else {
+            node.mapsTo = node;
+            cache[node.cacheKey] = node;
+            delete node.cacheKey;
+            if(node.buckets)
+                node.buckets = node.buckets.map(rec2);
+            return node;
+        }
+    }
+    rec1(node);
+    rec2(node);
 }
 
 function addConflictGroups(insns) {
@@ -823,7 +861,9 @@ class RustLang extends SuperLang {
 }
 
 RustLang.prototype.isRust = true;
+RustLang.prototype.canGoto = false;
 CLang.prototype.isRust = false;
+CLang.prototype.canGoto = true;
 
 let lang = new CLang();
 
@@ -872,38 +912,48 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             out.push(lang.return_(funcName + '(' + args.join(', ') + ')'));
             return out;
         }));
-    } else if(node.isBinary) {
-        let insn = node.buckets[0].insn;
-        let unknown = insn.instConstrainedMask & ~node.knownMask;
-        let test = '(op & 0x' + hexnopad(insn.instKnownMask & ~node.knownMask) + ') == 0x' + hexnopad(insn.instKnownValue & ~node.knownMask);
-        if(unknown)
-            test = lang.and(test, genConstraintTest(insn, unknown));
-        return lang.if_(test,
-            tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true),
-            tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
     } else {
-        let switchOn = '(op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
-        let cases = [];
-        let ncases = 0;
-        let buckets = node.buckets.slice(0);
-        for(let i = 0; i < buckets.length; i++) {
-            let subnode = buckets[i];
-            if(subnode === null)
-                continue;
-            let thisCases = [i];
-            ncases++;
-            for(let j = i + 1; j < buckets.length; j++) {
-                if(buckets[j] === subnode) {
-                    thisCases.push(j);
-                    ncases++;
-                    buckets[j] = null;
+        if(lang.canGoto && data.seenNodeId[node.id])
+            return lang.goto_('node_' + node.id);
+        data.seenNodeId[node.id] = true;
+        let r;
+        if(node.isBinary) {
+            let insn = node.buckets[0].insn;
+            let unknown = insn.instConstrainedMask & ~node.knownMask;
+            let test = '(op & 0x' + hexnopad(insn.instKnownMask & ~node.knownMask) + ') == 0x' + hexnopad(insn.instKnownValue & ~node.knownMask);
+            if(unknown)
+                test = lang.and(test, genConstraintTest(insn, unknown));
+            r = lang.if_(test,
+                tableToSimpleCRec(node.buckets[0], data, indent + indentStep, true),
+                tableToSimpleCRec(node.buckets[1], data, indent + indentStep));
+        } else {
+            let switchOn = '(op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
+            let cases = [];
+            let ncases = 0;
+            let buckets = node.buckets.slice(0);
+            for(let i = 0; i < buckets.length; i++) {
+                let subnode = buckets[i];
+                if(subnode === null)
+                    continue;
+                let thisCases = [i];
+                ncases++;
+                for(let j = i + 1; j < buckets.length; j++) {
+                    if(buckets[j] === subnode) {
+                        thisCases.push(j);
+                        ncases++;
+                        buckets[j] = null;
+                    }
                 }
+                cases.push([thisCases, tableToSimpleCRec(subnode, data, indent + indentStep)]);
             }
-            cases.push([thisCases, tableToSimpleCRec(subnode, data, indent + indentStep)]);
+            if((1 << node.length) != ncases)
+                throw new Error('bad buckets length'); // just to be sure
+            r = lang.switch_(switchOn, cases);
         }
-        if((1 << node.length) != ncases)
-            throw new Error('bad buckets length'); // just to be sure
-        return lang.switch_(switchOn, cases);
+        if(lang.canGoto)
+            return [lang.label('node_' + node.id)].concat(lang.stmtList(r));
+        else
+            return r;
     }
 }
 
@@ -913,6 +963,7 @@ function tableToSimpleC(node, pattern, extraArgs) {
         extraArgs: extraArgs,
         prototypes: {},
         seen: {},
+        seenNodeId: {},
         // for rust
         prefixLines: [],
         suffixLines: [],
@@ -1244,17 +1295,6 @@ if(opt.options['gen-hook-jump-disassembler']) {
     genHookDisassembler(true);
 }
 function genHookDisassembler(onlyStatic) {
-    let cantBePcModes = {
-        // Thumb (most of the modes, for obvious reasons)
-        't_addrmode_is4': true,
-        't_addrmode_is2': true,
-        't_addrmode_is1': true,
-        't_addrmode_rr': true,
-        't_addrmode_rrs1': true,
-        't_addrmode_rrs2': true,
-        't_addrmode_rrs4': true,
-        't_addrmode_sp': true,
-    };
     let insns2 = coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
         // functions that do MUL PC, PC or crap like that...  This takes care
@@ -1447,7 +1487,7 @@ function genHookDisassembler(onlyStatic) {
         return name;
     });
     //console.log(insns2);
-    let node = genDisassembler(insns2, ns, {maxLength: 5});
+    let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: !lang.isRust});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
     let xseen = {};
