@@ -723,7 +723,7 @@ class CLang extends SuperLang {
         return {'stmt': true, 'label': name, 'text': name + ':;'};
     }
     goto_(name, extra) {
-        return {'stmt': true, 'goto_': name, 'text': 'goto ' + name + ';' + extra};
+        return {'stmt': true, 'goto_': name, 'text': 'goto ' + name + ';' + (extra||'')};
     }
 }
 class RustLang extends SuperLang {
@@ -875,7 +875,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
     } else if(node.isBinary) {
         let insn = node.buckets[0].insn;
         let unknown = insn.instConstrainedMask & ~node.knownMask;
-        let test = '(op & 0x' + hexnopad(insn.instKnownMask) + ') == 0x' + hexnopad(insn.instKnownValue);
+        let test = '(op & 0x' + hexnopad(insn.instKnownMask & ~node.knownMask) + ') == 0x' + hexnopad(insn.instKnownValue & ~node.knownMask);
         if(unknown)
             test = lang.and(test, genConstraintTest(insn, unknown));
         return lang.if_(test,
@@ -1239,7 +1239,6 @@ if(opt.options['gen-disassembler']) {
 }
 if(opt.options['gen-hook-disassembler']) {
     genHookDisassembler(false);
-    console.log(survey);
 }
 if(opt.options['gen-hook-jump-disassembler']) {
     genHookDisassembler(true);
@@ -1305,25 +1304,43 @@ function genHookDisassembler(onlyStatic) {
             visitDag(insn.outOperandList, cb);
             for(let varr in varInfo) {
                 if(varInfo[varr].type == '?') {
-                    if(!insn.name.match(/^(t2TB[BH]$/))
+                    if(!insn.name.match(/^t2TB[BH]$/))
                         throw `unknown type for ${insn.name} var ${varr}`;
                 }
             }
         }
 
+        // special insns that need to be recognized even if they don't have interesting ops
+        {
+            let fakeVarName = null;
+            switch(insn.namespace) {
+            case 'ARM':
+                if(insn.name.match(/^t2TB[BH]$/))
+                    fakeVarName = 'xTB';
+                break;
+            }
+            if(fakeVarName !== null)
+                varInfo[fakeVarName] = {out: false, type: 'fake', size: 0};
+        }
+
+
+        let anyMayWritePC = false;
+        let anyInteresting = false;
         for(let varr in varInfo) {
             let info = varInfo[varr];
             let type = info.type;
             let stats = {
                 writesGPR: false,
+                mayReadPC: false,
                 mayWritePC: false,
-                relevantToGPRWrite: false,
-                relevantToPCWrite: false,
+                relevantToGPRWrite: false, // contains the actual identity of the register
                 codeAddrRef: false,
                 dataAddrRef: false,
                 otherImportant: false,
             };
-            switch(insn.namespace) {
+            if(type == 'fake')
+                stats.otherImportant = true;
+            else switch(insn.namespace) {
             case 'ARM': {
                 let isGPR = false;
                 // tcGPR: just llvm noise - actually, what is MOVr_TC?
@@ -1331,18 +1348,21 @@ function genHookDisassembler(onlyStatic) {
                 // tGPR: 3 bit
                 if(type.match(/^(GPR(|PairOp|nopc|withAPSR|sp)|tcGPR|rGPR|tGPR|addr_offset_none|postidx_reg)$/)) {
                     isGPR = true;
+                    let mayBePC = type != 'tGPR' && type != 'GPRsp';
                     if(info.out) {
                         stats.writesGPR = true;
-                        if(type != 'tGPR' && type != 'GPRsp')
-                            stats.mayWritePC = true;
+                        stats.mayWritePC = mayBePC;
+                    } else {
+                        stats.mayReadPC = mayBePC;
                     }
                 } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg)$/) ||
-                          (type == '?' && insn.name.match(/^t2TB/)))
+                          (type == '?' && insn.name.match(/^t2TB/))) {
                     isGPR = true; // GPR read, can't writeback
-                else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
+                    stats.mayReadPC = true;
+                }  else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
                     stats.dataAddrRef = true;
                 else if(type.match(/^t_addrmode/))
-                    ; // these can't writeback
+                    ; // these can't writeback or be PC
                 else if(type.match(/addrmode|(am.*offset)|addr_offset|^postidx|^ldst_so_reg$/))
                     stats.relevantToGPRWrite = true;
                 else if(type.match(/target$/)) {
@@ -1351,7 +1371,7 @@ function genHookDisassembler(onlyStatic) {
                 } else if(type.match(/^it_mask|it_pred$/))
                     stats.otherImportant = true;
                 else if(type == 'pred')
-                    stats.relevantToPCWrite = true;
+                    stats.otherImportant = insn.name == 'B';
                 else if(type == 'reglist') {
                     // this is listed in InOperandList even though it writes
                     if(insn.name.match(/POP|LDM/)) {
@@ -1373,51 +1393,58 @@ function genHookDisassembler(onlyStatic) {
                     throw `? insn ${insn.name} var ${varr}`;
                 break;
             }
+            default:
+                throw '?';
             } // switch
-        }
-        return null;
 
+            info.stats = stats;
+            info.interesting = stats.codeAddrRef || stats.dataAddrRef || stats.otherImportant ||
+                               (!onlyStatic && stats.mayWritePC);
+            if(info.interesting) {
+                anyInteresting = true;
+                if(stats.mayWritePC)
+                    anyMayWritePC = true;
+            }
+        }
+
+        if(!anyInteresting)
+            return null;
+        for(let varr in varInfo) {
+            let stats = varInfo[varr].stats;
+            if(anyMayWritePC && stats.relevantToGPRWrite)
+                varInfo[varr].interesting = true;
+        }
+
+/*
         if(onlyStatic && interestingWrites.length == 4) {
             // only one target and 4 bits, so it must be all 1s
             for(let i of interestingWrites)
                 insn.inst[i] = '1'; // PC = all 1s
         }
+        TODO
+        */
         insn.inst.forEach((bit, i) => {
-            if(Array.isArray(bit) && !interestingVars[bit[0]])
+            if(Array.isArray(bit) && !varInfo[bit[0]].interesting)
                 insn.inst[i] = '?'; // redact
         });
 
-        for(let haveAny in interestingVars) {
-            /*
-            happens sometimes
-            if(nbits < opBitLocs.length)
-                console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
-            */
-            let nameBits = [];
-            let seen = {};
-            visitDag(insn.inOperandList, tuple => {
-                let vn;
-                if(tuple[0] == ':' && tuple[2][0] == '$' && interestingVars[vn = tuple[2].substr(1)]) {
-                    seen[vn] = true;
-                    nameBits.push(tuple[1] + ':' + tuple[2]);
-                }
-            });
-            for(let vn in interestingVars) {
-                if(!seen[vn])
-                    nameBits.push('unk' + ':' + vn);
-            }
-            let name = nameBits.join(',');
-            if(!name)
-                return null;
-            if(isBranch)
-                name += ',B';
-            if(isStore)
-                name += ',S';
-            //name += '*' + opBitLocs;
-            //console.log('representing', insn.name, 'as', name);
-            return name;
+        /*
+        happens sometimes
+        if(nbits < opBitLocs.length)
+            console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
+        */
+        let nameBits = [];
+        for(let varr in varInfo) {
+            let info = varInfo[varr];
+            if(info.interesting)
+                nameBits.push(varr + (info.out ? '_out' : ''));
         }
-        return null;
+        nameBits.sort();
+        let name = nameBits.join(',');
+        if(!name)
+            return null;
+        //console.log('representing', insn.name, 'as', name);
+        return name;
     });
     //console.log(insns2);
     let node = genDisassembler(insns2, ns, {maxLength: 5});
