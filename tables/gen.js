@@ -6,7 +6,6 @@ let path = require('path');
 //    (but ES6 Map is *less* efficient!?)
 let HashMap = require('hashmap').HashMap;
 let child_process = require('child_process');
-let survey = {};
 
 function hex(n, len) {
     let s = '';
@@ -1265,48 +1264,8 @@ function genHookDisassembler(onlyStatic) {
         if(insn.name.match(/^(t?2?PL|PRFM|LDNP|STNP)/i)) {
             return null;
         }
-        let isBranch = insn.isBranch;
-        let isAdd = !!insn.name.match(/^[^A-Z]*AD[DR]/);
-        let isMov = !!insn.name.match(/^[^A-Z]*MOV/);
-        let isLoad = !!insn.name.match(/^[^A-Z]*(LD|POP)/);
-        let isStore = !!insn.name.match(/^[^A-Z]*(ST|PUSH)/);
-        let isArmv8 = insn.namespace == 'AArch64';
-        let mayBeEffectiveBranch = isBranch; // unused
 
-        let interestingVars = {}; // vn -> num bits
-        let interestingWrites = []; // see onlyStatic
-        insn.inst.forEach((bit, i) => {
-            // this is currently ARM specific, obviously
-            if(!Array.isArray(bit))
-                return;
-            let interesting;
-            switch(insn.namespace) {
-            case 'ARM': {
-                let interestingAddrRef =
-                        (isBranch && bit[0] == 'target') ||
-                        (bit[0] == 'func' && bit[0].match(/BL(?!X)/)) ||
-                        bit[0] == 'label' ||
-                        bit[0] == 'addr';
-                let interestingIndirectBranch = isBranch && (bit[0] == 'Rm' || bit[0] == 'dst');
-                let interestingWrite =
-                    (isLoad && bit[0] == 'Rt') ||
-                    bit[0].match(/^Rd/);
-                if(onlyStatic)
-                    interesting = interestingAddrRef || interestingWrite;
-                else
-                    interesting = interestingAddrRef || interestingIndirectBranch ||
-                        bit[0] == 'offset' ||
-                        ((isAdd || isMov || isStore || isLoad) && (bit[0].match(/^Rd?[nm]?$/) || bit[0] == 'shift')) ||
-                        ((isStore || isLoad) && bit[0] == 'regs') ||
-                        bit[0] == 'Rt' ||
-                        insn.name == 't2IT' ||
-                        (bit[0] == 'p' && insn.name.match(/Bcc/));
-                if(onlyStatic && interestingWrite) {
-                    mayBeEffectiveBranch = true;
-                    interestingWrites.push(i);
-                }
-                break;
-            }
+            /*
             case 'AArch64': {
                 // yay, highly restricted use of PC
                 let interestingAddrRef = bit[0] == 'label' || bit[0] == 'addr' ||
@@ -1316,64 +1275,108 @@ function genHookDisassembler(onlyStatic) {
                 else
                     interesting = interestingAddrRef ||
                         (insn.name.match(/^(LDR.*l|ADRP?)$/) &&
-                            (bit[0] == 'Rt' || bit[0] == 'Xd')) || /* hack */
+                            (bit[0] == 'Rt' || bit[0] == 'Xd')) || // hack
                         (insn.name.match(/^(RET|BLR)$/) && bit[0] == 'Rn');
                 break;
-            }
-            default:
-                throw 'unknown namespace';
-            }
-            if(interesting)
-                interestingVars[bit[0]] = (interestingVars[bit[0]] || 0) + 1;
-        });
-        let varToType = {};
+            */
+        let varInfo = {};
         {
             insn.inst.forEach((bit, i) => {
                 if(Array.isArray(bit))
-                    varToType[bit[0]] = '?';
+                    varInfo[bit[0]] = {
+                        'out': true, 'type': '?',
+                        'size': Math.max(bit[1]+1, varInfo[bit[0]] ? varInfo[bit[0]].size : 0),
+                    };
             });
+            let out;
             let cb = tuple => {
                 if(tuple[0] == ':' && tuple[2][0] == '$') {
                     let varr = tuple[2].substr(1);
                     let mode = tuple[1];
-                    let old = varToType[varr];
-                    if(old === undefined)
-                        return;
-                    if(old != '?')
+                    let old = varInfo[varr];
+                    if(old && old.type != '?')
                         throw `multiple modes? for ${insn.name} new=${mode} old=${old}`;
-                    varToType[varr] = mode;
+                    varInfo[varr] = {out: out, type: mode, size: old ? old.size : 0};
                 }
             };
+            out = false;
             visitDag(insn.inOperandList, cb);
+            out = true;
             visitDag(insn.outOperandList, cb);
-            for(let varr in varToType) {
-                if(varToType[varr] == '?') {
-                    if(!insn.name.match(/^t2TB[BH]$/))
+            for(let varr in varInfo) {
+                if(varInfo[varr].type == '?') {
+                    if(!insn.name.match(/^(t2TB[BH]$/))
                         throw `unknown type for ${insn.name} var ${varr}`;
                 }
             }
         }
-        for(let varr in interestingVars)
-            survey[varToType[varr]] = null;
-        // XXX remove
-        visitDag(insn.inOperandList, tuple => {
-            if(tuple[0] == ':' && tuple[2][0] == '$' && cantBePcModes[tuple[1]])
-                delete interestingVars[tuple[2].substr(1)];
-        });
-            
 
-        if(insn.namespace == 'ARM') {
-            // pointless special case optimization for when it can't involve PC - yay thumb
-            let haveAnyNonR3s = false;
-            for(let vn in interestingVars) {
-                if(!(vn[0] == 'R' && interestingVars[vn] < 4)) {
-                    haveAnyNonR3s = true;
-                    break;
+        for(let varr in varInfo) {
+            let info = varInfo[varr];
+            let type = info.type;
+            let stats = {
+                writesGPR: false,
+                mayWritePC: false,
+                relevantToGPRWrite: false,
+                relevantToPCWrite: false,
+                codeAddrRef: false,
+                dataAddrRef: false,
+                otherImportant: false,
+            };
+            switch(insn.namespace) {
+            case 'ARM': {
+                let isGPR = false;
+                // tcGPR: just llvm noise - actually, what is MOVr_TC?
+                // rGPR: restricted, but we don't care
+                // tGPR: 3 bit
+                if(type.match(/^(GPR(|PairOp|nopc|withAPSR|sp)|tcGPR|rGPR|tGPR|addr_offset_none|postidx_reg)$/)) {
+                    isGPR = true;
+                    if(info.out) {
+                        stats.writesGPR = true;
+                        if(type != 'tGPR' && type != 'GPRsp')
+                            stats.mayWritePC = true;
+                    }
+                } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg)$/) ||
+                          (type == '?' && insn.name.match(/^t2TB/)))
+                    isGPR = true; // GPR read, can't writeback
+                else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
+                    stats.dataAddrRef = true;
+                else if(type.match(/^t_addrmode/))
+                    ; // these can't writeback
+                else if(type.match(/addrmode|(am.*offset)|addr_offset|^postidx|^ldst_so_reg$/))
+                    stats.relevantToGPRWrite = true;
+                else if(type.match(/target$/)) {
+                    stats.mayWritePC = true;
+                    stats.codeAddrRef = true;
+                } else if(type.match(/^it_mask|it_pred$/))
+                    stats.otherImportant = true;
+                else if(type == 'pred')
+                    stats.relevantToPCWrite = true;
+                else if(type == 'reglist') {
+                    // this is listed in InOperandList even though it writes
+                    if(insn.name.match(/POP|LDM/)) {
+                        stats.writesGPR = true;
+                        stats.mayWritePC = true;
+                    }
+                } else if(type.match(/^(SPR|DPR|spr_reglist|dpr_reglist|vfp_f..imm|fbits..)$/))
+                    ; // floating point
+                else if(type.match(/imm0|imm$|^imm|^((s_)?cc_out|iflags_op|setend_op|imod_op|msr_mask|pkh_..._amt|memb_opt|instsyncb_opt|banked_reg)$/))
+                    ; // misc unuseful stuff
+                else {
+                    console.log(`insn ${insn.name} var ${varr} has unknown type ${type}`);
                 }
+
+                // t_addrmode_rr
+
+                // sanity check
+                if(varr.match(/^R[dtnm]/) && !isGPR)
+                    throw `? insn ${insn.name} var ${varr}`;
+                break;
             }
-            if(!haveAnyNonR3s)
-                return null;
+            } // switch
         }
+        return null;
+
         if(onlyStatic && interestingWrites.length == 4) {
             // only one target and 4 bits, so it must be all 1s
             for(let i of interestingWrites)
