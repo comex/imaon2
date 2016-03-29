@@ -96,37 +96,47 @@ function makeDefensive(obj) {
 
 // Optimization: Returns true if we can skip this whole iteration due to losing to bestMax already.
 
-function fillBuckets(buckets, bestMax, insn, instKnown, start, end, n, builtUp) {
-    if(n > 0) {
+function fillBuckets(buckets, bestMax, insn, instKnown, knownMask, knownValue, start, end, n, builtUp) {
+    if(n > start && insn.instHaveAnyConstrainedEqualBits) {
         let old = n - 1;
         let ceb = insn.instConstrainedEqualBits[old];
         if(ceb !== undefined) {
             // Rule it out if it would violate a constraint.  Uncommon, speed doesn't matter
             let thisBit = (builtUp >> old) & 1;
-            for(let i = 0; i < ceb.length; i++) {
-                let thatBit = (builtUp >> ceb[i]) & 1;
-                if(thisBit != thatBit) {
-                    //console.log('ruling out ' + insn.name);
-                    return false;
+            for(let thatBitPos of ceb) {
+                if(knownMask & (1 << thatBitPos)) {
+                    let thatBit = (knownValue >> thatBitPos) & 1;
+                    if(thisBit != thatBit) {
+                        console.log('ruling out ' + insn.name);
+                        return false;
+                    }
                 }
             }
         }
     }
     if(n == end) {
         let l = buckets[builtUp];
-        if(l.length > bestMax) {
+        l.push(insn);
+        if(!l.has[insn.name]) {
+            l.has[insn.name] = true;
+            l.hasCount++;
+        }
+        if(l.hasCount > bestMax) {
             return true;
         }
-        l.push(insn);
         return false;
     }
     let bit = instKnown[n];
     if(bit != 1) { // 0 or 2
-        if(fillBuckets(buckets, bestMax, insn, instKnown, start, end, n+1, builtUp))
+        if(fillBuckets(buckets, bestMax, insn, instKnown,
+                       knownMask | (1 << n), knownValue, start, end, n+1, builtUp))
             return true;
     }
     if(bit != 0) { // 1 or 2
-        if(fillBuckets(buckets, bestMax, insn, instKnown, start, end, n+1, builtUp | (1 << (n - start))))
+        if(fillBuckets(buckets, bestMax, insn, instKnown,
+                       knownMask | (1 << n),
+                       knownValue | (1 << n),
+                       start, end, n+1, builtUp | (1 << (n - start))))
             return true;
     }
     return false;
@@ -164,6 +174,79 @@ function knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue) {
 let choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
+
+function tryFilter(start, length, knownMask, knownValue, insns, best) {
+    let cacheCutoff = 4;
+    let mask = ((1 << length) - 1) << start;
+    if(length != 0 && (knownMask & mask) == mask) {
+        // Useless, we know all these bits already.
+        return best;
+    }
+    let buckets = [];
+    for(let i = 0; i < (1 << length); i++) {
+        let x = [];
+        x.has = {};
+        x.hasCount = 0;
+        buckets.push(x);
+    }
+    for(let i = 0; i < insns.length; i++) {
+        let insn = insns[i];
+        if(fillBuckets(buckets, best.max, insn, insn.instKnown, knownMask, knownValue, start, start + length, start, 0)) {
+            //console.log('early return');
+            return best;
+        }
+    }
+
+    if(length <= cacheCutoff || insns.length < 10) {
+        // There are sometimes instances of a general case and special
+        // cases.  Deal with them as follows: if, assuming the bits known
+        // in a bucket, one instruction is implied by another and also
+        // takes precedence by being more specific, then remove the second.
+
+        // More specific is not necessarily well defined, e.g. in Thumb,
+        // 'add sp, sp' (0x44ed) could be match the general tADDhirr, but
+        // also the equally specific tADDrSP or tADDspr.  Luckily, in those
+        // cases, it comes out the same; in other conflicts, it does not,
+        // and only the most specific is acceptable.
+
+        // There's got to be a better way to do this, but I'm not sure what.
+
+        let bucketKnownMask = knownMask | (((1 << length) - 1) << start);
+        for(let i = 0; i < buckets.length; i++) {
+            let bucket = buckets[i];
+            if(bucket.length == 0)
+                continue;
+            let bucketKnownValue = knownValue | (i << start);
+            let cgs = {};
+            for(let insn of bucket) {
+                if(insn.conflictGroup != -1) {
+                    setdefault(cgs, insn.conflictGroup, []).push(insn);
+                }
+            }
+            for(let cg in cgs) {
+                let conflictingInsns = cgs[cg];
+                for(let insn of conflictingInsns) {
+                    for(let insn2 of conflictingInsns) {
+                        if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
+                            conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
+                            bucket.splice(bucket.indexOf(insn2), 1);
+                            //console.log('Removing', insn.name, 'because of', insn2.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let max = 0; // maximum size of any of the buckets
+    for(let bucket of buckets)
+        if(bucket.hasCount > max) max = bucket.hasCount;
+    if(max < best.max || (max == best.max && length < best.length))
+        return {max: max, buckets: buckets, start: start, length: length};
+    else
+        return best;
+}
+
 
 function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data) {
     //console.log(depth + ' ' + insns.length + ' $ ' + useCache);
@@ -211,93 +294,25 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
         }
     }
 
-    let bestBuckets, bestStart, bestLength, bestMax = 1000000;
+    let best = {max: 1000000};
     let maxLength = data.maxLength;
-    let cacheCutoff = 4;
-
-    function tryFilter(start, length) {
-        let mask = ((1 << length) - 1) << start;
-        if(length != 0 && (knownMask & mask) == mask) {
-            // Useless, we know all these bits already.
-            return;
-        }
-        let buckets = [];
-        for(let i = 0; i < (1 << length); i++)
-            buckets.push([]);
-        for(let i = 0; i < insns.length; i++) {
-            let insn = insns[i];
-            if(fillBuckets(buckets, bestMax, insn, insn.instKnown, start, start + length, start, 0)) {
-                //console.log('early return');
-                return;
-            }
-        }
-
-        if(length <= cacheCutoff || insns.length < 10) {
-            // There are sometimes instances of a general case and special
-            // cases.  Deal with them as follows: if, assuming the bits known
-            // in a bucket, one instruction is implied by another and also
-            // takes precedence by being more specific, then remove the second.
-
-            // More specific is not necessarily well defined, e.g. in Thumb,
-            // 'add sp, sp' (0x44ed) could be match the general tADDhirr, but
-            // also the equally specific tADDrSP or tADDspr.  Luckily, in those
-            // cases, it comes out the same; in other conflicts, it does not,
-            // and only the most specific is acceptable.
-
-            // There's got to be a better way to do this, but I'm not sure what.
-
-            let bucketKnownMask = knownMask | (((1 << length) - 1) << start);
-            for(let i = 0; i < buckets.length; i++) {
-                let bucket = buckets[i];
-                if(bucket.length == 0)
-                    continue;
-                let bucketKnownValue = knownValue | (i << start);
-                let cgs = {};
-                for(let insn of bucket) {
-                    if(insn.conflictGroup != -1) {
-                        setdefault(cgs, insn.conflictGroup, []).push(insn);
-                    }
-                }
-                for(let cg in cgs) {
-                    let conflictingInsns = cgs[cg];
-                    for(let insn of conflictingInsns) {
-                        for(let insn2 of conflictingInsns) {
-                            if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
-                                conflictingInsns.splice(conflictingInsns.indexOf(insn2), 1);
-                                bucket.splice(bucket.indexOf(insn2), 1);
-                                //console.log('Removing', insn.name, 'because of', insn2.name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let max = 0; // maximum size of any of the buckets
-        for(let bucket of buckets)
-            if(bucket.length > max) max = bucket.length;
-        if(max < bestMax || (max == bestMax && length < bestLength)) {
-            bestMax = max;
-            bestBuckets = buckets;
-            bestStart = start;
-            bestLength = length;
-        }
-    }
 
     let override;
     // not currently used, but...
     if(depth <= 3 && (override = choiceOverrides[data.uid + ':' + hex(knownMask, data.bitLength)])) {
-        tryFilter(override[0], override[1]);
+        best = tryFilter(override[0], override[1], knownMask, knownValue, insns, best);
     } else {
         for(let length = 0; length <= maxLength; length++) {
-            for(let start = 0; start <= (length == 0 ? 0 : data.bitLength - length); start++) {
-                tryFilter(start, length);
-            }
+            let maxStart = length == 0 ? 0 : data.bitLength - length;
+            for(let start = 0; start <= maxStart; start++)
+                best = tryFilter(start, length, knownMask, knownValue, insns, best);
         }
     }
 
-    if(bestMax == insns.length) {
-        if(insns.length <= 3 && 1) {
+    if(best.max > insns.length) {
+        throw '!?';
+    } else if(best.max == insns.length) {
+        if(insns.length <= 4 && 1) {
             // Probably a case of one more specific, but too many
             // distinguishing bits for a regular mask to find.  At least
             // try to find one that takes precedence over all the others.
@@ -325,8 +340,11 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
             }
         }
         console.log('Found conflict (' + insns.length + ' insns):');
-        for(let insn of insns)
+        for(let insn of insns) {
             console.log(pad(insn.name, 20), insn.instKnown.join(','));
+            if(insn.instHaveAnyConstrainedEqualBits)
+                console.log('     ', insn.instConstrainedEqualBits);
+        }
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, data.bitLength).join(','));
         return data.cache[cacheKey] = data.failNode;
@@ -334,23 +352,23 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
     }
 
     let resultBuckets = [];
-    for(let i = 0; i < bestBuckets.length; i++) {
-        let bucket = bestBuckets[i];
-        let bucketKnownMask = knownMask | (((1 << bestLength) - 1) << bestStart);
-        let bucketKnownValue = knownValue | (i << bestStart);
+    for(let i = 0; i < best.buckets.length; i++) {
+        let bucket = best.buckets[i];
+        let bucketKnownMask = knownMask | (((1 << best.length) - 1) << best.start);
+        let bucketKnownValue = knownValue | (i << best.start);
         //let useCache = bestLength > cacheCutoff && depth > 0;
         // ^ this makes no sense?
         resultBuckets.push(genDisassemblerRec(bucket, bucketKnownMask, bucketKnownValue, useCache, depth + 1, data));
     }
 
-    if(bestLength == 0) {
+    if(best.length == 0) {
         return data.cache[cacheKey] = resultBuckets[0];
     }
 
     return data.cache[cacheKey] = {
-        start: bestStart,
-        length: bestLength,
-        max: bestMax,
+        start: best.start,
+        length: best.length,
+        max: best.max,
         buckets: resultBuckets,
         possibilities: insns,
         knownMask: knownMask,
@@ -631,6 +649,7 @@ function gotoOrGen(data, label, comment, gen) {
             ]);
             data.seen[label] = true;
         }
+        comment = comment ? (' // ' + comment) : '';
         return "break '" + label + comment;
     } else {
         if(data.seen[label]) {
