@@ -107,7 +107,7 @@ function fillBuckets(buckets, bestMax, insn, instKnown, knownMask, knownValue, s
                 if(knownMask & (1 << thatBitPos)) {
                     let thatBit = (knownValue >> thatBitPos) & 1;
                     if(thisBit != thatBit) {
-                        console.log('ruling out ' + insn.name);
+                        //console.log('ruling out ' + insn.name);
                         return false;
                     }
                 }
@@ -171,7 +171,6 @@ let choiceOverrides = {
 };
 
 function tryFilter(start, length, knownMask, knownValue, insns, best) {
-    let cacheCutoff = 4;
     let mask = ((1 << length) - 1) << start;
     if(length != 0 && (knownMask & mask) == mask) {
         // Useless, we know all these bits already.
@@ -190,7 +189,7 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
         }
     }
 
-    if(length <= cacheCutoff || insns.length < 10) {
+    if(insns.length < 10) {
         // There are sometimes instances of a general case and special
         // cases.  Deal with them as follows: if, assuming the bits known
         // in a bucket, one instruction is implied by another and also
@@ -210,20 +209,29 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
             if(bucket.length == 0)
                 continue;
             let bucketKnownValue = knownValue | (i << start);
-            let cgs = {};
-            for(let insn of bucket) {
-                if(insn.conflictGroup != -1) {
-                    setdefault(cgs, insn.conflictGroup, []).push(insn);
-                }
-            }
-            for(let cg in cgs) {
-                let conflictingInsns = cgs[cg];
-                if(conflictingInsns.length == 1) {
-                    if(bucket.noConflictsLeft === undefined)
-                        bucket.noConflictsLeft = {};
-                    bucket.noConflictsLeft[conflictingInsns[0].name] = true;
+            //if(insns.length
+            let xinsns = bucket.slice(0);
+                //console.log(xinsns.length);
+            for(let i = 0; i < xinsns.length; i++) {
+                let nConflicts = 0;
+                let cg = xinsns[i].conflictGroup;
+                if(cg == -1)
                     continue;
+                for(let j = i + 1; j < xinsns.length; j++) {
+                    if(xinsns[j].conflictGroup == cg)
+                        nConflicts++;
                 }
+                if(nConflicts == 1 || nConflicts > 5)
+                    continue;
+                let conflictingInsns = [];
+                for(let j = i + 1; j < xinsns.length; j++) {
+                    if(xinsns[j].conflictGroup == cg) {
+                        conflictingInsns.push(xinsns[j]);
+                        xinsns.splice(j, 1);
+                        j--;
+                    }
+                }
+                //console.log(conflictingInsns.length, nConflicts);
                 for(let insn of conflictingInsns) {
                     for(let insn2 of conflictingInsns) {
                         if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
@@ -356,22 +364,9 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
         let bucketKnownMask = knownMask | (((1 << best.length) - 1) << best.start);
         let bucketKnownValue = knownValue | (i << best.start);
 
-        if(bucket.noConflictsLeft !== undefined)
-            for(let insn of bucket) {
-                if(bucket.noConflictsLeft[insn.name]) {
-                    bucket.noConflictsLeft[insn.name] = insn.conflictGroup;
-                    insn.conflictGroup = -1;
-                }
-            }
         //let useCache = bestLength > cacheCutoff && depth > 0;
         // ^ this makes no sense?
         resultBuckets.push(genDisassemblerRec(bucket, bucketKnownMask, bucketKnownValue, useCache, depth + 1, data));
-        if(bucket.noConflictsLeft !== undefined)
-            for(let insn of bucket) {
-                let cg;
-                if((cg = bucket.noConflictsLeft[insn.name]) !== undefined)
-                    insn.conflictGroup = cg;
-            }
     }
 
     if(best.length == 0) {
