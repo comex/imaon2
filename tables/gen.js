@@ -48,6 +48,31 @@ function setdefault_hashmap(obj, key, def) {
     return o;
 }
 
+function* items(obj) {
+    for(let key in obj)
+        yield [key, obj[key]];
+}
+function* keys(obj) {
+    for(let key in obj)
+        yield key;
+}
+function* filter(cb, it) {
+    let i = 0;
+    for(let val of it)
+        if(cb(val, i++))
+            yield val;
+}
+
+function makeDefensive(obj) {
+    return new Proxy(obj, {
+        get: (target, name) => {
+            if(!(name in target) && name !== 'inspect' && name.charCodeAt)
+                throw 'undefined property ' + name;
+            return target[name];
+        },
+    });
+}
+
 // tblgen already generates disassemblers, but:
 // - They seem to be very inefficient; the fixed-length version has giant
 // tables including *uleb128* run through an *interpreter* that branches one at
@@ -1018,24 +1043,27 @@ function printOpPositions(insns, name) {
 }
 
 function coalesceInsnsWithMap(insns, func) {
+    let byGroupAndBits = new HashMap();
     let byGroup = new HashMap();
     for(let insn of insns) {
         let key = func(insn);
         if(key === null)
             continue;
         let locs = '' + insn.inst.map(bit => Array.isArray(bit) ? bit : '');
-        let realKey = [key, locs];
-        let ginsns = setdefault_hashmap(byGroup, realKey, []);
+        let keyAndBits = [key, locs];
+        let gbinsns = setdefault_hashmap(byGroupAndBits, keyAndBits, []);
+        let ginsns = setdefault_hashmap(byGroup, key, []);
+        gbinsns.push(insn);
         ginsns.push(insn);
     }
     // for each group, continually coalesce instructions which are the same but for one bit, until we can do no more.  probably slooow
     // actually, not enough insns to be slow
     let out = [];
     let coalid = 0;
-    byGroup.forEach((ginsns, key) => {
+    byGroupAndBits.forEach((gbinsns, keyAndBits) => {
         // inst -> [insns]
         let byPat = new HashMap();
-        for(let insn of ginsns) {
+        for(let insn of gbinsns) {
             let instMinusVars = insn.inst.map(b => Array.isArray(b) ? '?' : b);
             //console.log('**>', instMinusVars+'');
             setdefault_hashmap(byPat, instMinusVars, []).push(insn);
@@ -1085,9 +1113,12 @@ function coalesceInsnsWithMap(insns, func) {
             //console.log('MD+');
         } while(didSomething);
 
-        let origLength = ginsns.length;
+        let origLength = gbinsns.length;
         let newLength = byPat.count();
-        let groupName = key[0].replace(/[^a-zA-Z0-9_]+/g, '_') + '_' + + ginsns.length + '_' + ginsns[0].name;
+
+        let key = keyAndBits[0];
+        let ginsns = byGroup.get(key);
+        let groupName = key.replace(/[^a-zA-Z0-9_]+/g, '_') + '_' + + ginsns.length + '_' + ginsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
         byPat.forEach((insns, inst) => {
             insns.sort(); // get a consistent representative for the name
@@ -1190,7 +1221,7 @@ let getopt = require('node-getopt').create([
     //['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
     //['',  'gen-sema', 'Generate the step after the disassembler.'],
     ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes PC inputs and jumps'],
-    ['',  'gen-hook-jump-disassembler', 'only jumps'],
+    ['',  'gen-jump-disassembler', 'only jumps'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
     ['',  'print-op-positions=OP', 'Print all positions this op appears in'],
@@ -1279,10 +1310,10 @@ if(opt.options['gen-disassembler']) {
 if(opt.options['gen-hook-disassembler']) {
     genHookDisassembler(false);
 }
-if(opt.options['gen-hook-jump-disassembler']) {
+if(opt.options['gen-jump-disassembler']) {
     genHookDisassembler(true);
 }
-function genHookDisassembler(onlyStatic) {
+function genHookDisassembler(jumpDis) {
     let insns2 = coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
         // functions that do MUL PC, PC or crap like that...  This takes care
@@ -1352,12 +1383,12 @@ function genHookDisassembler(onlyStatic) {
         }
 
 
-        let anyMayWritePC = false;
+        let anyWritesGPR = false;
         let anyInteresting = false;
         for(let varr in varInfo) {
             let info = varInfo[varr];
             let type = info.type;
-            let stats = {
+            for(let [k, v] of items({
                 writesGPR: false,
                 mayReadPC: false,
                 mayWritePC: false,
@@ -1365,9 +1396,11 @@ function genHookDisassembler(onlyStatic) {
                 codeAddrRef: false,
                 dataAddrRef: false,
                 otherImportant: false,
-            };
+                forcedVal: null,
+            }))
+                info[k] = v;
             if(type == 'fake')
-                stats.otherImportant = true;
+                info.otherImportant = true;
             else switch(insn.namespace) {
             case 'ARM': {
                 let isGPR = false;
@@ -1378,33 +1411,33 @@ function genHookDisassembler(onlyStatic) {
                     isGPR = true;
                     let mayBePC = type != 'tGPR' && type != 'GPRsp';
                     if(info.out) {
-                        stats.writesGPR = true;
-                        stats.mayWritePC = mayBePC;
+                        info.writesGPR = true;
+                        info.mayWritePC = mayBePC;
                     } else {
-                        stats.mayReadPC = mayBePC;
+                        info.mayReadPC = mayBePC;
                     }
                 } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg)$/) ||
                           (type == '?' && insn.name.match(/^t2TB/))) {
                     isGPR = true; // GPR read, can't writeback
-                    stats.mayReadPC = true;
+                    info.mayReadPC = true;
                 }  else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
-                    stats.dataAddrRef = true;
+                    info.dataAddrRef = true;
                 else if(type.match(/^t_addrmode/))
                     ; // these can't writeback or be PC
                 else if(type.match(/addrmode|(am.*offset)|addr_offset|^postidx|^ldst_so_reg$/))
-                    stats.relevantToGPRWrite = true;
+                    info.relevantToGPRWrite = true;
                 else if(type.match(/target$/)) {
-                    stats.mayWritePC = true;
-                    stats.codeAddrRef = true;
+                    info.mayWritePC = true;
+                    info.codeAddrRef = true;
                 } else if(type.match(/^it_mask|it_pred$/))
-                    stats.otherImportant = true;
+                    info.otherImportant = true;
                 else if(type == 'pred')
-                    stats.otherImportant = insn.name == 'B';
+                    info.otherImportant = insn.name == 'B';
                 else if(type == 'reglist') {
                     // this is listed in InOperandList even though it writes
                     if(insn.name.match(/POP|LDM/)) {
-                        stats.writesGPR = true;
-                        stats.mayWritePC = true;
+                        info.writesGPR = true;
+                        info.mayWritePC = true;
                     }
                 } else if(type.match(/^(SPR|DPR|spr_reglist|dpr_reglist|vfp_f..imm|fbits..)$/))
                     ; // floating point
@@ -1425,35 +1458,51 @@ function genHookDisassembler(onlyStatic) {
                 throw '?';
             } // switch
 
-            info.stats = stats;
-            info.interesting = stats.codeAddrRef || stats.dataAddrRef || stats.otherImportant ||
-                               (!onlyStatic && stats.mayWritePC);
+            info.interesting = info.codeAddrRef || info.dataAddrRef || info.otherImportant ||
+                               info.mayWritePC;
             if(info.interesting) {
                 anyInteresting = true;
-                if(stats.mayWritePC)
-                    anyMayWritePC = true;
+                if(info.writesGPR)
+                    anyWritesGPR = true;
             }
+            varInfo[varr] = makeDefensive(varInfo[varr]);
         }
 
         if(!anyInteresting)
             return null;
-        for(let varr in varInfo) {
-            let stats = varInfo[varr].stats;
-            if(anyMayWritePC && stats.relevantToGPRWrite)
-                varInfo[varr].interesting = true;
+
+        for(let [varr, stats] of items(varInfo))
+            if(anyWritesGPR && stats.relevantToGPRWrite)
+                stats.interesting = true;
+
+        if(insn.namespace == 'ARM') {
+            let eligible = Array.from(filter(varr => varInfo[varr].writesGPR && varInfo[varr].mayWritePC, keys(varInfo)));
+            if(eligible.length == 1 && varInfo[eligible[0]].size != 0) {
+                let varr = eligible[0];
+                let stats = varInfo[varr];
+                if(stats.size == 4)
+                    stats.forcedVal = ['1', '1', '1', '1'];
+                else if(stats.size == 16) {
+                    stats.forcedVal = [];
+                    for(let i = 0; i < 15; i++)
+                        stats.forcedVal.push('?');
+                    stats.forcedVal.push('1');
+                } else
+                    throw `? ${insn.name} ${varr}`;
+                stats.interesting = false;
+            }
         }
 
-/*
-        if(onlyStatic && interestingWrites.length == 4) {
-            // only one target and 4 bits, so it must be all 1s
-            for(let i of interestingWrites)
-                insn.inst[i] = '1'; // PC = all 1s
-        }
-        TODO
-        */
-        insn.inst.forEach((bit, i) => {
-            if(Array.isArray(bit) && !varInfo[bit[0]].interesting)
-                insn.inst[i] = '?'; // redact
+        insn.inst = insn.inst.map((bit, i) => {
+            if(!Array.isArray(bit))
+                return bit;
+            let stats = varInfo[bit[0]];
+            if(stats.forcedVal)
+                return stats.forcedVal[bit[1]];
+            else if(!stats.interesting)
+                return '?'; // redact
+            else
+                return bit;
         });
 
         /*
@@ -1470,7 +1519,7 @@ function genHookDisassembler(onlyStatic) {
         nameBits.sort();
         let name = nameBits.join(',');
         if(!name)
-            return null;
+            name = 'x';
         //console.log('representing', insn.name, 'as', name);
         return name;
     });

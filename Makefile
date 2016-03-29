@@ -5,7 +5,7 @@ TARGET :=
 
 ifneq ($(USE_LLVM),)
     ifeq ($(USE_LLVM),1)
-        NODE := node --harmony --use_strict --harmony_destructuring
+        NODE := node --harmony --use_strict
         LLVM := /usr/src/rust/src/llvm
     else ifeq ($(USE_LLVM),0)
         override USE_LLVM=
@@ -110,7 +110,7 @@ $(foreach target,$(LLVM_TARGETS),$(eval $(call td_target,$(subst /, ,$(target)))
 all: out-td
 
 
-GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-hook-jump-disassembler --out-lang=rust
+GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-jump-disassembler --out-lang=rust
 $(OUT_COMMON)/jump-dis-arm.inc.rs: $(OUT_COMMON)/out-ARM.json tables/gen.js Makefile
 	$(GEN_JUMP_DIS) -n _arm $< > $@ || rm -f $@
 
