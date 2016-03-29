@@ -117,13 +117,8 @@ function fillBuckets(buckets, bestMax, insn, instKnown, knownMask, knownValue, s
     if(n == end) {
         let l = buckets[builtUp];
         l.push(insn);
-        if(!l.has[insn.name]) {
-            l.has[insn.name] = true;
-            l.hasCount++;
-        }
-        if(l.hasCount > bestMax) {
+        if(l.length > bestMax)
             return true;
-        }
         return false;
     }
     let bit = instKnown[n];
@@ -240,7 +235,7 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
 
     let max = 0; // maximum size of any of the buckets
     for(let bucket of buckets)
-        if(bucket.hasCount > max) max = bucket.hasCount;
+        if(bucket.length > max) max = bucket.length;
     if(max < best.max || (max == best.max && length < best.length))
         return {max: max, buckets: buckets, start: start, length: length};
     else
