@@ -345,37 +345,25 @@ function genDisassembler(insns, ns, options) {
 function uniqueTableNodes(node) {
     let nextId = 0;
     let cache = {};
-    function rec1(node) {
-        if(node.cacheKey !== undefined)
-            return node.cacheKey;
+    let byId = [];
+    function rec(node) {
         let minNode = {isBinary: node.isBinary,
                        insn: node.insn !== undefined ? node.insn.name : null,
                        buckets: node.buckets !== undefined ?
-                        node.buckets.map(rec1)
+                        node.buckets.map(rec)
                         : null
                       };
-        node.id = ++nextId;
-        node.cacheKey = JSON.stringify(minNode);
-        return node.cacheKey;
+        let cacheKey = JSON.stringify(minNode);
+        let node2;
+        if(node2 = cache[cacheKey])
+            return node2.id;
+        node.id = byId.length;
+        byId.push(node);
+        if(minNode.buckets)
+            node.buckets = minNode.buckets.map(idx => byId[idx]);
+        return node.id;
     }
-    function rec2(node) {
-        if(node.mapsTo)
-            return node.mapsTo;
-        let otherNode;
-        if(otherNode = cache[node.cacheKey]) {
-            node.mapsTo = otherNode;
-            return otherNode;
-        } else {
-            node.mapsTo = node;
-            cache[node.cacheKey] = node;
-            delete node.cacheKey;
-            if(node.buckets)
-                node.buckets = node.buckets.map(rec2);
-            return node;
-        }
-    }
-    rec1(node);
-    rec2(node);
+    rec(node);
 }
 
 function addConflictGroups(insns) {
