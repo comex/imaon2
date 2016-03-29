@@ -61,11 +61,11 @@ XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dep
 all:
 
 define define_crate_
-# 1=kind 2=name 3=sources 4=deps
+# 1=kind 2=name 3=sources 4=deps 5=file-deps
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
 # specify -o explicitly?
-$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep)))
+$$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) $(5)
 	$(XRUSTC) $(RUSTFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
 
 all: $$(cratefile-$(2))
@@ -111,8 +111,14 @@ all: out-td
 
 
 GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-jump-disassembler --out-lang=rust
-$(OUT_COMMON)/jump-dis-arm.inc.rs: $(OUT_COMMON)/out-ARM.json tables/gen.js Makefile
-	$(GEN_JUMP_DIS) -n _arm $< > $@ || rm -f $@
+define dis-flavor
+$(OUT_COMMON)/jump-dis-$(1).rs: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
+	$(GEN_JUMP_DIS) $(3) $$< > $$@ || rm -f $$@
+jump-dis-all: $(OUT_COMMON)/jump-dis-$(1).rs
+endef
+$(eval $(call dis-flavor,arm,ARM,-n _arm))
+$(eval $(call dis-flavor,thumb,ARM,-n _thumb))
+$(eval $(call dis-flavor,thumb2,ARM,-n _thumb2))
 
 endif # end USE_LLVM
 
@@ -156,6 +162,7 @@ $(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
 $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 ifneq ($(USE_LLVM),)
+$(call define_crate,$(LIB),llvm_jump_dis,dis/llvm_jump_dis.rs,dis,jump-dis-all)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 endif
 

@@ -3,6 +3,7 @@ extern crate exec;
 #[macro_use]
 extern crate macros;
 use exec::arch;
+use exec::arch::CodeMode;
 use std::marker::PhantomData;
 
 #[derive(Debug)]
@@ -27,9 +28,11 @@ impl std::error::Error for CreateDisError {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct DisassemblerInput<'a> {
     pub data: &'a [u8],
     pub pc: exec::VMA,
+    pub mode: CodeMode,
 }
 
 pub struct TrawlLead {
@@ -39,7 +42,7 @@ pub struct TrawlLead {
 pub enum TrawlLeadKind {
     ReadInsn { len: u32 },
     TailInsn,
-    JumpRef,
+    JumpRef { mode: CodeMode },
     OtherRef,
 }
 
@@ -50,13 +53,13 @@ pub trait Disassembler : 'static {
     fn disassemble_multiple_to_str(&self, input: DisassemblerInput) -> Vec<(Option<String>, exec::VMA, u32)> {
         let mut result = Vec::new();
         let mut off = 0;
-        let nia = self.arch().natural_insn_align();
+        let nia = self.arch().natural_insn_align(&input.mode);
         while off < input.data.len() {
-            if let Some((dissed, length)) = self.disassemble_insn_to_str(DisassemblerInput { data: &input.data[off..], pc: input.pc + (off as u64)}) {
+            if let Some((dissed, length)) = self.disassemble_insn_to_str(DisassemblerInput { data: &input.data[off..], pc: input.pc + (off as u64), mode: input.mode}) {
                 result.push((dissed, input.pc + (off as u64), length));
                 off += length as usize;
             } else {
-                result.push((None, input.pc + (off as u64), nia as usize));
+                result.push((None, input.pc + (off as u64), nia as u32));
                 off += nia as usize;
             }
         }
@@ -64,8 +67,8 @@ pub trait Disassembler : 'static {
     }
     // todo - disassemble_all_to_str?
 
-    fn can_trawl(&self) -> bool { false}
-    fn trawl(&self, _input: DisasemblerInput, &mut [TrawlLead]) { unimplemented!() }
+    fn can_trawl(&self) -> bool { false }
+    fn trawl(&self, _input: DisassemblerInput, _leads: &mut Vec<TrawlLead>) { unimplemented!() }
 }
 pub trait DisassemblerStatics : Disassembler + Sized {
     fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<Self, CreateDisError>;

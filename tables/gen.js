@@ -985,7 +985,11 @@ function tableToSimpleC(node, pattern, extraArgs) {
     ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
     ret = data.prefixLines.concat(ret).concat(data.suffixLines).join('\n')
     if(lang.isRust) {
-        ret = 'fn decode<Res, H: Handler<Res>>(op: u32, h: &mut H) -> Res {\n' + ret + '\n}';
+        ret = 'use ::{Bitslice, Run};\n' +
+              'fn unreachable() { unreachable!() }\n' +
+              'pub fn decode<Res, H: Handler<Res>>(op: u32, h: &mut H) -> Res {\n' +
+              ret +
+              '\n}';
 
     }
     let protoNames = [];
@@ -995,7 +999,7 @@ function tableToSimpleC(node, pattern, extraArgs) {
     let ps = '\n';
     if(protoNames || lang.isRust) {
         if(lang.isRust) {
-            ps += 'trait Handler<Res> {\n' + protoNames.join('\n') + '\n' +
+            ps += 'pub trait Handler<Res> {\n' + protoNames.join('\n') + '\n' +
                 '    fn unidentified(&mut self) -> Res;\n' +
                 '}\n';
 
@@ -1415,6 +1419,8 @@ function genHookDisassembler(jumpDis) {
                         info.mayWritePC = mayBePC;
                     } else {
                         info.mayReadPC = mayBePC;
+                        if(varr == 'Rn' && varInfo['wb'])
+                            info.relevantToGPRWrite = true; // $wb (writeback) = $Rn
                     }
                 } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg)$/) ||
                           (type == '?' && insn.name.match(/^t2TB/))) {
@@ -1435,7 +1441,7 @@ function genHookDisassembler(jumpDis) {
                     info.otherImportant = insn.name == 'B';
                 else if(type == 'reglist') {
                     // this is listed in InOperandList even though it writes
-                    if(insn.name.match(/POP|LDM/)) {
+                    if(insn.name.match(/POP|LDM/) && insn.name != 'tLDMIA') {
                         info.writesGPR = true;
                         info.mayWritePC = true;
                     }
