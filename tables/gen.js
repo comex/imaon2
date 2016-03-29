@@ -62,6 +62,14 @@ function* filter(cb, it) {
         if(cb(val, i++))
             yield val;
 }
+function groupBy(cb, it) {
+    let byKey = {};
+    for(let val of it) {
+        let key = cb(val);
+        setdefault(byKey, key, []).push(val);
+    }
+    return byKey;
+}
 
 function makeDefensive(obj) {
     return new Proxy(obj, {
@@ -899,13 +907,14 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             ].concat(next)
         }
         // ok, it's definitely this instruction
-        let name = insn.groupName || insn.name;
-        let label = 'insn_' + name;
+        let bitsName = insn.groupAndBitsName || insn.name;
+        let nobitsName = insn.groupName || insn.name;
+        let label = 'insn_' + bitsName;
         let hexComment = '0x'+hex(node.knownValue, insn.inst.length) + ' | 0x'+hex(~node.knownMask, insn.inst.length);
         return f(gotoOrGen(data, label, hexComment, () => {
             let runsByOp = instToOpRuns(insn.inst);
             let args = data.extraArgs ? [data.extraArgs] : [];
-            let funcName = patternifyForCall(name);
+            let funcName = patternifyForCall(nobitsName);
             let out = [];
             for(let op in runsByOp) {
                 //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
@@ -916,7 +925,7 @@ function tableToSimpleCRec(node, data, indent, skipConstraintTest) {
             if(data.prototypes) {
                 let prototype;
                 if(lang.isRust)
-                    prototype = '    fn ' + patternifyForDef(name) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
+                    prototype = '    fn ' + patternifyForDef(nobitsName) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
 
                 else
                     prototype = 'static INLINE tdis_ret ' + funcName + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
@@ -1122,7 +1131,9 @@ function coalesceInsnsWithMap(insns, func) {
 
         let key = keyAndBits[0];
         let ginsns = byGroup.get(key);
-        let groupName = key.replace(/[^a-zA-Z0-9_]+/g, '_') + '_' + + ginsns.length + '_' + ginsns[0].name;
+        let mangledKey = key.replace(/[^a-zA-Z0-9_]+/g, '_');
+        let groupName = mangledKey + '_' + + ginsns.length + '_' + ginsns[0].name;
+        let groupAndBitsName = 'gb_' + mangledKey + '_' + gbinsns.length + '_' + gbinsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
         byPat.forEach((insns, inst) => {
             insns.sort(); // get a consistent representative for the name
@@ -1138,6 +1149,7 @@ function coalesceInsnsWithMap(insns, func) {
                 //name: 'coal' + (coalid++) + '_' + (origLength - newLength) + '*' + key,
                 name: 'coal_' + insns.length + '_' + insns[0].name,
                 groupName: groupName,
+                groupAndBitsName: groupAndBitsName,
                 groupInsns: ginsns,
             };
             fixInstruction(insn, /*noFlip*/ true);
@@ -1318,13 +1330,20 @@ if(opt.options['gen-jump-disassembler']) {
     genHookDisassembler(true);
 }
 function genHookDisassembler(jumpDis) {
+    let separateUndefined = true;
+    let uninterestingReturn = insn => {
+        if(!separateUndefined)
+            return null;
+        insn.inst = insn.inst.map((bit, i) => Array.isArray(bit) ? '?' : bit);
+        return 'uninteresting';
+    };
     let insns2 = coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
         // functions that do MUL PC, PC or crap like that...  This takes care
         // of all load instructions (LLVM mashes both registers into one big
         // operand), plus ADD and MOV.
         if(insn.name.match(/^(t?2?PL|PRFM|LDNP|STNP)/i)) {
-            return null;
+            return uninterestingReturn(insn);
         }
 
             /*
@@ -1411,7 +1430,7 @@ function genHookDisassembler(jumpDis) {
                 // tcGPR: just llvm noise - actually, what is MOVr_TC?
                 // rGPR: restricted, but we don't care
                 // tGPR: 3 bit
-                if(type.match(/^(GPR(|PairOp|nopc|withAPSR|sp)|tcGPR|rGPR|tGPR|addr_offset_none|postidx_reg)$/)) {
+                if(type.match(/^(GPR(|PairOp|nopc|withAPSR|sp)|tcGPR|rGPR|tGPR|postidx_reg)$/)) {
                     isGPR = true;
                     let mayBePC = type != 'tGPR' && type != 'GPRsp';
                     if(info.out) {
@@ -1426,7 +1445,7 @@ function genHookDisassembler(jumpDis) {
                           (type == '?' && insn.name.match(/^t2TB/))) {
                     isGPR = true; // GPR read, can't writeback
                     info.mayReadPC = true;
-                }  else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
+                } else if(type.match(/((adr|ldr)label$|^t_addrmode_pc$)/))
                     info.dataAddrRef = true;
                 else if(type.match(/^t_addrmode/))
                     ; // these can't writeback or be PC
@@ -1475,7 +1494,7 @@ function genHookDisassembler(jumpDis) {
         }
 
         if(!anyInteresting)
-            return null;
+            return uninterestingReturn(insn);
 
         for(let [varr, stats] of items(varInfo))
             if(anyWritesGPR && stats.relevantToGPRWrite)
@@ -1533,12 +1552,14 @@ function genHookDisassembler(jumpDis) {
     let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: !lang.isRust});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
-    let xseen = {};
-    for(let insn of insns2) {
-        if(xseen[insn.groupName])
-            continue;
-        xseen[insn.groupName] = true;
-        console.log('/* ' + insn.groupName + ': ' + insn.groupInsns.map(insn2 => insn2.name).join(', ') + ' */');
+    for(let [groupName, groupInsns] of items(groupBy(insn => insn.groupName, insns2))) {
+        let comment = `/${''}* ${groupName}:`;
+        let its = Array.from(items(groupBy(insn => insn.groupAndBitsName, groupInsns)));
+        for(let [groupAndBitsName, groupAndBitsInsns] of its)
+            comment += (its.length == 1 ? ' ' : ` [${groupAndBitsName}] `) +
+                       groupAndBitsInsns.map(insn => insn.name).join(', ');
+        comment += ' */';
+        console.log(comment);
     }
     console.log(tableToSimpleC(node,
                                opt.options['dis-pattern'] || 'XXX',

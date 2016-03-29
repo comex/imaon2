@@ -51,8 +51,8 @@ fn trawl_arm(input: DisassemblerInput, leads: &mut Vec<TrawlLead>, thumb: bool) 
     panic!()
 }
 
-struct Handler { insn: u32 }
-enum HandlerResult { Stop, Continue }
+struct Handler { insn: u32, leads: &mut Vec<TrawlLead>, unk_count: u8 }
+enum HandlerResult { Stop, Continue, Yuck }
 impl arm::Handler<HandlerResult> for Handler {
     fn RdHi_out_RdLo_out_13_SMLAL(&mut self, RdLo: Bitslice, RdHi: Bitslice) -> HandlerResult {}
     fn Rn_regs_wb_out_8_LDMDA_UPD(&mut self, regs: Bitslice, Rn: Bitslice) -> HandlerResult {}
@@ -68,8 +68,13 @@ impl arm::Handler<HandlerResult> for Handler {
     fn Rt_out_base_wb_out_3_LDRHTr(&mut self, Rt: Bitslice) -> HandlerResult {}
     fn Rt_out_base_wb_out_offset_3_LDRHTi(&mut self, offset: Bitslice, Rt: Bitslice) -> HandlerResult {}
     fn addr_5_LDRBi12(&mut self, addr: Bitslice) -> HandlerResult {}
-    fn base_wb_out_1_STRHTr(&mut self) -> HandlerResult {}
-    fn base_wb_out_offset_1_STRHTi(&mut self, offset: Bitslice) -> HandlerResult {}
+    fn addr_base_wb_out_offset_1_STRHTi(&mut self, offset: Bitslice, addr: Bitslice) -> HandlerResult {
+        addr.get(self.insn)
+        HandlerResult::Yuck
+    }
+    fn addr_base_wb_out_1_STRHTr(&mut self, addr: Bitslice) -> HandlerResult {
+        if addr.get(self.insn) == HandlerResult::Yuck
+    }
     fn func_2_BL(&mut self, func: Bitslice) -> HandlerResult {}
     fn label_1_ADR(&mut self, label: Bitslice) -> HandlerResult {}
     fn shift_2_LDRBrs(&mut self, shift: Bitslice) -> HandlerResult {}
@@ -78,6 +83,16 @@ impl arm::Handler<HandlerResult> for Handler {
         // if we got here, the output register must be PC
         HandlerResult::Stop
     }
-    fn unidentified(&mut self) -> HandlerResult { HandlerResult::Continue }
+    fn uninteresting_231_BKPT(&mut self, iflags: Bitslice, imod: Bitslice) -> Res {
+        HandlerResult::Continue
+    }
+    fn unidentified(&mut self) -> HandlerResult {
+        println!("(unidentified: {:x})", self.insn);
+        HandlerResult::Yuck
+        /*
+        unk_count += 1;
+        if unk_count == 3 { HandlerResult::Stop } else { HandlerResult::Continue }
+        */
+    }
 }
 
