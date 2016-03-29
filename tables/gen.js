@@ -203,15 +203,29 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
 
         // There's got to be a better way to do this, but I'm not sure what.
 
+        // NOTE: this block is microoptimized because it was the source of a
+        // huge amount of time spent.
+
         let bucketKnownMask = knownMask | (((1 << length) - 1) << start);
         for(let i = 0; i < buckets.length; i++) {
             let bucket = buckets[i];
-            if(bucket.length == 0)
+            if(bucket.length <= 1)
                 continue;
             let bucketKnownValue = knownValue | (i << start);
             //if(insns.length
+            if(bucket.length == 2) {
+                let insn1 = bucket[0], insn2 = bucket[1];
+                if(insn1.conflictGroup != -1 &&
+                   insn2.conflictGroup != -1 &&
+                   insn1.conflictGroup == insn2.conflictGroup) {
+                    if(knocksOut(insn1, insn2, bucketKnownMask, bucketKnownValue))
+                        bucket = [insn1];
+                    else if(knocksOut(insn2, insn1, bucketKnownMask, bucketKnownValue))
+                        bucket = [insn2];
+                }
+                continue;
+            }
             let xinsns = bucket.slice(0);
-                //console.log(xinsns.length);
             for(let i = 0; i < xinsns.length; i++) {
                 let nConflicts = 0;
                 let cg = xinsns[i].conflictGroup;
@@ -1068,7 +1082,7 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
 
     }
     let protoNames = [];
-    for(let proto in data.prototypes)
+    for(let proto in prototypes)
         protoNames.push(proto);
     protoNames.sort();
     let ps = '\n';
@@ -1531,7 +1545,6 @@ function genHookDisassembler(jumpDis) {
                 otherImportant: false,
                 forcedVal: null,
             });
-                info[k] = v;
             if(type == 'fake')
                 info.otherImportant = true;
             else switch(insn.namespace) {
@@ -1672,7 +1685,6 @@ function genHookDisassembler(jumpDis) {
         console.log(comment);
     }
     console.log(tableToBitsliceCaller(node,
-        node,
         opt.options['dis-pattern'] || 'XXX',
         opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')));
 }
