@@ -180,8 +180,6 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
     let buckets = [];
     for(let i = 0; i < (1 << length); i++) {
         let x = [];
-        x.has = {};
-        x.hasCount = 0;
         buckets.push(x);
     }
     for(let i = 0; i < insns.length; i++) {
@@ -220,6 +218,12 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
             }
             for(let cg in cgs) {
                 let conflictingInsns = cgs[cg];
+                if(conflictingInsns.length == 1) {
+                    if(bucket.noConflictsLeft === undefined)
+                        bucket.noConflictsLeft = {};
+                    bucket.noConflictsLeft[conflictingInsns[0].name] = true;
+                    continue;
+                }
                 for(let insn of conflictingInsns) {
                     for(let insn2 of conflictingInsns) {
                         if(knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue)) {
@@ -351,9 +355,23 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
         let bucket = best.buckets[i];
         let bucketKnownMask = knownMask | (((1 << best.length) - 1) << best.start);
         let bucketKnownValue = knownValue | (i << best.start);
+
+        if(bucket.noConflictsLeft !== undefined)
+            for(let insn of bucket) {
+                if(bucket.noConflictsLeft[insn.name]) {
+                    bucket.noConflictsLeft[insn.name] = insn.conflictGroup;
+                    insn.conflictGroup = -1;
+                }
+            }
         //let useCache = bestLength > cacheCutoff && depth > 0;
         // ^ this makes no sense?
         resultBuckets.push(genDisassemblerRec(bucket, bucketKnownMask, bucketKnownValue, useCache, depth + 1, data));
+        if(bucket.noConflictsLeft !== undefined)
+            for(let insn of bucket) {
+                let cg;
+                if((cg = bucket.noConflictsLeft[insn.name]) !== undefined)
+                    insn.conflictGroup = cg;
+            }
     }
 
     if(best.length == 0) {
@@ -426,7 +444,7 @@ function addConflictGroups(insns) {
     for(let insn of insns) {
         for(let insn2 of seen) {
             let bothKnown = insn.instKnownMask & insn2.instKnownMask;
-            if(insn != insn2 && (insn.instKnownValue & bothKnown) == (insn2.instKnownValue & bothKnown)) {
+            if(insn !== insn2 && (insn.instKnownValue & bothKnown) == (insn2.instKnownValue & bothKnown)) {
                 if(insn2.conflictGroup == -1) {
                     insn2.conflictGroup = nextConflictGroup++;
                     cgs[insn2.conflictGroup] = [insn2];
