@@ -2,8 +2,11 @@
 
 extern crate dis;
 extern crate exec;
+extern crate util;
 use exec::arch;
+use exec::arch::ARMMode;
 use dis::{Disassembler, DisassemblerStatics};
+use util::SignExtend;
 
 pub struct Run(u8, u8, u8); // inpos, outpos, len
 pub struct Bitslice { runs: [Run; 5] }
@@ -40,7 +43,7 @@ impl Disassembler for LLVMJumpDisassembler {
     fn can_trawl(&self) -> bool { true }
     fn trawl(&self, input: DisassemblerInput, leads: &mut Vec<TrawlLead>) {
         match (self.arch, input.mode) {
-            (arch::ARM, arch::ARMMode { thumb }) => trawl_arm(input, leads, thumb),
+            (arch::ARM, ARMMode { thumb }) => trawl_arm(input, leads, thumb),
             _ => panic!("unsupported arch"),
         }
     }
@@ -51,7 +54,11 @@ fn trawl_arm(input: DisassemblerInput, leads: &mut Vec<TrawlLead>, thumb: bool) 
     panic!()
 }
 
-struct Handler { insn: u32, leads: &mut Vec<TrawlLead>, unk_count: u8 }
+struct Handler { addr: u32, insn: u32, leads: &mut Vec<TrawlLead>, unk_count: u8 }
+impl Handler {
+    #[inline]
+    fn pc(&self) -> u32 { self.addr.wrapping_add(4) }
+}
 enum HandlerResult { Stop, Continue, Yuck }
 impl arm::Handler<HandlerResult> for Handler {
     fn RdHi_out_RdLo_out_13_SMLAL(&mut self, RdLo: Bitslice, RdHi: Bitslice) -> HandlerResult {}
@@ -75,10 +82,25 @@ impl arm::Handler<HandlerResult> for Handler {
     fn addr_base_wb_out_1_STRHTr(&mut self, addr: Bitslice) -> HandlerResult {
         if addr.get(self.insn) == HandlerResult::Yuck
     }
-    fn func_2_BL(&mut self, func: Bitslice) -> HandlerResult {}
     fn label_1_ADR(&mut self, label: Bitslice) -> HandlerResult {}
-    fn shift_2_LDRBrs(&mut self, shift: Bitslice) -> HandlerResult {}
-    fn target_2_BLXi(&mut self, target: Bitslice) -> HandlerResult {}
+    fn shift_2_LDRBrs(&mut self, shift: Bitslice) -> HandlerResult {
+    
+        (shift.get(self.insn) >> 13) & 15
+    }
+    fn func_2_BL(&mut self, func: Bitslice) -> HandlerResult {
+        let func = self.pc().wrapping_add((func.get(self.insn) * 4).sign_extend(26));
+        self.leads.push(TrawlLead { addr: VMA(func.ext()),
+                                    kind: TrawlLeadKind::JumpRef {
+                                        mode: ARMMode { thumb: false } } });
+    }
+    fn target_2_BLXi(&mut self, target: Bitslice) -> HandlerResult {
+        let func =
+            self.pc().wrapping_add(
+                target.get(self.insn).sign_extend(26));
+        self.leads.push(TrawlLead { addr: VMA(func.ext()),
+                                    kind: TrawlLeadKind::JumpRef {
+                                        mode: ARMMode { thumb: true } } });
+    }
     fn x_201_ADCri(&mut self) -> HandlerResult {
         // if we got here, the output register must be PC
         HandlerResult::Stop

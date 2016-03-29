@@ -111,10 +111,14 @@ all: out-td
 
 
 GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-jump-disassembler --out-lang=rust
+GEN_DEBUG_DIS := $(NODE) tables/gen.js --gen-debug-disassembler --out-lang=rust
 define dis-flavor
 $(OUT_COMMON)/jump-dis-$(1).rs: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
 	$(GEN_JUMP_DIS) $(3) $$< > $$@ || rm -f $$@
+$(OUT_COMMON)/debug-dis-$(1).rs: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
+	$(GEN_DEBUG_DIS) $(3) $$< > $$@ || rm -f $$@
 jump-dis-all: $(OUT_COMMON)/jump-dis-$(1).rs
+debug-dis-all: $(OUT_COMMON)/debug-dis-$(1).rs
 endef
 $(eval $(call dis-flavor,arm,ARM,-n _arm))
 $(eval $(call dis-flavor,thumb,ARM,-n _thumb))
@@ -163,6 +167,7 @@ $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 ifneq ($(USE_LLVM),)
 $(call define_crate,$(LIB),llvm_jump_dis,dis/llvm_jump_dis.rs,dis,jump-dis-all)
+$(call define_crate,$(LIB),llvm_debug_dis,dis/llvm_debug_dis.rs,dis,debug-dis-all)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 endif
 

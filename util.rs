@@ -216,6 +216,15 @@ macro_rules! impl_unsigned {($ty:ident) => {
     impl IntStuffSU for $ty {
         fn neg_if_possible(self) -> Option<Self> { None }
     }
+    impl SignExtend for $ty {
+        fn sign_extend(self, bits: u8) -> Self {
+            self | (0.wrapping_sub((self >> (bits - 1)) & 1) << bits)
+        }
+        fn un_sign_extend(self, bits: u8) -> Option<Self> {
+            let masked = self & ((1 << bits) - 1);
+            if masked.sign_extend(bits) == self { Some(masked) } else { None }
+        }
+    }
 }}
 
 impl_unsigned!(usize);
@@ -857,6 +866,10 @@ pub trait IntStuff : IntStuffSU {
     fn align_to(self, size: Self) -> Self;
 }
 
+pub trait SignExtend {
+    fn sign_extend(self, bits: u8) -> Self;
+    fn un_sign_extend(self, bits: u8) -> Option<Self>;
+}
 
 pub fn stoi<T: IntStuff>(mut s: &str) -> Option<T> {
     if s == "" { return None; }
