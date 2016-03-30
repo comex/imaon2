@@ -8,27 +8,8 @@ use exec::arch::ARMMode;
 use dis::{Disassembler, DisassemblerStatics};
 use util::SignExtend;
 
-pub struct Run(u8, u8, u8); // inpos, outpos, len
-pub struct Bitslice { runs: [Run; 5] }
-impl Bitslice {
-    #[cfg_attr(opt, inline(always))]
-    fn get(&self, insn: u32) -> u32 {
-        let mut val = 0;
-        for run in self.runs {
-            val |= insn.rotate_left(run.1.wrapping_sub(run.0) & 31) & ((1 << run.2) - 1);
-        }
-        val
-    }
-    fn set(&self, insn: u32, field_val: u32) -> u32 {
-        let mut val = 0;
-        for run in self.runs {
-            let rot = run.1.wrapping_sub(run.0) & 31;
-            let mask = (1 << run.2) - 1;
-            val = val & ~(mask.rotate_left(rot)) | field_val.rotate_left(rot);
-        }
-        val
-    }
-}
+use dis::{Run, Bitslice};
+
 #[path="../out-common/jump-dis-arm.rs"]
 mod arm;
 #[path="../out-common/jump-dis-thumb.rs"]

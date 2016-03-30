@@ -35,7 +35,7 @@ impl RelocContext {
             Arm64Adrp => {
                 if word & 0x9f000000 == 0x90000000 {
                     Some(self.base_addr.wrapping_add(
-                        (word & 0x60000000) >> 17 | (word & 0xffffe0) << 9).sign_extend(33)
+                        ((word & 0x60000000) >> 17 | (word & 0xffffe0) << 9).sign_extend(33)
                     ))
                 } else { None }
             },

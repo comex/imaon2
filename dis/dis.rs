@@ -100,3 +100,28 @@ pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::ArchAndOptions, a
     }
     Err(box CreateDisError::InvalidArgs(format!("no disassembler named {}", name)))
 }
+
+// this belongs more to the LLVM stuff specifically, but no better place to put it
+pub struct Run(u8, u8, u8); // inpos, outpos, len
+pub struct Bitslice { runs: [Run; 5] }
+impl Bitslice {
+    #[cfg_attr(opt, inline(always))]
+    fn get(&self, insn: u32) -> u32 {
+        let mut val = 0;
+        for run in &self.runs {
+            val |= insn.rotate_left((run.1.wrapping_sub(run.0) & 31) as u32)
+                   & ((1 << run.2) - 1);
+        }
+        val
+    }
+    #[cfg_attr(opt, inline(always))]
+    fn set(&self, insn: u32, field_val: u32) -> u32 {
+        let mut val = 0;
+        for run in &self.runs {
+            let rot = (run.1.wrapping_sub(run.0) & 31) as u32;
+            let mask: u32 = (1 << run.2) - 1;
+            val = val & !(mask.rotate_left(rot)) | field_val.rotate_left(rot);
+        }
+        val
+    }
+}

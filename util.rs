@@ -218,7 +218,7 @@ macro_rules! impl_unsigned {($ty:ident) => {
     }
     impl SignExtend for $ty {
         fn sign_extend(self, bits: u8) -> Self {
-            self | (0.wrapping_sub((self >> (bits - 1)) & 1) << bits)
+            self | ((0 as $ty).wrapping_sub((self >> (bits - 1)) & 1) << bits)
         }
         fn un_sign_extend(self, bits: u8) -> Option<Self> {
             let masked = self & ((1 << bits) - 1);
@@ -866,7 +866,7 @@ pub trait IntStuff : IntStuffSU {
     fn align_to(self, size: Self) -> Self;
 }
 
-pub trait SignExtend {
+pub trait SignExtend : Sized {
     fn sign_extend(self, bits: u8) -> Self;
     fn un_sign_extend(self, bits: u8) -> Option<Self>;
 }

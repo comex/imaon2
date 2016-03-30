@@ -591,11 +591,11 @@ function opRunsToExtractionFormula(runs, inExpr) {
         let inpos = run[0], outpos = run[1], len = run[2];
         let diff = inpos - outpos;
         let mask = ((1 << len) - 1) << inpos;
-        let x = '(' + inExpr + ' & 0x' + hexnopad(mask) + ')';
+        let x = inExpr + ' & ' + lang.u32HexLit(mask);
         if(outpos < inpos)
-            x = '(' + x + ' >> ' + (inpos - outpos) + ')';
+            x = `(${x}) >> ${inpos-outpos}`;
         else if(outpos > inpos)
-            x = '(' + x + ' << ' + (outpos - inpos) + ')';
+            x = `(${x}) << ${outpos-inpos}`;
         parts.push(x);
     }
     return parts.join(' | ');
@@ -646,8 +646,8 @@ function genConstraintTest(insn, unknown) {
     let test = null;
     for(let run of runs) {
         let mask = (1 << run[2]) - 1;
-        let part = '((op >> ' + run[0] + ') & 0x' + hexnopad(mask) + ') == ' +
-                   '((op >> ' + run[1] + ') & 0x' + hexnopad(mask) + ')';
+        let part = '((op >> ' + lang.u32DecLit(run[0]) + ') & ' + lang.u32HexLit(mask) + ') == ' +
+                   '((op >> ' + lang.u32DecLit(run[1]) + ') & ' + lang.u32HexLit(mask) + ')';
         if(test !== null)
             test = lang.and(test, part);
         else
@@ -660,19 +660,40 @@ function gotoOrGen(data, label, comment, gen) {
     if(lang.isRust) {
         // lol
         if(!data.seen[label]) {
-            data.prefixLines.push("    '"+label+': loop {');
-            let action = lang.finalRender('        ', gen(), /*mayImplicitlyReturn*/ false);
-            data.suffixLines = [].concat.apply([], [
-                ["    } // '" + label,
-                 '    /* action */ {'],
-                action,
-                ['    }'],
-                data.suffixLines
-            ]);
             data.seen[label] = true;
+            switch(data.opts.mode) {
+            case 'loop': {
+                data.prefixLines.push("    '"+label+': loop {');
+                let action = lang.finalRender('        ', gen(),
+                                              /*mayImplicitlyReturn*/ false);
+                data.suffixLines = [].concat(
+                    ["    } // '" + label,
+                     '    /* action */ {'],
+                    action,
+                    ['    }'],
+                    data.suffixLines
+                );
+                break;
+            }
+            case 'match': {
+                let action = lang.finalRender('            ', gen(), true);
+                data.prefixLines.push(`        ${label},`);
+                data.suffixLines.push(
+                    `        E::${label} => {`,
+                    ...action,
+                    '        },'
+                );
+                break;
+            }
+            }
         }
-        comment = comment ? (' // ' + comment) : '';
-        return "break '" + label + comment;
+        comment = comment ? ` /* ${comment} */` : '';
+        switch(data.opts.mode) {
+        case 'loop':
+            return "break '" + label + comment;
+        case 'match':
+            return 'E::' + label + comment;
+        }
     } else {
         if(data.seen[label]) {
             //data.seen[label]++;
@@ -785,6 +806,8 @@ class CLang extends SuperLang {
         return {'stmt': true,
                 'text': `${ty} ${varName} = ${this.render(expr)};`};
     }
+    u32HexLit(n) { return '0x' + hexnopad(n) ; }
+    u32DecLit(n) { return n + ''; }
     finalRender(indent, stmtList) {
         let lines = [];
         let neededLabels = {};
@@ -858,7 +881,9 @@ class RustLang extends SuperLang {
             let runs = pairsToRuns(whens.map(when => [when, when]));
             let pat = [];
             for(let [start, _, len] of runs)
-                pat.push(len == 1 ? (start+'') : (start + '...' + (start+len-1)));
+                pat.push(len == 1 ?
+                         this.u32DecLit(start) :
+                         (this.u32DecLit(start) + '...' + this.u32DecLit(start+len-1)));
             let left = pat.join(' | ');
             what = this.stmtList(what);
             stmts.push({'stmt': 'true', 'matchCase': true,
@@ -879,8 +904,10 @@ class RustLang extends SuperLang {
     }
     let(varName, ty, expr) {
         return {'stmt': true,
-                'text': `let ${varName} = ${this.render(expr)};`};
+                'text': `let ${varName}: ${ty} = ${this.render(expr)};`};
     }
+    u32HexLit(n) { return '0x' + hexnopad(n) + 'u32'; }
+    u32DecLit(n) { return n + 'u32'; }
     finalRender(indent, stmtList, mayImplicitlyReturn) {
         let lines = [];
         this.finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn);
@@ -949,8 +976,10 @@ class RustLang extends SuperLang {
 
 RustLang.prototype.isRust = true;
 RustLang.prototype.canGoto = false;
+RustLang.prototype.u32 = 'u32';
 CLang.prototype.isRust = false;
 CLang.prototype.canGoto = true;
+CLang.prototype.u32 = 'uint32_t';
 
 let lang = new CLang();
 
@@ -958,7 +987,7 @@ let indentStep = '    ';
 function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
     if(node.fail) {
         return gotoOrGen(data, '_unidentified', '', () =>
-            data.cbs.makeCallUnidentified());
+            data.opts.makeCallUnidentified());
     } else if(node.insn) {
         let insn = node.insn;
         let unknown = insn.instDependsMask & ~node.knownMask;
@@ -967,7 +996,7 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
             f = next => [
                 lang.if(lang.not(genConstraintTest(insn, unknown)),
                         gotoOrGen(data, '_unidentified', '', () =>
-                           data.cbs.makeCallUnidentified()))
+                           data.opts.makeCallUnidentified()))
             ].concat(next)
         }
         // ok, it's definitely this instruction
@@ -978,7 +1007,7 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
         return f(gotoOrGen(data, label, hexComment, () => {
             let runsByOp = instToOpRuns(insn.inst);
             let out = [];
-            return data.cbs.makeCall(nobitsName, runsByOp);
+            return data.opts.makeCall(nobitsName, runsByOp);
         }));
     } else {
         if(lang.canGoto && data.seenNodeId[node.id])
@@ -988,14 +1017,14 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
         if(node.isBinary) {
             let insn = node.buckets[0].insn;
             let unknown = insn.instConstrainedMask & ~node.knownMask;
-            let test = '(op & 0x' + hexnopad(insn.instKnownMask & ~node.knownMask) + ') == 0x' + hexnopad(insn.instKnownValue & ~node.knownMask);
+            let test = '(op & ' + lang.u32HexLit(insn.instKnownMask & ~node.knownMask) + ') == ' + lang.u32HexLit(insn.instKnownValue & ~node.knownMask);
             if(unknown)
                 test = lang.and(test, genConstraintTest(insn, unknown));
             r = lang.if(test,
                 tableToSwitcherRec(node.buckets[0], data, indent + indentStep, true),
                 tableToSwitcherRec(node.buckets[1], data, indent + indentStep));
         } else {
-            let switchOn = '(op >> ' + node.start + ') & 0x' + hexnopad((1 << node.length) - 1);
+            let switchOn = '(op >> ' + lang.u32DecLit(node.start) + ') & ' + lang.u32HexLit((1 << node.length) - 1);
             let cases = [];
             let ncases = 0;
             let buckets = node.buckets.slice(0);
@@ -1025,19 +1054,44 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
     }
 }
 
-function tableToSwitcher(node, cbs) {
+function tableToSwitcher(node, opts) {
     let data = {
         seen: {},
         seenNodeId: {},
         // for rust
         prefixLines: [],
         suffixLines: [],
-        cbs: cbs,
+        opts: opts,
     };
+    switch(opts.mode) {
+        case 'loop':
+        case 'match':
+            break;
+        default:
+            throw '?';
+    }
     let ret = tableToSwitcherRec(node, data, indentStep);
-    ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
-    ret = data.prefixLines.concat(ret).concat(data.suffixLines).join('\n')
-    return ret;
+    switch(opts.mode) {
+    case 'loop':
+        ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
+        ret = [...data.prefixLines, ...ret, ...data.suffixLines];
+        break;
+    case 'match':
+        ret = lang.finalRender('        ', ret, true);
+        ret = [
+            '    enum E {',
+            ...data.prefixLines,
+            '    }',
+            '    fn which(op: u32) -> E {',
+            ...ret,
+            '    }',
+            '    match which(op) {',
+            ...data.suffixLines,
+            '    }',
+        ];
+        break;
+    }
+    return ret.join('\n');
 }
 
 function tableToBitsliceCaller(node, pattern, extraArgs) {
@@ -1045,8 +1099,8 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
     let patternifyForDef = n => pattern.replace(/XXX/g, n);
     let patternifyForCall = lang.isRust ? (n => 'h.'+patternifyForDef(n)) : patternifyForDef;
 
-    let cbs = {};
-    cbs.makeCall = (nobitsName, runsByOp) => {
+    let opts = {};
+    opts.makeCall = (nobitsName, runsByOp) => {
         let funcName = patternifyForCall(nobitsName);
         let out = [];
         let args = extraArgs ? [extraArgs] : [];
@@ -1068,14 +1122,15 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
 
         return out;
     };
-    cbs.makeCallUnidentified = () =>
+    opts.makeCallUnidentified = () =>
         lang.return(lang.call(patternifyForCall('unidentified'), [extraArgs]));
+    opts.mode = 'loop';
 
-    let ret = tableToSwitcher(node, cbs);
+    let ret = tableToSwitcher(node, opts);
 
     if(lang.isRust) {
         ret = 'use ::{Bitslice, Run};\n' +
-              'fn unreachable() { unreachable!() }\n' +
+              'fn unreachable() -> ! { unreachable!() }\n' +
               'pub fn decode<Res, H: Handler<Res>>(op: u32, h: &mut H) -> Res {\n' +
               ret +
               '\n}';
@@ -1100,11 +1155,11 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
 }
 
 function tableToDebugCaller(node, cbName, extraArgs) {
-    let cbs = {
+    let opts = {
         makeCall(nobitsName, runsByOp) {
             let out = [];
             for(let [op, runs] of items(runsByOp))
-                out.push(lang.let(op, 'uint32_t', opRunsToExtractionFormula(runs, 'op')));
+                out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runs, 'op')));
             let args = [lang.stringLit(nobitsName)];
             if(lang.isRust) {
                 let ops = [];
@@ -1123,15 +1178,15 @@ function tableToDebugCaller(node, cbName, extraArgs) {
             return out;
         },
         makeCallUnidentified() {
-            return cbs.makeCall('unidentified', []);
-        }
+            return opts.makeCall('unidentified', []);
+        },
+        mode: 'match',
     };
-    let ret = tableToSwitcher(node, cbs);
+    let ret = tableToSwitcher(node, opts);
     if(lang.isRust) {
         ret = 'use ::Operand;\n' +
-              'fn unreachable() { unreachable!() }\n' +
-              'pub fn decode<Res, Out: FnOnce(&\'static str, &[Operand]) -> Res>\n' +
-              '    (op: u32, out: Out) -> Res {\n' +
+              'fn unreachable() -> ! { unreachable!() }\n' +
+              'pub fn decode(op: u32, cb: &mut FnMut(&\'static str, &[Operand])) {\n' +
               ret +
               '\n}';
     }

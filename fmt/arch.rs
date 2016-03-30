@@ -1,6 +1,7 @@
 use ::{getopts, util};
 use std::default::Default;
 use std::str::FromStr;
+use util::Endian;
 pub use self::Arch::*;
 pub use self::CodeMode::*;
 use std;
@@ -69,14 +70,22 @@ impl fmt::Display for Arch {
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Default)]
 pub struct NoOptionsYet {
-    pub please_use_default: (),
+    pub _please_use_default: (),
+}
+
+pub type ARMOptions = _EndianOptions;
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Default)]
+pub struct _EndianOptions {
+    pub endian: Endian,
+    pub _please_use_default: (),
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ArchAndOptions {
     X86(NoOptionsYet),
     X86_64(NoOptionsYet),
-    ARM(NoOptionsYet),
+    ARM(ARMOptions),
     AArch64(NoOptionsYet),
     Sparc(NoOptionsYet),
     Mips(NoOptionsYet),
