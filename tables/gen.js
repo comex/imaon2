@@ -1064,14 +1064,21 @@ function tableToSwitcher(node, opts) {
         opts: opts,
     };
     switch(opts.mode) {
+        case 'goto':
+            if(!lang.canGoto)
+                throw 'wrong mode';
+            break;
         case 'loop':
         case 'match':
+            if(!lang.isRust)
+                throw '?';
             break;
         default:
             throw '?';
     }
     let ret = tableToSwitcherRec(node, data, indentStep);
     switch(opts.mode) {
+    case 'goto':
     case 'loop':
         ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
         ret = [...data.prefixLines, ...ret, ...data.suffixLines];
@@ -1124,7 +1131,7 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
     };
     opts.makeCallUnidentified = () =>
         lang.return(lang.call(patternifyForCall('unidentified'), [extraArgs]));
-    opts.mode = 'loop';
+    opts.mode = lang.isRust ? 'loop' : 'goto';
 
     let ret = tableToSwitcher(node, opts);
 
@@ -1180,7 +1187,7 @@ function tableToDebugCaller(node, cbName, extraArgs) {
         makeCallUnidentified() {
             return opts.makeCall('unidentified', []);
         },
-        mode: 'match',
+        mode: lang.isRust ? 'match' : 'goto',
     };
     let ret = tableToSwitcher(node, opts);
     if(lang.isRust) {
