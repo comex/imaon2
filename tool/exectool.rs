@@ -22,8 +22,9 @@ use std::cmp::min;
 use std::str::FromStr;
 use std::any::Any;
 
-use util::{VecCopyExt, into_cow};
-use exec::{arch, SymbolValue};
+use util::{VecCopyExt, into_cow, Ext};
+use exec::{arch, SymbolValue, VMA};
+use exec::arch::{ArchAndOptions, CodeMode};
 #[path = "../fmt/execall.rs"] mod execall;
 #[path = "../dis/disall.rs"] mod disall;
 
@@ -86,7 +87,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
         size -= addr;
     }
 
-    let (mut addr, mut size) = (exec::VMA(addr), size);
+    let (mut addr, mut size) = (VMA(addr), size);
     while size != 0 {
         if let Some((seg, off, osize)) = exec::addr_to_seg_off_range(&eb.segments, addr) {
             let osize = min(osize, size);
@@ -197,7 +198,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     }
     if let Some(off_str) = m.opt_str("o2a") {
         let off: u64 = util::stoi(&off_str).unwrap();
-        if let Some(exec::VMA(vma)) = exec::off_to_addr(&eb.segments, off, 0) {
+        if let Some(VMA(vma)) = exec::off_to_addr(&eb.segments, off, 0) {
             println!("0x{:x}", vma);
         } else {
             println!("-");
@@ -205,7 +206,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
     }
     if let Some(addr_str) = m.opt_str("a2o") {
         let addr: u64 = util::stoi(&addr_str).unwrap();
-        if let Some(off) = exec::addr_to_off(&eb.segments, exec::VMA(addr), 0) {
+        if let Some(off) = exec::addr_to_off(&eb.segments, VMA(addr), 0) {
             println!("0x{:x}", off);
         } else {
             println!("-");
@@ -217,29 +218,44 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
             Err(msg) => errln!("dump error: {}", msg),
         };
     }
-    let _arch = match m.opt_str("arch") {
+    let arch = match m.opt_str("arch") {
         Some(arch_s) => arch::Arch::from_str(&*arch_s).unwrap(),
         None => arch::Arch::UnknownArch,
     };
-    /*
+    // XXXXX
+    let arch_opts: ArchAndOptions = ArchAndOptions::new(&["armv7".to_owned(), "-EL".to_owned()]).unwrap();
+    // XXX should accept multiple copies of these
+    let mut dis_opts = vec!["llvmdis".to_owned()];
+    if let Some(name) = m.opt_str("dis") {
+        // XXX I should probably support [ and ] - also depends on customizing getopts
+        dis_opts = vec![name.to_owned()];
+    }
     if let Some(dump_spec) = m.opt_str("dis-range") {
-        let dis = dis::create(disall::ALL_FAMILIES, arch.into(), &["llvm".to_owned()]).unwrap();
+        let dis = dis::create(disall::ALL_FAMILIES, arch_opts, &dis_opts).unwrap();
         let dump_data = get_dump_from_spec(ex, dump_spec).unwrap();
-        let results = dis.disassemble_multiple_to_str(dis::DisassemblerInput { data: &dump_data[..], pc: exec::VMA(0) });
-        let mut last_end: u64= 0;
+        let base_pc = VMA(0);
+        let results = dis.disassemble_multiple_to_str(dis::DisassemblerInput {
+            data: &dump_data[..],
+            pc: base_pc,
+            mode: CodeMode::new(&arch_opts, &[]).unwrap(), // XXX
+        });
+        let mut last_end: VMA = base_pc;
         for (dissed, pc, length) in results {
             let diff = last_end - pc;
             if diff != 0 {
                 println!("...skip {}", diff);
             }
-            println!("-> {}: {}", pc, dissed);
-            last_end = pc.0 + length;
+            println!("-> {}: {}", pc,
+                if let Some(ref s) = dissed { &s[..] } else { "<?>" });
+            last_end = pc + length.ext();
         }
-        if last_end != (dump_data.len() as u64) {
-            println!("...skip {}", (dump_data.len() as u64) - last_end);
+        let expected_end = base_pc + (dump_data.len() as u64);
+        if last_end < expected_end {
+            println!("...skip {}", expected_end - last_end);
+        } else if last_end > expected_end {
+            println!("...over-read by {}", last_end - expected_end);
         }
     }
-    */
 }
 
 fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {

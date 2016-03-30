@@ -16,8 +16,8 @@ num_cpus = "0.2"
 
 # this pulls in syntex via bindgen :(
 # todo use features
-#[dependencies.autollvm]
-#path = "../autollvm"
+[dependencies.autollvm]
+path = "../autollvm"
 
 [dependencies.nodrop]
 version = "0.1"

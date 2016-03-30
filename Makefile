@@ -12,6 +12,7 @@ ifneq ($(USE_LLVM),)
     else
         $(error USE_LLVM should be blank, 0, or 1)
     endif
+	override RUSTFLAGS := $(RUSTFLAGS) --cfg use_llvm
 endif
 
 override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
@@ -111,18 +112,29 @@ all: out-td
 
 
 GEN_JUMP_DIS := $(NODE) tables/gen.js --gen-jump-disassembler --out-lang=rust
-GEN_DEBUG_DIS := $(NODE) tables/gen.js --gen-debug-disassembler --out-lang=rust
+GEN_DEBUG_DIS := $(NODE) tables/gen.js --gen-debug-disassembler --out-lang=c
 define dis-flavor
 $(OUT_COMMON)/jump-dis-$(1).rs: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
 	$(GEN_JUMP_DIS) $(3) $$< > $$@ || rm -f $$@
-$(OUT_COMMON)/debug-dis-$(1).rs: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
+$(OUT_COMMON)/debug-dis-$(1).c: $(OUT_COMMON)/out-$(2).json tables/gen.js Makefile
 	$(GEN_DEBUG_DIS) $(3) $$< > $$@ || rm -f $$@
-jump-dis-all: $(OUT_COMMON)/jump-dis-$(1).rs
-debug-dis-all: $(OUT_COMMON)/debug-dis-$(1).rs
+$(OUT_COMMON)/jump-dis-all: $(OUT_COMMON)/jump-dis-$(1).rs
+$(OUT_COMMON)/debug-dis-all: $(OUT_COMMON)/debug-dis-$(1).c
 endef
 $(eval $(call dis-flavor,arm,ARM,-n _arm))
 $(eval $(call dis-flavor,thumb,ARM,-n _thumb))
 $(eval $(call dis-flavor,thumb2,ARM,-n _thumb2))
+
+$(OUT_COMMON)/jump-dis-all:
+	touch $@
+$(OUT_COMMON)/debug-dis-all:
+	touch $@
+
+$(OUT)/llvm-debug-dis-c.o: dis/llvm-debug-dis-c.c $(OUT_COMMON)/debug-dis-all
+	clang -c -o $@ $< -O3
+$(OUT)/lib%.a: $(OUT)/%.o
+	ar rcs $@ $<
+
 
 endif # end USE_LLVM
 
@@ -167,13 +179,13 @@ $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
 $(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
 ifneq ($(USE_LLVM),)
 $(call define_crate,$(LIB),llvm_jump_dis,dis/llvm_jump_dis.rs,dis,jump-dis-all)
-$(call define_crate,$(LIB),llvm_debug_dis,dis/llvm_debug_dis.rs,dis,debug-dis-all)
+$(call define_crate,$(LIB),llvm_debug_dis,dis/llvm_debug_dis.rs,dis,$(OUT)/libllvm-debug-dis-c.a)
 $(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
 endif
 
 $(call define_crate,$(LIB),db,db/sexpr.rs,util)
 
-$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho macho_dsc_extraction elf raw_binary dis $(if $(USE_LLVM),llvmdis,))
+$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho macho_dsc_extraction elf raw_binary dis $(if $(USE_LLVM),llvmdis llvm_debug_dis,))
 $(call define_crate,bin,yasce,tool/yasce.rs,macho macho_dsc_extraction)
 
 clean:

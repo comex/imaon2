@@ -31,11 +31,10 @@ impl LLVMDisassembler {
 
         let triple = if let Some(t) = triple { t } else {
             match arch {
-                ArchAndOptions::ARM(arch::ARMOptions { thumb, ..}) =>
-                    if thumb { "thumbv7" } else { "armv7" },
+                ArchAndOptions::ARM(..) => "armv7",
                 ArchAndOptions::X86_64(..) => "x86_64",
                 ArchAndOptions::X86(..) => "x86",
-                ArchAndOptions::UnknownArch => return Err(util::GenericError("can't create disassembler for unknown arch".to_owned())),
+                ArchAndOptions::UnknownArch(..) => return Err(util::GenericError("can't create disassembler for unknown arch".to_owned())),
                 _ => panic!("todo"),
             }
         };
@@ -73,13 +72,13 @@ impl Drop for LLVMDisassembler {
 impl dis::Disassembler for LLVMDisassembler {
     fn arch(&self) -> &arch::ArchAndOptions { &self.arch }
     fn can_disassemble_to_str(&self) -> bool { true }
-    fn disassemble_insn_to_str(&self, input: dis::DisassemblerInput) -> Option<(String, u32)> {
+    fn disassemble_insn_to_str(&self, input: dis::DisassemblerInput) -> Option<(Option<String>, u32)> {
         let mut tmp: [u8; 256] = unsafe { std::mem::uninitialized() };
         let res = unsafe { al::LLVMDisasmInstruction(self.dcr, input.data.as_ptr() as *mut u8, input.data.len() as u64, input.pc.0, &mut tmp[0] as *mut u8 as *mut c_char, 256) };
         if res == 0 {
             None
         } else {
-            Some((util::from_cstr(&tmp).lossy().into_owned(), res as u32))
+            Some((Some(util::from_cstr(&tmp as &[u8]).lossy().into_owned()), res as u32))
         }
     }
 }

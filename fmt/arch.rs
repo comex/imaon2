@@ -1,10 +1,9 @@
 use ::{getopts, util};
 use std::default::Default;
 use std::str::FromStr;
-use util::Endian;
+use util::{Endian, LittleEndian, BigEndian};
 pub use self::Arch::*;
 pub use self::CodeMode::*;
-use std;
 use std::fmt;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
@@ -31,7 +30,7 @@ impl FromStr for Arch {
             Ok(X86)
         } else if s == "x86_64" || s == "x86-64" || s == "amd64" {
             Ok(X86_64)
-        } else if s == "arm" {
+        } else if s == "arm" || s == "armv7" || s == "armv6" {
             Ok(ARM)
         } else if s == "arm64" || s == "aarch64" {
             Ok(AArch64)
@@ -109,13 +108,29 @@ impl ArchAndOptions {
             _ => 1,
         }
     }
-    pub fn new(args: Vec<String>) -> Result<(ArchAndOptions, Vec<String>), String> {
+    pub fn new(args: &[String]) -> Result<ArchAndOptions, String> {
         if args.len() == 0 { return Err("empty args".to_owned()); }
         let arch = try!(Arch::from_str(&*args[0]).map_err(|()| "unknown arch"));
         match arch {
+            ARM => {
+                let m = try!(util::do_getopts_or_usage(&args[1..], &*args[0], 0,0, &mut vec![
+                    getopts::optopt("E", "endian", "Endian", "little/big/L/B"),
+                ]));
+                let endian_str = m.opt_str("endian");
+                let endian_str = if let Some(ref s) = endian_str { Some(&**s) } else { None }; // XXX wtf
+                let endian = match endian_str {
+                    Some("L") | Some("l") | Some("little") => LittleEndian,
+                    Some("B") | Some("b") | Some("big") => BigEndian,
+                    Some(x) => return Err(format!("bad endian spec {}", x)),
+                    None => return Err("no endian specified".to_owned()),
+                };
+                Ok(ArchAndOptions::ARM(ARMOptions { endian: endian, ..ARMOptions::default() }))
+            },
             _ => {
-                let m = try!(util::do_getopts_or_usage(&args[1..], &*args[0], 0, std::usize::MAX, &mut vec![]));
-                Ok((arch.into(), m.free))
+                if args.len() > 0 {
+                    return Err(format!("arch {} accepts no args", arch));
+                }
+                Ok(ArchAndOptions::new_default(arch))
             },
         }
 
@@ -124,17 +139,17 @@ impl ArchAndOptions {
 
 macro_rules! arch_into {
     ($($archs:ident),*) => {
-        impl Into<ArchAndOptions> for Arch {
-            fn into(self) -> ArchAndOptions {
-                match self {
+        impl ArchAndOptions {
+            pub fn new_default(arch: Arch) -> Self {
+                match arch {
                     $($archs => ArchAndOptions::$archs(Default::default())),*,
                 }
             }
         }
-        impl Into<Arch> for ArchAndOptions {
-            fn into(self) -> Arch {
+        impl ArchAndOptions {
+            pub fn arch(&self) -> Arch {
                 match self {
-                    $(ArchAndOptions::$archs(..) => Arch::$archs),*,
+                    $(&ArchAndOptions::$archs(..) => Arch::$archs),*,
                 }
             }
         }
@@ -150,17 +165,17 @@ pub enum CodeMode {
 }
 
 impl CodeMode {
-    pub fn new(arch: &ArchAndOptions, args: Vec<String>) -> Result<(CodeMode, Vec<String>), String> {
+    pub fn new(arch: &ArchAndOptions, args: &[String]) -> Result<CodeMode, String> {
         match arch {
             &ArchAndOptions::ARM(..) => {
-                let m = try!(util::do_getopts_or_usage(&args, "[--thumb]", 0, std::usize::MAX, &mut vec![
+                let m = try!(util::do_getopts_or_usage(&args, "[--thumb]", 0, 0, &mut vec![
                     getopts::optflag("t", "thumb", "Thumb"),
                 ]));
-                Ok((CodeMode::ARMMode { thumb: m.opt_present("thumb") }, m.free))
+                Ok(CodeMode::ARMMode { thumb: m.opt_present("thumb") })
             },
             _ => {
-                let m = try!(util::do_getopts_or_usage(&args, "[no options]", 0, std::usize::MAX, &mut vec![]));
-                Ok((CodeMode::OtherMode, m.free))
+                let m = try!(util::do_getopts_or_usage(&args, "[no options]", 0, 0, &mut vec![]));
+                Ok(CodeMode::OtherMode)
             },
         }
     }

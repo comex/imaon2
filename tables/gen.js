@@ -591,14 +591,14 @@ function opRunsToExtractionFormula(runs, inExpr) {
         let inpos = run[0], outpos = run[1], len = run[2];
         let diff = inpos - outpos;
         let mask = ((1 << len) - 1) << inpos;
-        let x = inExpr + ' & ' + lang.u32HexLit(mask);
+        let x = lang.bitand(inExpr, lang.u32HexLit(mask));
         if(outpos < inpos)
-            x = `(${x}) >> ${inpos-outpos}`;
+            x = lang.shr(x, lang.u32DecLit(inpos - outpos));
         else if(outpos > inpos)
-            x = `(${x}) << ${outpos-inpos}`;
+            x = lang.shl(x, lang.u32DecLit(outpos - inpos));
         parts.push(x);
     }
-    return parts.join(' | ');
+    return parts.reduce((a, b) => lang.bitor(a, b));
 }
 
 function opRunsToBitsliceLiteral(name, runs) {
@@ -714,7 +714,7 @@ class SuperLang {
     }
 
     render(x) { return this.renderEx(99, null, x); }
-    renderEx(precedence, rightSideOf, expr) {
+    renderEx(precedence, nextTo, expr) {
         if(expr.charCodeAt) {
             let prec = expr.match(/^[a-zA-Z0-9_\.]+$/) ? 1 : 98;
             expr = this.expr(prec, null, expr);
@@ -723,14 +723,19 @@ class SuperLang {
             throw 'not expr or string';
         if(expr.precedence < precedence ||
            (expr.precedence == precedence &&
-            rightSideOf !== null &&
-            rightSideOf === expr.infixChainEndingIn))
+            nextTo !== null &&
+            nextTo === expr.infixChainEndingIn))
             return expr.text;
         else
             return '(' + expr.text + ')';
     }
+    // XXX check Rust precedence
     not(expr) { return this.unary('!', expr); }
     and(a, b) { return this.binary(13, '&&', a, b); }
+    bitand(a, b) { return this.binary(10, '&', a, b); }
+    bitor(a, b) { return this.binary(10, '|', a, b); } // actually 12 but Clang warns
+    shl(a, b) { return this.binary(7, '<<', a, b); }
+    shr(a, b) { return this.binary(7, '>>', a, b); }
 
     unary(prefix, expr) {
         return this.expr(3, null, prefix + this.renderEx(3, null, expr));
@@ -1167,18 +1172,19 @@ function tableToDebugCaller(node, cbName, extraArgs) {
             let out = [];
             for(let [op, runs] of items(runsByOp))
                 out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runs, 'op')));
-            let args = [lang.stringLit(nobitsName)];
+            let args = [...extraArgs, lang.stringLit(nobitsName)];
             if(lang.isRust) {
                 let ops = [];
                 for(let op in runsByOp)
                     ops.push(`Operand(${lang.render(lang.stringLit(op))}, ${op})`);
                 args.push('&[' + ops.join(', ') + ']');
             } else {
-                for(let op in runsByOp) {
-                    args.push(lang.stringLit(op));
-                    args.push(op);
-                }
-                args.push('(char *) 0');
+                let ops = [];
+                for(let op in runsByOp)
+                    ops.push(`{${lang.render(lang.stringLit(op))}, ${op}}`);
+                out.push(`struct operand ops[] = {${ops.join(', ')}};`);
+                args.push('ops');
+                args.push(lang.u32DecLit(ops.length));
             }
             out.push(lang.return(lang.call(cbName, args)));
 
@@ -1754,7 +1760,8 @@ function genHookDisassembler(jumpDis) {
 function genDebugDisassembler() {
     let node = genDisassembler(insns, ns, {maxLength: 5, uniqueNodes: !lang.isRust});
     console.log(genGeneratedWarning());
-    console.log(tableToDebugCaller(node, 'cb', [])); // xxx
+    console.log(tableToDebugCaller(node, 'cb',
+                [opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')]));
 }
 
 if(opt.options['gen-sema']) {
@@ -1765,7 +1772,7 @@ if(opt.options['extraction-formulas']) {
         console.log(insn.name);
         let runsByOp = instToOpRuns(insn.inst);
         for(let op in runsByOp)
-            console.log('   ' + op + ': ' + opRunsToExtractionFormula(runsByOp[op], 'x'));
+            console.log('   ' + op + ': ' + lang.render(opRunsToExtractionFormula(runsByOp[op], 'x')));
     }
 }
 if(opt.options['print-constrained-bits']) {
