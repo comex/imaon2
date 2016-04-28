@@ -2474,13 +2474,13 @@ fn decode_stub(stub: &[u8], stub_addr: VMA, end: Endian, arch: Arch) -> Option<V
         },
         arch::ARM => {
             match stub.len() {
-                12 => {
+                16 => {
                     let insns: [u32; 3] = [0xe59fc004, 0xe08fc00c, 0xe59cf000];
                     let real_insns: [u32; 4] = util::copy_from_slice(stub, end);
                     if insns != &real_insns[..3] { return None; }
                     Some((stub_addr + 8).wrapping_add(real_insns[3] as u64).trunc32())
                 },
-                16 => {
+                12 => {
                     let insns: [u32; 2] = [0xe59fc000, 0xe59cf000];
                     let real_insns: [u32; 3] = util::copy_from_slice(stub, end);
                     if insns != &real_insns[..2] { return None; }
