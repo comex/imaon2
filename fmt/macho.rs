@@ -1,7 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(collections, libc, iter_arith, const_fn, step_by, copy_from_slice)]
+#![feature(collections, libc, const_fn, step_by)]
 #[macro_use]
 extern crate macros;
 extern crate util;

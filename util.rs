@@ -355,18 +355,18 @@ impl<T> SomeRange<T> for RangeFrom<T> {}
 impl<T> SomeRange<T> for Range<T> {}
 impl<T> SomeRange<T> for RangeFull {}
 impl<T> Index<T> for ByteStr
-    where T: SomeRange<usize>, [u8]: Index<T> {
+    where T: SomeRange<usize>, [u8]: Index<T, Output=[u8]> {
     type Output = ByteStr;
     #[inline]
     fn index(&self, idx: T) -> &Self::Output {
-        unsafe { ByteStr::from_bytes(transmute(&self.0[idx])) }
+        ByteStr::from_bytes(&self.0[idx])
     }
 }
 impl<T> IndexMut<T> for ByteStr
-    where T: SomeRange<usize>, [u8]: IndexMut<T> {
+    where T: SomeRange<usize>, [u8]: IndexMut<T, Output=[u8]> {
     #[inline]
     fn index_mut(&mut self, idx: T) -> &mut Self::Output {
-        unsafe { ByteStr::from_bytes_mut(transmute(&mut self.0[idx])) }
+        ByteStr::from_bytes_mut(&mut self.0[idx])
     }
 }
 impl Index<usize> for ByteStr {
