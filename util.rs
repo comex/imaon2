@@ -1,4 +1,4 @@
-#![feature(libc, plugin, core_intrinsics, const_fn, copy_from_slice)]
+#![feature(libc, plugin, core_intrinsics, const_fn)]
 #![cfg_attr(stopwatch, feature(time2))]
 
 extern crate libc;
@@ -24,7 +24,7 @@ use std::borrow::{Cow, Borrow, BorrowMut};
 use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo, RangeFull, Add};
 use std::cell::{UnsafeCell, Cell};
 use std::marker::PhantomData;
-use std::hash::{Hasher, Hash, BuildHasherDefault};
+use std::hash::{Hash, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
 
 use deps::fnv::FnvHasher;
