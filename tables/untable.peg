@@ -13,9 +13,10 @@ int = h:'-'? t:[0-9]+ { return parseInt((h || '') + t.join('')); }
 sym_bit = s:sym '{' b:[0-9]+ '}' { return [s, parseInt(b.join(''))]; }
 bit = '0' / '1' / '?' / sym_bit / sym
 bits = "{ " l:(", "? bit)* " }" { return l.map(function(x) { return x[1]; }); }
+code = '[{' s:(!'}]' .)* '}]' { return s.join(''); }
 unk = "?"
 tagged = a:("?" / sym) ":" b:sym { return [':', a, b]; }
-expr = list / dag / mlstr / str / int / bits / tagged / unk / sym
+expr = list / dag / mlstr / str / int / bits / code / tagged / unk / sym
 prop = ws "field "? type:sym ws (cls:sym ":" ":"?)? name:sym ws "=" ws val:expr ";\n" {
     //console.log('type:' + type + ' name:' + name + ' val:', val);
     return {
