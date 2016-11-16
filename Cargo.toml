@@ -21,4 +21,4 @@ num_cpus = "0.2"
 
 [dependencies.nodrop]
 version = "0.1"
-features = ["use_needs_drop", "no_drop_flag"]
+features = ["use_needs_drop"]
