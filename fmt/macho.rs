@@ -18,13 +18,13 @@ use std::str::FromStr;
 use std::cmp::max;
 use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Exec, Symbol};
+use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Symbol};
 use std::{u64, u32, usize};
 use deps::vec_map::VecMap;
 use std::collections::{HashSet};
 use std::borrow::Cow;
 use std::any::Any;
-use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch, RWSlicePtr};
+use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
 
 pub mod dyldcache;
 use dyldcache::{DyldCache, ImageCache};

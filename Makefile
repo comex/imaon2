@@ -12,7 +12,8 @@ ifneq ($(USE_LLVM),)
     else
         $(error USE_LLVM should be blank, 0, or 1)
     endif
-	override RUSTFLAGS := $(RUSTFLAGS) --cfg use_llvm
+	override RUSTFLAGS := $(RUSTFLAGS) --cfg 'feature = "use_llvm"'
+	override CARGO_BUILD_FLAGS := $(CARGO_BUILD_FLAGS) --features use_llvm
 endif
 
 override RUSTFLAGS := $(RUSTFLAGS) -Z no-landing-pads
@@ -55,8 +56,9 @@ cratefile_dylib = $(OUT)/lib$(1).dylib
 cratefile_rlib = $(OUT)/lib$(1).rlib
 cratefile_bin = $(OUT)/$(1)
 
-rustc-extern = --extern $(1)=`ls -t $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps/lib$(1)-*.*lib | head -n 1`
-XRUSTC := $(RUSTC) $(RUSTFLAGS) -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) $(call rustc-extern,nodrop) $(call rustc-extern,fnv) -L. -L$(OUT)
+rustc-extern = --extern $(1)=`ls -t $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps/lib$(1)*.*lib | head -n 1`
+XRUSTC := $(RUSTC) $(RUSTFLAGS) -L$(OUT)
+RUSTFLAGS_DEPS := -L $(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps -L dependency=$(TARGET_DIR)/$(CARGO_BUILD_TYPE)/deps $(if $(USE_LLVM),$(call rustc-extern,autollvm),) $(call rustc-extern,vec_map) $(call rustc-extern,nodrop) $(call rustc-extern,fnv)
 
 
 all:
@@ -65,16 +67,19 @@ define define_crate_
 # 1=kind 2=name 3=sources 4=deps 5=file-deps
 cratefile-$(2) := $$(call cratefile_$(1),$(2))
 
+depflags-$(2) := $(if $(filter deps,$(2) $(4)),$(RUSTFLAGS_DEPS),)
+
 # specify -o explicitly?
 $$(cratefile-$(2)): $(3) Makefile $$(foreach dep,$(4),$$(cratefile-$$(dep))) $(5)
-	$(XRUSTC) $(RUSTFLAGS_$(1)) --crate-type $(1) --out-dir $(OUT) $$<
+	$(XRUSTC) $(RUSTFLAGS_$(1)) $$(depflags-$(2)) \
+	--crate-type $(1) --out-dir $(OUT) $$<
 
 all: $$(cratefile-$(2))
 
 out/test-$(2): $(3) Makefile $$(foreach dep,$(4),$$(if $$(cratefile-$$(dep)),\
 													   $$(cratefile-$$(dep)),\
 													   $$(error undeclared dep $$(dep))))
-	$(XRUSTC) -g --crate-type dylib --test -o $$@ $$<
+	$(XRUSTC) $$(depflags-$(2)) -g --crate-type dylib --test -o $$@ $$<
 
 # separate rule to avoid deleting it on failure
 do-test-$(2): out/test-$(2)
@@ -87,7 +92,7 @@ define_crate = $(eval $(define_crate_))
 $(call define_crate,rlib,macros,macros.rs,)
 $(call define_crate,$(LIB),bsdlike_getopts,forks/bsdlike_getopts.rs,)
 
-$(call define_crate,$(LIB),deps,deps.rs,)
+$(call define_crate,$(LIB),deps,deps.rs)
 $(cratefile-deps): $(OUT)/cargo-build
 
 $(call define_crate,$(LIB),util,util.rs trivial_hasher.rs forks/small_vector.rs,macros bsdlike_getopts deps)
@@ -163,30 +168,30 @@ $(OUT)/macho_bind.rs: fmt/macho_bind.h fmt/bind_defs.rs Makefile externals/mach-
 		-force-type 'LC_' u32 \
 		> "$@" || (rm -f "$@"; false)
 
-$(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs fmt/reloc.rs,util)
-$(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util)
+$(call define_crate,$(LIB),exec,fmt/exec.rs fmt/arch.rs fmt/reloc.rs,util deps)
+$(call define_crate,$(LIB),macho_bind,$(OUT)/macho_bind.rs,util deps)
 $(call define_crate,$(LIB),macho,fmt/macho.rs fmt/dyldcache.rs,macho_bind exec util deps)
-$(call define_crate,$(LIB),macho_dsc_extraction,fmt/macho_dsc_extraction.rs,macho exec util)
-$(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util)
+$(call define_crate,$(LIB),macho_dsc_extraction,fmt/macho_dsc_extraction.rs,macho exec util deps)
+$(call define_crate,$(LIB),raw_binary,fmt/raw_binary.rs,exec util deps)
 $(OUT)/elf_bind.rs: externals/elf/elf.h fmt/bind_defs.rs Makefile fmt/bindgen.py
 	$(DYLD_THING_FOR_LIBCLANG) \
 	python2.7 fmt/bindgen.py "$<" -match elf.h \
 		-enum2string 'EM_' 'e_machine_to_str' 'lower strip_prefix' \
 		-enum2string 'DT_' 'd_tag_to_str' '' \
 		> "$@" || (rm -f "$@"; false)
-$(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util)
+$(call define_crate,$(LIB),elf_bind,$(OUT)/elf_bind.rs,util deps)
 $(call define_crate,$(LIB),elf,fmt/elf.rs,elf_bind exec util deps)
-$(call define_crate,$(LIB),dis,dis/dis.rs,exec util)
+$(call define_crate,$(LIB),dis,dis/dis.rs,exec util deps)
 ifneq ($(USE_LLVM),)
-$(call define_crate,$(LIB),llvm_jump_dis,dis/llvm_jump_dis.rs,dis,jump-dis-all)
-$(call define_crate,$(LIB),llvm_debug_dis,dis/llvm_debug_dis.rs,dis,$(OUT)/libllvm-debug-dis-c.a)
-$(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util)
+$(call define_crate,$(LIB),llvm_jump_dis,dis/llvm_jump_dis.rs,dis,jump-dis-all deps)
+$(call define_crate,$(LIB),llvm_debug_dis,dis/llvm_debug_dis.rs,dis deps,$(OUT)/libllvm-debug-dis-c.a)
+$(call define_crate,$(LIB),llvmdis,dis/llvmdis.rs,dis util deps)
 endif
 
-$(call define_crate,$(LIB),db,db/sexpr.rs,util)
+$(call define_crate,$(LIB),db,db/sexpr.rs,util deps)
 
-$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho macho_dsc_extraction elf raw_binary dis $(if $(USE_LLVM),llvmdis llvm_debug_dis,))
-$(call define_crate,bin,yasce,tool/yasce.rs,macho macho_dsc_extraction)
+$(call define_crate,bin,exectool,tool/exectool.rs fmt/execall.rs dis/disall.rs,macho macho_dsc_extraction elf raw_binary dis $(if $(USE_LLVM),llvmdis llvm_debug_dis,) deps)
+$(call define_crate,bin,yasce,tool/yasce.rs,macho macho_dsc_extraction deps)
 
 clean:
 	rm -rf $(OUT) $(TARGET_DIR)/$(CARGO_BUILD_TYPE)

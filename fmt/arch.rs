@@ -174,7 +174,7 @@ impl CodeMode {
                 Ok(CodeMode::ARMMode { thumb: m.opt_present("thumb") })
             },
             _ => {
-                let m = try!(util::do_getopts_or_usage(&args, "[no options]", 0, 0, &mut vec![]));
+                let _ = try!(util::do_getopts_or_usage(&args, "[no options]", 0, 0, &mut vec![]));
                 Ok(CodeMode::OtherMode)
             },
         }
