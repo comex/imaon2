@@ -4,8 +4,8 @@ LLVM="$1"
 rm -rf tblgen-build
 mkdir tblgen-build
 cd tblgen-build
-"$LLVM/configure" --enable-optimized
-make -j4 BUILD_DIRS_ONLY=1
-cp -a Release+Asserts/bin/llvm-tblgen ../
+cmake "$LLVM" -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=
+make -j4 llvm-tblgen
+cp -a bin/llvm-tblgen ../
 cd ..
 rm -rf tblgen-build
