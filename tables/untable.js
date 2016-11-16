@@ -7,12 +7,12 @@ stuff = stuff.substr(stuff.indexOf('------------- Defs -----------------\n') + 3
 
 var peg = fs.readFileSync(__dirname + '/untable.peg', 'utf-8');
 //console.log(PEG.buildParser(peg, {output: 'source'}));
-var parser = PEG.buildParser(peg);
+var parser = PEG.generate(peg);
 try {
     //stuff = '[1, 2, 3, 4, 5]';
     var result = parser.parse(stuff);
 } catch(e) {
-    console.log('At line ' + e.line + ':');
+    console.log('At line ' + e.location.start.line + ':');
     console.log(e.message);
 }
 
