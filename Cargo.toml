@@ -21,7 +21,7 @@ use_llvm = ["autollvm"]
 # this pulls in syntex via bindgen :(
 # todo use features
 [dependencies.autollvm]
-path = "../autollvm"
+version = "=0.0.1"
 optional = true
 
 [dependencies.nodrop]
