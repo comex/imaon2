@@ -1,0 +1,12 @@
+[package]
+name = "gen-cargo-toml"
+version = "0.0.0"
+
+[dependencies]
+lazy_static = "0.2.2"
+regex = "0.1.80"
+toml = "0.2.1"
+
+[[bin]]
+name = "gen-cargo-toml"
+path = "gen-cargo-toml.rs"

@@ -1,0 +1,29 @@
+40000000-80000000.txt
+various tables; each is just an address -> string mapping where later ones overwrite earlier
+like
+    80004000 attr code,thumb
+    80005000 attr unk
+
+well, maybe some have explicit lengthd
+    80004000,80 obj func foo::bar {'type': ...}
+    80004100,4 obj varu32 -
+    80004200 var
+
+or maybe everything should just be like that
+    probably better
+    but merge
+
+80004200,4 obj {'var':{'ty':'u32'},'name':'BOO'}
+80004200,4 obj var(ty(u32),name(BOO))
+80004200,4 obj (var (ty u32) (name boo))
+80004200,4 obj var --ty=u32 --name=boo
+80004200,4 obj (var(ty u32)(name boo))
+80004200,4 obj Foo::Bar var u32
+80004200,4 obj aoisfdoiasudnfoasdunfoiausndfoiasudnf func (cc fastcall)
+^ implicit outer ()
+80004200,4 (obj aoisfdoiasudnfoasdunfoiausndfoiasudnf func (cc fastcall))
+^ better
+var ty=u32 name='
+
+load txt files on demand
+
