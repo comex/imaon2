@@ -37,7 +37,6 @@ pub use Endian::*;
 mod trivial_hasher;
 pub use trivial_hasher::*;
 
-#[path="forks/small_vector.rs"]
 mod small_vector;
 pub use small_vector::SmallVector;
 

@@ -3,6 +3,8 @@
 name = "exectool"
 path = "exectool.rs"
 
+[build-dependencies]
+
 [dependencies]
 [dependencies.bsdlike_getopts]
 path = "../bsdlike_getopts"
@@ -37,7 +39,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["bsdlike_getopts/use_llvm", "dis/use_llvm", "fmt_macho_dsc_extraction/use_llvm", "fmt_elf/use_llvm", "util/use_llvm", "macros/use_llvm", "exec/use_llvm", "fmt_macho/use_llvm"]
+use_llvm = ["fmt_macho/use_llvm", "fmt_macho_dsc_extraction/use_llvm", "bsdlike_getopts/use_llvm", "macros/use_llvm", "fmt_elf/use_llvm", "util/use_llvm", "exec/use_llvm", "dis/use_llvm"]
 
 [package]
 name = "exectool"
