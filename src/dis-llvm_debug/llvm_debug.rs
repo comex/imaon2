@@ -52,7 +52,7 @@ impl Disassembler for LLVMDebugDisassembler {
 
 }
 
-impl dis::DisassemblerStatics for LLVMDebugDisassembler {
+impl DisassemblerStatics for LLVMDebugDisassembler {
     fn new_with_args(arch: ArchAndOptions, args: &[String]) -> Result<Self, dis::CreateDisError> {
         if args.len() > 0 {
             return Err(dis::CreateDisError::InvalidArgs("llvm-debug: no supported args".to_owned()));
