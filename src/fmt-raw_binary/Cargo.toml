@@ -2,12 +2,16 @@
 [build-dependencies]
 
 [dependencies]
+[dependencies.exec]
+path = "../exec"
+version = "=0.0.0"
+
 [dependencies.util]
 path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["util/use_llvm"]
+use_llvm = ["exec/use_llvm", "util/use_llvm"]
 
 [lib]
 path = "raw_binary.rs"

@@ -23,9 +23,8 @@
 #ifndef _DYLD_IMAGES_
 #define _DYLD_IMAGES_
 
-#include <stdbool.h>
-#include <unistd.h>
-#include <mach/mach.h>
+#include "../../stdbool.h"
+#include "mach/mach.h"
 
 #ifdef __cplusplus
 extern "C" {

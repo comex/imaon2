@@ -51,7 +51,7 @@
 
 #ifndef _MACHO_RELOC_H_
 #define _MACHO_RELOC_H_
-#include <stdint.h>
+#include "../../stdint.h"
 
 /*
  * Format of a relocation entry of a Mach-O file.  Modified from the 4.3BSD

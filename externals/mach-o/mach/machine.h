@@ -62,7 +62,7 @@
 
 #ifndef __ASSEMBLER__
 
-#include <stdint.h>
+#include "../../stdint.h"
 //#include <mach/machine/vm_types.h>
 //#include <mach/boolean.h>
 

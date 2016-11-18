@@ -27,7 +27,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["dis/use_llvm", "llvm_bind/use_llvm", "llvm_bind", "exec/use_llvm", "bsdlike_getopts/use_llvm", "util/use_llvm"]
+use_llvm = ["util/use_llvm", "dis/use_llvm", "llvm_bind/use_llvm", "llvm_bind", "bsdlike_getopts/use_llvm", "exec/use_llvm"]
 
 [lib]
 path = "llvmdis.rs"

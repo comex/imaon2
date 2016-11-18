@@ -2,8 +2,8 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![feature(const_fn)]
-#[macro_use]
 extern crate vec_map;
+#[macro_use]
 extern crate macros;
 extern crate util;
 extern crate exec;
@@ -28,34 +28,154 @@ use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState,
 pub mod dyldcache;
 use dyldcache::{DyldCache, ImageCache};
 
+pub const VM_PROT_WRITE: u32 = 2;
+pub const VM_PROT_READ: u32 = 1;
+pub const VM_PROT_EXECUTE: u32 = 4;
+
+// perl -ne 'if (/^#define\s+(CPU_.*?)\s+\(\(.*\) ([0-9]+)\)/) { print "pub const $1: u32 = $2;\n" }' externals/mach-o/mach/machine.h
+// perl -ne 'if (/^#define\s+(CPU_.*?)\s+CPU_SUBTYPE_INTEL\(([0-9]+), ([0-9]+)\)/) { print "pub const $1: u32 = ($3 * 0x10 + $2);\n" }' externals/mach-o/mach/machine.h 
+pub const CPU_TYPE_ANY: u32 = 0xffffffff;
+pub const CPU_SUBTYPE_MULTIPLE: u32 = 0xffffffff;
+pub const CPU_TYPE_VAX: u32 = 1;
+pub const CPU_TYPE_MC680x0: u32 = 6;
+pub const CPU_TYPE_X86: u32 = 7;
+pub const CPU_TYPE_I386: u32 = 7;
+pub const CPU_TYPE_X86_64: u32 = 0x01000000 | 7;
+pub const CPU_TYPE_MC98000: u32 = 10;
+pub const CPU_TYPE_HPPA: u32 = 11;
+pub const CPU_TYPE_ARM: u32 = 12;
+pub const CPU_TYPE_ARM64: u32 = 0x01000000 | 12;
+pub const CPU_TYPE_MC88000: u32 = 13;
+pub const CPU_TYPE_SPARC: u32 = 14;
+pub const CPU_TYPE_I860: u32 = 15;
+pub const CPU_TYPE_POWERPC: u32 = 18;
+pub const CPU_TYPE_POWERPC64: u32 = 0x01000000 | 18;
+pub const CPU_SUBTYPE_I386_ALL: u32 = (0 * 0x10 + 3);
+pub const CPU_SUBTYPE_X86_64_ALL: u32 = 3;
+pub const CPU_SUBTYPE_386: u32 = (0 * 0x10 + 3);
+pub const CPU_SUBTYPE_486: u32 = (0 * 0x10 + 4);
+pub const CPU_SUBTYPE_486SX: u32 = (8 * 0x10 + 4);
+pub const CPU_SUBTYPE_586: u32 = (0 * 0x10 + 5);
+pub const CPU_SUBTYPE_PENT: u32 = (0 * 0x10 + 5);
+pub const CPU_SUBTYPE_PENTPRO: u32 = (1 * 0x10 + 6);
+pub const CPU_SUBTYPE_PENTII_M3: u32 = (3 * 0x10 + 6);
+pub const CPU_SUBTYPE_PENTII_M5: u32 = (5 * 0x10 + 6);
+pub const CPU_SUBTYPE_CELERON: u32 = (6 * 0x10 + 7);
+pub const CPU_SUBTYPE_CELERON_MOBILE: u32 = (7 * 0x10 + 7);
+pub const CPU_SUBTYPE_PENTIUM_3: u32 = (0 * 0x10 + 8);
+pub const CPU_SUBTYPE_PENTIUM_3_M: u32 = (1 * 0x10 + 8);
+pub const CPU_SUBTYPE_PENTIUM_3_XEON: u32 = (2 * 0x10 + 8);
+pub const CPU_SUBTYPE_PENTIUM_M: u32 = (0 * 0x10 + 9);
+pub const CPU_SUBTYPE_PENTIUM_4: u32 = (0 * 0x10 + 10);
+pub const CPU_SUBTYPE_PENTIUM_4_M: u32 = (1 * 0x10 + 10);
+pub const CPU_SUBTYPE_ITANIUM: u32 = (0 * 0x10 + 11);
+pub const CPU_SUBTYPE_ITANIUM_2: u32 = (1 * 0x10 + 11);
+pub const CPU_SUBTYPE_XEON: u32 = (0 * 0x10 + 12);
+pub const CPU_SUBTYPE_XEON_MP: u32 = (1 * 0x10 + 12);
+pub const CPU_SUBTYPE_LITTLE_ENDIAN: u32 = 0;
+pub const CPU_SUBTYPE_BIG_ENDIAN: u32 = 1;
+pub const CPU_THREADTYPE_NONE: u32 = 0;
+pub const CPU_SUBTYPE_VAX_ALL: u32 = 0;
+pub const CPU_SUBTYPE_VAX780: u32 = 1;
+pub const CPU_SUBTYPE_VAX785: u32 = 2;
+pub const CPU_SUBTYPE_VAX750: u32 = 3;
+pub const CPU_SUBTYPE_VAX730: u32 = 4;
+pub const CPU_SUBTYPE_UVAXI: u32 = 5;
+pub const CPU_SUBTYPE_UVAXII: u32 = 6;
+pub const CPU_SUBTYPE_VAX8200: u32 = 7;
+pub const CPU_SUBTYPE_VAX8500: u32 = 8;
+pub const CPU_SUBTYPE_VAX8600: u32 = 9;
+pub const CPU_SUBTYPE_VAX8650: u32 = 10;
+pub const CPU_SUBTYPE_VAX8800: u32 = 11;
+pub const CPU_SUBTYPE_UVAXIII: u32 = 12;
+pub const CPU_SUBTYPE_MC680x0_ALL: u32 = 1;
+pub const CPU_SUBTYPE_MC68030: u32 = 1;
+pub const CPU_SUBTYPE_MC68040: u32 = 2;
+pub const CPU_SUBTYPE_MC68030_ONLY: u32 = 3;
+pub const CPU_THREADTYPE_INTEL_HTT: u32 = 1;
+pub const CPU_SUBTYPE_MIPS_ALL: u32 = 0;
+pub const CPU_SUBTYPE_MIPS_R2300: u32 = 1;
+pub const CPU_SUBTYPE_MIPS_R2600: u32 = 2;
+pub const CPU_SUBTYPE_MIPS_R2800: u32 = 3;
+pub const CPU_SUBTYPE_MIPS_R2000a: u32 = 4;
+pub const CPU_SUBTYPE_MIPS_R2000: u32 = 5;
+pub const CPU_SUBTYPE_MIPS_R3000a: u32 = 6;
+pub const CPU_SUBTYPE_MIPS_R3000: u32 = 7;
+pub const CPU_SUBTYPE_MC98000_ALL: u32 = 0;
+pub const CPU_SUBTYPE_MC98601: u32 = 1;
+pub const CPU_SUBTYPE_HPPA_ALL: u32 = 0;
+pub const CPU_SUBTYPE_HPPA_7100: u32 = 0;
+pub const CPU_SUBTYPE_HPPA_7100LC: u32 = 1;
+pub const CPU_SUBTYPE_MC88000_ALL: u32 = 0;
+pub const CPU_SUBTYPE_MC88100: u32 = 1;
+pub const CPU_SUBTYPE_MC88110: u32 = 2;
+pub const CPU_SUBTYPE_SPARC_ALL: u32 = 0;
+pub const CPU_SUBTYPE_I860_ALL: u32 = 0;
+pub const CPU_SUBTYPE_I860_860: u32 = 1;
+pub const CPU_SUBTYPE_POWERPC_ALL: u32 = 0;
+pub const CPU_SUBTYPE_POWERPC_601: u32 = 1;
+pub const CPU_SUBTYPE_POWERPC_602: u32 = 2;
+pub const CPU_SUBTYPE_POWERPC_603: u32 = 3;
+pub const CPU_SUBTYPE_POWERPC_603e: u32 = 4;
+pub const CPU_SUBTYPE_POWERPC_603ev: u32 = 5;
+pub const CPU_SUBTYPE_POWERPC_604: u32 = 6;
+pub const CPU_SUBTYPE_POWERPC_604e: u32 = 7;
+pub const CPU_SUBTYPE_POWERPC_620: u32 = 8;
+pub const CPU_SUBTYPE_POWERPC_750: u32 = 9;
+pub const CPU_SUBTYPE_POWERPC_7400: u32 = 10;
+pub const CPU_SUBTYPE_POWERPC_7450: u32 = 11;
+pub const CPU_SUBTYPE_POWERPC_970: u32 = 100;
+pub const CPU_SUBTYPE_ARM_ALL: u32 = 0;
+pub const CPU_SUBTYPE_ARM_V4T: u32 = 5;
+pub const CPU_SUBTYPE_ARM_V6: u32 = 6;
+pub const CPU_SUBTYPE_ARM_V5TEJ: u32 = 7;
+pub const CPU_SUBTYPE_ARM_XSCALE: u32 = 8;
+pub const CPU_SUBTYPE_ARM_V7: u32 = 9;
+pub const CPU_SUBTYPE_ARM_V7F: u32 = 10;
+pub const CPU_SUBTYPE_ARM_V7S: u32 = 11;
+pub const CPU_SUBTYPE_ARM_V7K: u32 = 12;
+pub const CPU_SUBTYPE_ARM_V6M: u32 = 14;
+pub const CPU_SUBTYPE_ARM_V7M: u32 = 15;
+pub const CPU_SUBTYPE_ARM_V7EM: u32 = 16;
+pub const CPU_SUBTYPE_ARM_V8: u32 = 13;
+pub const CPU_SUBTYPE_ARM64_ALL: u32 = 0;
+pub const CPU_SUBTYPE_ARM64_V8: u32 = 1;
+
 // dont bother with the unions
-deriving_swap!(
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct x_nlist {
-    pub n_strx: uint32_t,
-    pub n_type: uint8_t,
-    pub n_sect: uint8_t,
-    pub n_desc: int16_t,
-    pub n_value: uint32_t,
+    pub n_strx: u32,
+    pub n_type: u8,
+    pub n_sect: u8,
+    pub n_desc: i16,
+    pub n_value: u32,
 }
-);
-impl Clone for x_nlist { fn clone(&self) -> Self { *self } }
-deriving_swap!(
+impl Swap for x_nlist {
+    fn bswap(&mut self) {
+        self.n_strx.bswap();
+        self.n_type.bswap();
+        self.n_sect.bswap();
+        self.n_desc.bswap();
+        self.n_value.bswap();
+    }
+}
 #[repr(C)]
-#[derive(Copy)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct x_nlist_64 {
-    pub n_strx: uint32_t,
-    pub n_type: uint8_t,
-    pub n_sect: uint8_t,
-    pub n_desc: uint16_t,
-    pub n_value: uint64_t,
+    pub n_strx: u32,
+    pub n_type: u8,
+    pub n_sect: u8,
+    pub n_desc: u16,
+    pub n_value: u64,
 }
-);
-impl Clone for x_nlist_64 { fn clone(&self) -> Self { *self } }
-impl Default for x_nlist_64 {
-    fn default() -> Self {
-        x_nlist_64 { n_strx: 0, n_type: 0, n_sect: 0, n_desc: 0, n_value: 0 }
+impl Swap for x_nlist_64 {
+    fn bswap(&mut self) {
+        self.n_strx.bswap();
+        self.n_type.bswap();
+        self.n_sect.bswap();
+        self.n_desc.bswap();
+        self.n_value.bswap();
     }
 }
 
@@ -452,9 +572,6 @@ impl exec::Exec for MachO {
     fn as_any(&self) -> &std::any::Any { self as &std::any::Any }
 }
 
-pub const X_CPU_TYPE_ANY: u32 = 0xffffffff;
-pub const X_CPU_SUBTYPE_MULTIPLE: u32 = 0xffffffff;
-
 fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
     let cputype = cputype as u32;
     let cpusubtype = cpusubtype as u32;
@@ -469,7 +586,7 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
         (CPU_TYPE_POWERPC64, CPU_SUBTYPE_POWERPC_ALL) => "ppc64",
         (CPU_TYPE_SPARC, CPU_SUBTYPE_SPARC_ALL) => "sparc",
         (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_ALL) => "arm",
-        (X_CPU_TYPE_ANY, X_CPU_SUBTYPE_MULTIPLE) => "any",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_MULTIPLE) => "any",
         (CPU_TYPE_HPPA, CPU_SUBTYPE_HPPA_7100LC) => "hppa7100LC",
         (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68030_ONLY) => "m68030",
         (CPU_TYPE_MC680x0, CPU_SUBTYPE_MC68040) => "m68040",
@@ -501,8 +618,8 @@ fn mach_arch_desc(cputype: i32, cpusubtype: i32) -> Option<&'static str> {
         (CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K) => "armv7k",
         (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL) => "arm64",
         (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8) => "arm64v8",
-        (X_CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
-        (X_CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_LITTLE_ENDIAN) => "little",
+        (CPU_TYPE_ANY, CPU_SUBTYPE_BIG_ENDIAN) => "big",
         _ => return None,
     })
 }

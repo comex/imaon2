@@ -2,6 +2,10 @@
 [build-dependencies]
 
 [dependencies]
+[dependencies.dis]
+path = "../dis"
+version = "=0.0.0"
+
 [dependencies.dis_llvm_debug]
 optional = true
 path = "../dis-llvm_debug"
@@ -13,7 +17,7 @@ path = "../dis-llvmdis"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["dis_llvmdis/use_llvm", "dis_llvmdis", "dis_llvm_debug/use_llvm", "dis_llvm_debug"]
+use_llvm = ["dis_llvmdis/use_llvm", "dis_llvmdis", "dis_llvm_debug/use_llvm", "dis_llvm_debug", "dis/use_llvm"]
 
 [lib]
 path = "all.rs"

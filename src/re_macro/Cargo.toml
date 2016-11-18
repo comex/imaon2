@@ -2,15 +2,13 @@
 [build-dependencies]
 
 [dependencies]
-[dependencies.lazy_static]
-version = "0.2.2"
 
 [features]
 use_llvm = []
 
 [lib]
-path = "macros.rs"
+path = "re_macro.rs"
 
 [package]
-name = "macros"
+name = "re_macro"
 version = "0.0.0"

@@ -279,6 +279,18 @@ impl Swap for u8 {
 impl Swap for i8 {
     fn bswap(&mut self) {}
 }
+impl<T> Swap for *mut T {
+    fn bswap(&mut self) {
+        let xself: &mut usize = unsafe { transmute(self) };
+        xself.bswap()
+    }
+}
+impl<T> Swap for *const T {
+    fn bswap(&mut self) {
+        let xself: &mut usize = unsafe { transmute(self) };
+        xself.bswap()
+    }
+}
 
 impl<A: Swap, B: Swap> Swap for (A, B) {
     fn bswap(&mut self) {
@@ -297,6 +309,7 @@ impl_for_array!(1);
 impl_for_array!(2);
 impl_for_array!(3);
 impl_for_array!(4);
+impl_for_array!(8);
 impl_for_array!(16);
 impl<T> Swap for Option<T> {
     fn bswap(&mut self) {}

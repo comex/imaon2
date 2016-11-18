@@ -63,7 +63,7 @@
  *
  *	@(#)nlist.h	8.2 (Berkeley) 1/21/94
  */
-#include <stdint.h>
+#include "../../stdint.h"
 
 /*
  * Format of a symbol table entry of a Mach-O file for 32-bit architectures.

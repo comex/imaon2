@@ -24,7 +24,7 @@
 #ifndef __DYLD_CACHE_FORMAT__
 #define __DYLD_CACHE_FORMAT__
 
-#include <stdint.h>
+#include "../stdint.h"
 
 
 struct dyld_cache_header

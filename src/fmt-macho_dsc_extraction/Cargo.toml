@@ -23,7 +23,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["fmt_macho/use_llvm", "exec/use_llvm", "fmt_macho_bind/use_llvm", "util/use_llvm", "macros/use_llvm"]
+use_llvm = ["exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "util/use_llvm", "macros/use_llvm"]
 
 [lib]
 path = "macho_dsc_extraction.rs"
