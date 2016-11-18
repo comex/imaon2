@@ -11,7 +11,7 @@ path = "../macros"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["macros/use_llvm", "exec/use_llvm"]
+use_llvm = ["exec/use_llvm", "macros/use_llvm"]
 
 [lib]
 path = "dis.rs"

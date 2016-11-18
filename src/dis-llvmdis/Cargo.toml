@@ -17,17 +17,16 @@ version = "=0.0.0"
 [dependencies.libc]
 version = "0.2.17"
 
-[dependencies.llvm_bind]
+[dependencies.llvm-sys]
 optional = true
-path = "../llvm_bind"
-version = "=0.0.0"
+version = "0.4.0"
 
 [dependencies.util]
 path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["util/use_llvm", "dis/use_llvm", "llvm_bind/use_llvm", "llvm_bind", "bsdlike_getopts/use_llvm", "exec/use_llvm"]
+use_llvm = ["bsdlike_getopts/use_llvm", "dis/use_llvm", "exec/use_llvm", "llvm-sys", "util/use_llvm"]
 
 [lib]
 path = "llvmdis.rs"

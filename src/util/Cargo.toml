@@ -20,7 +20,7 @@ version = "=0.0.0"
 version = "0.1.8"
 
 [features]
-use_llvm = ["macros/use_llvm", "bsdlike_getopts/use_llvm"]
+use_llvm = ["bsdlike_getopts/use_llvm", "macros/use_llvm"]
 
 [lib]
 path = "util.rs"

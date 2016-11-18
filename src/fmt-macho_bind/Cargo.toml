@@ -24,7 +24,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["util/use_llvm", "macros/use_llvm", "macros/use_llvm"]
+use_llvm = ["macros/use_llvm", "util/use_llvm", "macros/use_llvm"]
 
 [lib]
 path = "macho_bind.rs"

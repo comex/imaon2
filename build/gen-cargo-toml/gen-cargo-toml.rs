@@ -2,7 +2,7 @@ extern crate regex;
 use regex::Regex;
 use std::fs;
 use std::fs::File;
-use std::collections::{HashSet, HashMap};
+use std::collections::{BTreeSet, BTreeMap};
 use std::io::Read;
 use std::ffi::OsStr;
 use std::io::Write;
@@ -25,7 +25,7 @@ fn main() {
     File::open("build/gen-cargo-toml/base.toml").unwrap().read_to_string(&mut base_toml_str).unwrap();
     let base_toml = toml::Value::Table(toml::Parser::new(&base_toml_str).parse().unwrap());
 
-    let mut my_crates = HashMap::new();
+    let mut my_crates = BTreeMap::new();
     for subdir in fs::read_dir("src/").unwrap() {
         let subdir = subdir.unwrap();
         if subdir.path().is_dir() {
@@ -37,8 +37,8 @@ fn main() {
     for (crate_name, ref subdir) in &my_crates {
         let without_hyphens = re!("^.*-").replace_all(subdir, "");
         let main_file = format!("{}.rs", without_hyphens);
-        let mut dep_crates = HashSet::new();
-        let mut build_dep_crates = HashSet::new();
+        let mut dep_crates = BTreeSet::new();
+        let mut build_dep_crates = BTreeSet::new();
         let mut is_bin = false;
         let mut have_build_rs = false;
         for file in fs::read_dir(format!("src/{}", subdir)).unwrap() {
@@ -79,13 +79,14 @@ fn main() {
             (&dep_crates, &mut dependencies),
             (&build_dep_crates, &mut build_dependencies),
         ] {
-            for dep_crate in x_dep_crates {
+            for orig_dep_crate in x_dep_crates {
+                let mut dep_crate = orig_dep_crate.to_owned();
                 let gate_feature =
                     if dep_crate.contains("llvm") { Some("use_llvm") }
                     else { None };
 
                 let key = format!("dependencies.{}", dep_crate);
-                let mut dep = if let Some(dep_subdir) = my_crates.get(dep_crate) {
+                let mut dep = if let Some(dep_subdir) = my_crates.get(&dep_crate) {
                     let mut dep = toml::Table::new();
                     dep.insert("path".to_owned(), toml::Value::String(format!("../{}", dep_subdir)));
                     dep.insert("version".to_owned(), toml::Value::String(format!("=0.0.0")));
@@ -98,8 +99,13 @@ fn main() {
                 } else if dep_crate == "alloc_system" {
                     continue
                 } else {
-                    base_toml.lookup(&key).expect(&format!("missing {} from {}", key, subdir))
-                        .as_table().unwrap().to_owned()
+                    let mut tab =
+                        base_toml.lookup(&key).expect(&format!("missing {} from {}", key, subdir))
+                        .as_table().unwrap().to_owned();
+                    if let Some(real_name) = tab.remove("name") {
+                        dep_crate = real_name.as_str().unwrap().to_owned();
+                    }
+                    tab
                 };
                 if let Some(feat) = gate_feature {
                     dep.insert("optional".to_owned(), toml::Value::Boolean(true));

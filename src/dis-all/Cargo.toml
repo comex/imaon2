@@ -17,7 +17,7 @@ path = "../dis-llvmdis"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["dis_llvmdis/use_llvm", "dis_llvmdis", "dis_llvm_debug/use_llvm", "dis_llvm_debug", "dis/use_llvm"]
+use_llvm = ["dis/use_llvm", "dis_llvm_debug/use_llvm", "dis_llvm_debug", "dis_llvmdis/use_llvm", "dis_llvmdis"]
 
 [lib]
 path = "all.rs"

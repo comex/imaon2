@@ -35,7 +35,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["macros/use_llvm", "bsdlike_getopts/use_llvm", "fmt_macho/use_llvm", "dis/use_llvm", "fmt_macho_dsc_extraction/use_llvm", "util/use_llvm", "fmt_elf/use_llvm", "exec/use_llvm"]
+use_llvm = ["bsdlike_getopts/use_llvm", "dis/use_llvm", "exec/use_llvm", "fmt_elf/use_llvm", "fmt_macho/use_llvm", "fmt_macho_dsc_extraction/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]
 path = "exectool.rs"

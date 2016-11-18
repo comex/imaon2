@@ -1,7 +1,9 @@
 #![feature(box_syntax)]
 extern crate exec;
 extern crate util;
-extern crate llvm_bind as al;
+extern crate llvm_sys;
+use llvm_sys::target::*;
+use llvm_sys::disassembler::*;
 extern crate dis;
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -10,22 +12,23 @@ use exec::arch::ArchAndOptions;
 use libc::c_char;
 
 use std::ffi::CString;
+use std::mem::transmute;
 
 use std::sync::{Once, ONCE_INIT};
 static LLVM_INIT_ONCE: Once = ONCE_INIT;
 
 pub struct LLVMDisassembler {
     arch: arch::ArchAndOptions,
-    dcr: al::LLVMDisasmContextRef,
+    dcr: LLVMDisasmContextRef,
 }
 
 impl LLVMDisassembler {
     pub fn new(arch: arch::ArchAndOptions, triple: Option<&str>, cpu: Option<&str>, features: Option<&str>) -> Result<Self, util::GenericError> {
         LLVM_INIT_ONCE.call_once(|| {
             unsafe {
-                al::LLVMInitializeAllTargetInfos();
-                al::LLVMInitializeAllTargetMCs();
-                al::LLVMInitializeAllDisassemblers();
+                LLVM_InitializeAllTargetInfos();
+                LLVM_InitializeAllTargetMCs();
+                LLVM_InitializeAllDisassemblers();
             }
         });
 
@@ -43,14 +46,15 @@ impl LLVMDisassembler {
         let features_cs = CString::new(features.unwrap_or("")).unwrap();
 
         let dcr = unsafe {
-            al::LLVMCreateDisasmCPUFeatures(
+            LLVMCreateDisasmCPUFeatures(
                 triple_cs.as_ptr(),
                 cpu_cs.as_ptr(),
                 features_cs.as_ptr(),
                 std::ptr::null_mut(),
                 0,
-                None,
-                None,
+                // XXX llvm-sys should be using Option; this is UB
+                transmute(0usize),
+                transmute(0usize),
             )
         };
 
@@ -64,7 +68,7 @@ impl LLVMDisassembler {
 
 impl Drop for LLVMDisassembler {
     fn drop(&mut self) {
-        unsafe { al::LLVMDisasmDispose(self.dcr); }
+        unsafe { LLVMDisasmDispose(self.dcr); }
     }
 }
 
@@ -74,7 +78,7 @@ impl dis::Disassembler for LLVMDisassembler {
     fn can_disassemble_to_str(&self) -> bool { true }
     fn disassemble_insn_to_str(&self, input: dis::DisassemblerInput) -> Option<(Option<String>, u32)> {
         let mut tmp: [u8; 256] = unsafe { std::mem::uninitialized() };
-        let res = unsafe { al::LLVMDisasmInstruction(self.dcr, input.data.as_ptr() as *mut u8, input.data.len() as u64, input.pc.0, &mut tmp[0] as *mut u8 as *mut c_char, 256) };
+        let res = unsafe { LLVMDisasmInstruction(self.dcr, input.data.as_ptr() as *mut u8, input.data.len() as u64, input.pc.0, &mut tmp[0] as *mut u8 as *mut c_char, 256) };
         if res == 0 {
             None
         } else {
