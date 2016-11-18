@@ -14,6 +14,8 @@ extern crate fmt_elf as elf;
 extern crate dis;
 #[macro_use]
 extern crate macros;
+extern crate dis_all;
+extern crate fmt_all;
 
 use std::fs;
 use std::path::Path;
@@ -25,8 +27,6 @@ use std::any::Any;
 use util::{VecCopyExt, into_cow, Ext};
 use exec::{arch, SymbolValue, VMA};
 use exec::arch::{ArchAndOptions, CodeMode};
-#[path = "../fmt/execall.rs"] mod execall;
-#[path = "../dis/disall.rs"] mod disall;
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
@@ -231,7 +231,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         dis_opts = vec![name.to_owned()];
     }
     if let Some(dump_spec) = m.opt_str("dis-range") {
-        let dis = dis::create(disall::ALL_FAMILIES, arch_opts, &dis_opts).unwrap();
+        let dis = dis::create(dis_all::ALL_FAMILIES, arch_opts, &dis_opts).unwrap();
         let dump_data = get_dump_from_spec(ex, dump_spec).unwrap();
         let base_pc = VMA(0);
         let results = dis.disassemble_multiple_to_str(dis::DisassemblerInput {
@@ -328,7 +328,7 @@ fn main() {
             }
             args.insert(0, "auto".to_string());
         }
-        let (mut ex, real_args) = exec::create(&execall::all_probers(), mm.clone(), args).unwrap_or_else(|e| {
+        let (mut ex, real_args) = exec::create(&fmt_all::all_probers(), mm.clone(), args).unwrap_or_else(|e| {
             if e.kind == exec::ErrorKind::InvalidArgs {
                 errln!("{}", e.message);
                 util::exit();
@@ -340,7 +340,7 @@ fn main() {
         do_stuff(&ex, &m);
         do_mut_stuff(&mut *ex, &m);
     } else {
-        let results = exec::probe_all(&execall::all_probers(), mm.clone());
+        let results = exec::probe_all(&fmt_all::all_probers(), mm.clone());
         // no format specified, give a list
         for pr in results.iter() {
             let name = util::shell_quote(&*pr.cmd);

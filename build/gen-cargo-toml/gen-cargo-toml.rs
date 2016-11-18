@@ -48,7 +48,7 @@ fn main() {
             if is_build_rs { have_build_rs = true; }
             let mut data = String::new();
             File::open(file).unwrap().read_to_string(&mut data).unwrap();
-            if !is_build_rs && re!(r"(?:^|\n|] ) fn main\(\)").find(&data).is_some() {
+            if !is_build_rs && re!(r"(?:^|\n|] )fn main\(\)").find(&data).is_some() {
                 is_bin = true;
             }
             for decl in re!("(?:^|\n|] )extern crate ([^;]*);").captures_iter(&data) {

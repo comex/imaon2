@@ -701,7 +701,7 @@ fn get_dynamic(basics: &ElfBasics, segs: &[Segment], phdrs: &[Phdr], sects: &[Se
             out.push(Dyn {
                 tag: dyn.d_tag.into(),
                 // lol bindgen
-                val: (unsafe { let mut d_un = dyn.d_un; *d_un.d_ptr() }).into()
+                val: unsafe { *dyn.d_un.d_ptr.as_ref() }.into(),
             });
             offset += sizeo;
         }
