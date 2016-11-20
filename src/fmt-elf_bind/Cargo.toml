@@ -21,5 +21,6 @@ path = "elf_bind.rs"
 
 [package]
 build = "build.rs"
+links = "fake-fmt_elf_bind"
 name = "fmt_elf_bind"
 version = "0.0.0"

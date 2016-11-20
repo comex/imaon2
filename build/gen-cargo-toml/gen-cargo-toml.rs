@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, BTreeMap};
 use std::io::Read;
 use std::ffi::OsStr;
 use std::io::Write;
+use std::path::Path;
 extern crate toml;
 
 static FEATURES: &'static [&'static str] = &[
@@ -35,13 +36,17 @@ fn main() {
         }
     }
     for (crate_name, ref subdir) in &my_crates {
+        let subdir_path = Path::new("src").join(subdir);
         let without_hyphens = re!("^.*-").replace_all(subdir, "");
-        let main_file = format!("{}.rs", without_hyphens);
+        let mut main_file = format!("lib.rs");
+        if !subdir_path.join(&main_file).exists() {
+            main_file = format!("{}.rs", without_hyphens);
+        }
         let mut dep_crates = BTreeSet::new();
         let mut build_dep_crates = BTreeSet::new();
         let mut is_bin = false;
         let mut have_build_rs = false;
-        for file in fs::read_dir(format!("src/{}", subdir)).unwrap() {
+        for file in fs::read_dir(subdir_path).unwrap() {
             let file = file.unwrap().path();
             if file.extension() != Some(OsStr::new("rs")) { continue; }
             let is_build_rs = file.file_name().unwrap() == "build.rs";
@@ -65,6 +70,7 @@ fn main() {
         package.insert("version".to_owned(), toml::Value::String(format!("0.0.0")));
         if have_build_rs {
             package.insert("build".to_owned(), toml::Value::String(format!("build.rs")));
+            package.insert("links".to_owned(), toml::Value::String(format!("fake-{}", crate_name)));
         }
         let mut lib = toml::Table::new();
         lib.insert("path".to_owned(), toml::Value::String(main_file));
