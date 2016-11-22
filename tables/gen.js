@@ -660,14 +660,31 @@ function gotoOrGen(data, label, comment, gen) {
     if(data.opts.mode == 'subfn') {
         // xxx this doesn't really make sense in C (nested functions)
         let funcName = `sub_${label}`;
-        if(!data.seen[label]) {
-            data.seen[label] = true;
-            let decl = lang.funcDecl(funcName, data.passArgs, data.passRetTy, gen(), {inline: 'default'})
-            let action = lang.finalRender('    ', decl, /*mayImplicitlyReturn*/ false);
-            data.prefixLines = data.prefixLines.concat(action);
+        if(1) {
+            if(!data.seen[label]) {
+                let decl = lang.funcDecl(funcName, data.passArgs, data.passRetTy, gen(), {inline: 'default'});
+                data.extraFuncDecls.push(decl);
+                data.seen[label] = true;
+            }
+            return lang.return(lang.call(funcName, data.passArgsPass));
+        } else {
+            // more complicated version that doesn't separate into a function if there's only one use
+            let stmt = data.seen[label];
+            if(!stmt) {
+                stmt = lang.wrapStmtList(gen());
+                data.seen[label] = stmt;
+                return stmt;
+            }
+            if(!stmt.wrapsStmts)
+                return stmt;
+            // need to convert to function
+            let decl = lang.funcDecl(funcName, data.passArgs, data.passRetTy, stmt.wrapsStmts, {inline: 'default'});
+            data.extraFuncDecls.push(decl);
+            let newStmt = lang.return(lang.call(funcName, data.passArgsPass));
+            stmt.wrapsStmts = [newStmt];
+            data.seen[label] = newStmt;
+            return newStmt;
         }
-
-        return lang.return(lang.call(funcName, data.passArgsPass));
     } else {
         if(data.seen[label]) {
             //data.seen[label]++;
@@ -682,6 +699,13 @@ function gotoOrGen(data, label, comment, gen) {
     }
 }
 
+function* flattenStmtList(stmtList) {
+    for(let stmt of stmtList)
+        if(stmt.wrapsStmts)
+            yield* flattenStmtList(stmt.wrapsStmts);
+        else
+            yield stmt;
+}
 class SuperLang {
     comment(comment, hanging) {
         return {'stmt': true, 'comment': true, 'text': comment, 'hangingOnFollowing': hanging || false};
@@ -730,6 +754,8 @@ class SuperLang {
         return {precedence: precedence, infixChainEndingIn, text};
     }
     stmt(stmt) {
+        if(Array.isArray(stmt))
+            throw new Error("derp");
         if(stmt.charCodeAt)
             stmt = {text: stmt};
         else if(stmt.precedence !== undefined)
@@ -745,8 +771,8 @@ class SuperLang {
     }
     label(name) { throw 'no label'; }
     goto(name, extra) { throw 'no goto'; }
-    wrapStmt(stmt) {
-        return {wrapsStmt: this.stmt(stmt)};
+    wrapStmtList(stmts) {
+        return {wrapsStmts: this.stmtList(stmts)};
     }
     stringLit(s) {
         return this.expr(1, null, JSON.stringify(s)); // not quite right
@@ -758,7 +784,7 @@ class CLang extends SuperLang {
     switch(expr, cases) {
         let stmts = ['switch (' + this.render(expr) + ') {'];
         for(let [whens, what] of cases) {
-            for (let when of whens)
+            for(let when of whens)
                 stmts.push('case ' + when + ':');
             let i = stmts.length-1;
             what = this.stmtList(what);
@@ -810,11 +836,11 @@ class CLang extends SuperLang {
     }
     scanLabels(stmtList, neededLabels) {
         stmtList = this.stmtList(stmtList);
-        for (let stmt of stmtList) {
+        for(let stmt of stmtList) {
             if(stmt.goto)
                 neededLabels[stmt.goto] = true;
             else if(stmt.hangingBlockChain) {
-                for (let [intro, substmts] of stmt.chain)
+                for(let [intro, substmts] of stmt.chain)
                     this.scanLabels(substmts, neededLabels);
             }
         }
@@ -822,9 +848,7 @@ class CLang extends SuperLang {
     finalRenderEx(stmtList, indent, lines, neededLabels) {
         stmtList = this.stmtList(stmtList);
         let hangingComment = null;
-        for (let stmt of stmtList) {
-            while (stmt.wrapsStmt)
-                stmt = stmt.wrapsStmt;
+        for(let stmt of flattenStmtList(stmtList)) {
             let lastHangingComment = hangingComment;
             hangingComment = null;
             stmt = this.stmt(stmt);
@@ -833,7 +857,7 @@ class CLang extends SuperLang {
             let linesLength = lines.length;
             if(stmt.hangingBlockChain) {
                 let lastWasCloseBrace = false;
-                for (let [intro, substmts] of stmt.chain) {
+                for(let [intro, substmts] of stmt.chain) {
                     if(!lastWasCloseBrace)
                         lines.push(indent);
                     else if(intro)
@@ -946,7 +970,8 @@ class RustLang extends SuperLang {
         if(mayImplicitlyReturn === undefined) throw '!';
         stmtList = this.stmtList(stmtList);
         let hangingComment = null;
-        for (let i = 0; i < stmtList.length; i++) {
+        stmtList = Array.from(flattenStmtList(stmtList));
+        for(let i = 0; i < stmtList.length; i++) {
             let stmt = stmtList[i];
             stmt = this.stmt(stmt);
             let lastHangingComment = hangingComment;
@@ -954,7 +979,7 @@ class RustLang extends SuperLang {
             let isLast = i == stmtList.length - 1 || isSilentGroupOfLast;
             if(stmt.hangingBlockChain) {
                 let lastWasCloseBrace = false;
-                for (let [intro, substmts, inheritsReturn] of stmt.chain) {
+                for(let [intro, substmts, inheritsReturn] of stmt.chain) {
                     if(inheritsReturn === undefined) throw '!';
                     if(!lastWasCloseBrace)
                         lines.push(indent);
@@ -1080,10 +1105,7 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
                     throw new Error('bad buckets length'); // just to be sure
                 r = lang.switch(switchOn, cases);
             }
-            if(lang.canGoto)
-                return [lang.label('node_' + node.id)].concat(lang.stmtList(r));
-            else
-                return r;
+            return r;
         });
     }
 }
@@ -1095,6 +1117,7 @@ function tableToSwitcher(node, opts) {
         seenNodeId: {},
         prefixLines: [],
         suffixLines: [],
+        extraFuncDecls: [],
         opts: opts,
     };
     switch(opts.mode) {
@@ -1119,8 +1142,13 @@ function tableToSwitcher(node, opts) {
     switch(opts.mode) {
     case 'goto':
     case 'subfn':
+        let extra = [];
+        for(let decl of data.extraFuncDecls) {
+            let action = lang.finalRender('    ', decl, /*mayImplicitlyReturn*/ false);
+            extra = extra.concat(action);
+        }
         ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
-        ret = [...data.prefixLines, ...ret, ...data.suffixLines];
+        ret = [...extra, ...data.prefixLines, ...ret, ...data.suffixLines];
         break;
     }
     return ret.join('\n');
