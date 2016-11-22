@@ -1,20 +1,20 @@
+#![allow(improper_ctypes)]
 extern crate build_run_gen;
-pub type Callback<'a> = &'a mut FnMut(&'static str, &[Operand]);
-pub struct Operand(pub &'static str, pub u32);
-
-#[allow(unused_variables)]
-#[allow(non_snake_case)]
-pub mod d {
-    pub mod arm {
-        include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-ARM.rs"));
-    }
-    pub mod thumb {
-        include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-ARM.rs"));
-    }
-    pub mod thumb2 {
-        include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-Thumb2.rs"));
-    }
-    pub mod aarch64 {
-        include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-AArch64.rs"));
-    }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct Operand {
+    pub name: &'static str,
+    pub val: u32,
 }
+pub const MAX_OPS: usize = 8;
+
+pub type DebugDisFn = unsafe extern "C" fn(op: u32, name: &mut &'static str, ops: &mut [Operand; MAX_OPS]);
+macro_rules! variant { ($name:ident) => {
+    extern "C" {
+        pub fn $name(op: u32, name: &mut &'static str, ops: &mut [Operand; MAX_OPS]);
+    }
+} }
+variant!(debug_dis_ARM);
+variant!(debug_dis_Thumb);
+variant!(debug_dis_Thumb2);
+variant!(debug_dis_AArch64);
