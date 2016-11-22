@@ -223,7 +223,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         None => arch::Arch::UnknownArch,
     };
     // XXXXX
-    let arch_opts: ArchAndOptions = ArchAndOptions::new(&[arch.name().to_owned(), "-EL".to_owned()]).unwrap();
+    let arch_opts: ArchAndOptions = ArchAndOptions::new_default(arch);
     // XXX should accept multiple copies of these
     let mut dis_opts = vec!["llvmdis".to_owned()];
     if let Some(name) = m.opt_str("dis") {

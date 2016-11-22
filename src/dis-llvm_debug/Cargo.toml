@@ -15,12 +15,16 @@ version = "=0.0.0"
 path = "../exec"
 version = "=0.0.0"
 
+[dependencies.macros]
+path = "../macros"
+version = "=0.0.0"
+
 [dependencies.util]
 path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["dis/use_llvm", "dis_llvm_debug_generated/use_llvm", "dis_llvm_debug_generated", "exec/use_llvm", "util/use_llvm"]
+use_llvm = ["dis/use_llvm", "dis_llvm_debug_generated/use_llvm", "dis_llvm_debug_generated", "exec/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]
 path = "llvm_debug.rs"

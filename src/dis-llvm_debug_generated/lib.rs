@@ -14,4 +14,7 @@ pub mod d {
     pub mod thumb2 {
         include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-Thumb2.rs"));
     }
+    pub mod aarch64 {
+        include!(concat!(env!("OUT_DIR"), "/dd/debug-dis-AArch64.rs"));
+    }
 }
