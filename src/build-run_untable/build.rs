@@ -15,7 +15,6 @@ fn main() {
     ] {
         threads.push(std::thread::spawn(move || {
             let out_dir = build_help::get_out_dir();
-            let root_dir = build_help::get_root_dir();
             let out_td = rel(&out_dir, &[&format!("out-{}.td", target_name)]);
             let out_json = rel(&out_dir, &[&format!("out-{}.json", target_name)]);
             let llvm_src = build_help::get_llvm_src();
@@ -27,9 +26,10 @@ fn main() {
                 .arg("-o")
                 .arg(&out_td)
             );
-            build_help::run_node(&rel(&root_dir, &["tables", "untable.js"]),
+            build_help::run_node("untable.js",
                                  &[out_td.as_ref(), out_json.as_ref()]);
         }));
     }
     for thread in threads { thread.join().unwrap(); }
+    println!("cargo:outjsonpath={}", build_help::get_out_dir().to_str().unwrap());
 }

@@ -116,7 +116,7 @@ impl Bitslice {
     }
     #[cfg_attr(opt, inline(always))]
     pub fn set(&self, insn: u32, field_val: u32) -> u32 {
-        let mut val = 0;
+        let mut val = insn;
         for run in &self.runs {
             let rot = (run.1.wrapping_sub(run.0) & 31) as u32;
             let mask: u32 = (1 << run.2) - 1;

@@ -412,7 +412,7 @@ function genDisassembler(insns, ns, options) {
     addConflictGroups(insns);
     //console.log(insns.length);
     let node = genDisassemblerRec(insns, 0, 0, true, 0, data);
-    if(options.uniqueNodes||1) {
+    if(options.uniqueNodes) {
         uniqueTableNodes(node);
     }
     checkTableMissingInsns(node, insns);
@@ -657,43 +657,17 @@ function genConstraintTest(insn, unknown) {
 }
 
 function gotoOrGen(data, label, comment, gen) {
-    if(lang.isRust) {
-        // lol
+    if(data.opts.mode == 'subfn') {
+        // xxx this doesn't really make sense in C (nested functions)
+        let funcName = `sub_${label}`;
         if(!data.seen[label]) {
             data.seen[label] = true;
-            switch(data.opts.mode) {
-            case 'loop': {
-                data.prefixLines.push("    '"+label+': loop {');
-                let action = lang.finalRender('        ', gen(),
-                                              /*mayImplicitlyReturn*/ false);
-                data.suffixLines = [].concat(
-                    ["    } // '" + label,
-                     '    /* action */ {'],
-                    action,
-                    ['    }'],
-                    data.suffixLines
-                );
-                break;
-            }
-            case 'match': {
-                let action = lang.finalRender('            ', gen(), true);
-                data.prefixLines.push(`        ${label},`);
-                data.suffixLines.push(
-                    `        E::${label} => {`,
-                    ...action,
-                    '        },'
-                );
-                break;
-            }
-            }
+            let decl = lang.funcDecl(funcName, data.passArgs, data.passRetTy, gen(), {inline: 'default'})
+            let action = lang.finalRender('    ', decl, /*mayImplicitlyReturn*/ false);
+            data.prefixLines = data.prefixLines.concat(action);
         }
-        comment = comment ? ` /* ${comment} */` : '';
-        switch(data.opts.mode) {
-        case 'loop':
-            return "break '" + label + comment;
-        case 'match':
-            return 'E::' + label + comment;
-        }
+
+        return lang.return(lang.call(funcName, data.passArgsPass));
     } else {
         if(data.seen[label]) {
             //data.seen[label]++;
@@ -752,7 +726,6 @@ class SuperLang {
                          args.map(arg => this.renderEx(15, null, arg))
                          .join(', ') + ')');
     }
-
     expr(precedence, infixChainEndingIn, text) {
         return {precedence: precedence, infixChainEndingIn, text};
     }
@@ -772,6 +745,9 @@ class SuperLang {
     }
     label(name) { throw 'no label'; }
     goto(name, extra) { throw 'no goto'; }
+    wrapStmt(stmt) {
+        return {wrapsStmt: this.stmt(stmt)};
+    }
     stringLit(s) {
         return this.expr(1, null, JSON.stringify(s)); // not quite right
     }
@@ -811,6 +787,18 @@ class CLang extends SuperLang {
         return {'stmt': true,
                 'text': `${ty} ${varName} = ${this.render(expr)};`};
     }
+    funcDecl(name, args, retTy, body, opts) {
+        let decl = `${retTy || 'void'} ${name}(`;
+        decl += args.map(([name, ty]) => `${ty} ${name}`).join(', ');
+        decl += ') {';
+        return this.stmt({
+            'justBlock': true,
+            'start': [decl],
+            'substmts': body,
+            'end': ['}'],
+        });
+    }
+
     u32HexLit(n) { return '0x' + hexnopad(n) ; }
     u32DecLit(n) { return n + ''; }
     finalRender(indent, stmtList) {
@@ -835,6 +823,8 @@ class CLang extends SuperLang {
         stmtList = this.stmtList(stmtList);
         let hangingComment = null;
         for (let stmt of stmtList) {
+            while (stmt.wrapsStmt)
+                stmt = stmt.wrapsStmt;
             let lastHangingComment = hangingComment;
             hangingComment = null;
             stmt = this.stmt(stmt);
@@ -859,6 +849,12 @@ class CLang extends SuperLang {
                         lastWasCloseBrace = true;
                     }
                 }
+            } else if(stmt.justBlock) {
+                for(let start of stmt.start)
+                    lines.push(indent + start);
+                this.finalRenderEx(stmt.substmts, indent + '    ', lines, neededLabels);
+                for(let end of stmt.end)
+                    lines.push(indent + end);
             } else if(stmt.comment) {
                 if(stmt.text) {
                     let text = '/* ' + stmt.text + ' */';
@@ -911,6 +907,34 @@ class RustLang extends SuperLang {
         return {'stmt': true,
                 'text': `let ${varName}: ${ty} = ${this.render(expr)};`};
     }
+    funcDecl(name, args, retTy, body, opts) {
+        let decl = `fn ${name}(`;
+        decl += args.map(([name, ty]) => `${name}: ${ty}`).join(', ');
+        decl += ')';
+        if(retTy)
+            decl += ` -> ${retTy}`;
+        decl += ' {';
+        let start = [decl];
+        switch(opts.inline) {
+        case 'default':
+            start = ['#[inline]', decl];
+            break;
+        case 'always':
+            start = ['#[inline(always)]', decl];
+            break;
+        case undefined:
+            break;
+        default:
+            throw '?inline';
+        }
+        return this.stmt({
+            'justBlock': true,
+            'start': start,
+            'substmts': body,
+            'end': ['}'],
+            'isFunc': true,
+        });
+    }
     u32HexLit(n) { return '0x' + hexnopad(n) + 'u32'; }
     u32DecLit(n) { return n + 'u32'; }
     finalRender(indent, stmtList, mayImplicitlyReturn) {
@@ -957,6 +981,12 @@ class RustLang extends SuperLang {
                     lines.splice(introIdx+1);
                 }
                 lines[lines.length - 1] += ',';
+            } else if(stmt.justBlock) {
+                for(let start of stmt.start)
+                    lines.push(indent + start);
+                this.finalRenderEx(stmt.substmts, indent + '    ', lines, mayImplicitlyReturn || !!stmt.isFunc, true);
+                for(let end of stmt.end)
+                    lines.push(indent + end);
             } else if(stmt.silentGroup) {
                 this.finalRenderEx(stmt.stmts, indent, lines, mayImplicitlyReturn, isLast);
             } else if(stmt.isReturn) {
@@ -1015,55 +1045,54 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
             return data.opts.makeCall(nobitsName, runsByOp);
         }));
     } else {
-        if(lang.canGoto && data.seenNodeId[node.id])
-            return lang.goto('node_' + node.id);
-        data.seenNodeId[node.id] = true;
-        let r;
-        if(node.isBinary) {
-            let insn = node.buckets[0].insn;
-            let unknown = insn.instConstrainedMask & ~node.knownMask;
-            let test = '(op & ' + lang.u32HexLit(insn.instKnownMask & ~node.knownMask) + ') == ' + lang.u32HexLit(insn.instKnownValue & ~node.knownMask);
-            if(unknown)
-                test = lang.and(test, genConstraintTest(insn, unknown));
-            r = lang.if(test,
-                tableToSwitcherRec(node.buckets[0], data, indent + indentStep, true),
-                tableToSwitcherRec(node.buckets[1], data, indent + indentStep));
-        } else {
-            let switchOn = '(op >> ' + lang.u32DecLit(node.start) + ') & ' + lang.u32HexLit((1 << node.length) - 1);
-            let cases = [];
-            let ncases = 0;
-            let buckets = node.buckets.slice(0);
-            for(let i = 0; i < buckets.length; i++) {
-                let subnode = buckets[i];
-                if(subnode === null)
-                    continue;
-                let thisCases = [i];
-                ncases++;
-                for(let j = i + 1; j < buckets.length; j++) {
-                    if(buckets[j] === subnode) {
-                        thisCases.push(j);
-                        ncases++;
-                        buckets[j] = null;
+        return gotoOrGen(data, 'node_' + node.id, '', () => {
+            let r;
+            if(node.isBinary) {
+                let insn = node.buckets[0].insn;
+                let unknown = insn.instConstrainedMask & ~node.knownMask;
+                let test = '(op & ' + lang.u32HexLit(insn.instKnownMask & ~node.knownMask) + ') == ' + lang.u32HexLit(insn.instKnownValue & ~node.knownMask);
+                if(unknown)
+                    test = lang.and(test, genConstraintTest(insn, unknown));
+                r = lang.if(test,
+                    tableToSwitcherRec(node.buckets[0], data, indent + indentStep, true),
+                    tableToSwitcherRec(node.buckets[1], data, indent + indentStep));
+            } else {
+                let switchOn = '(op >> ' + lang.u32DecLit(node.start) + ') & ' + lang.u32HexLit((1 << node.length) - 1);
+                let cases = [];
+                let ncases = 0;
+                let buckets = node.buckets.slice(0);
+                for(let i = 0; i < buckets.length; i++) {
+                    let subnode = buckets[i];
+                    if(subnode === null)
+                        continue;
+                    let thisCases = [i];
+                    ncases++;
+                    for(let j = i + 1; j < buckets.length; j++) {
+                        if(buckets[j] === subnode) {
+                            thisCases.push(j);
+                            ncases++;
+                            buckets[j] = null;
+                        }
                     }
+                    cases.push([thisCases, tableToSwitcherRec(subnode, data, indent + indentStep)]);
                 }
-                cases.push([thisCases, tableToSwitcherRec(subnode, data, indent + indentStep)]);
+                if((1 << node.length) != ncases)
+                    throw new Error('bad buckets length'); // just to be sure
+                r = lang.switch(switchOn, cases);
             }
-            if((1 << node.length) != ncases)
-                throw new Error('bad buckets length'); // just to be sure
-            r = lang.switch(switchOn, cases);
-        }
-        if(lang.canGoto)
-            return [lang.label('node_' + node.id)].concat(lang.stmtList(r));
-        else
-            return r;
+            if(lang.canGoto)
+                return [lang.label('node_' + node.id)].concat(lang.stmtList(r));
+            else
+                return r;
+        });
     }
 }
 
 function tableToSwitcher(node, opts) {
+    opts.mode = opts.mode || (lang.isRust ? 'subfn' : 'goto');
     let data = {
         seen: {},
         seenNodeId: {},
-        // for rust
         prefixLines: [],
         suffixLines: [],
         opts: opts,
@@ -1073,34 +1102,25 @@ function tableToSwitcher(node, opts) {
             if(!lang.canGoto)
                 throw 'wrong mode';
             break;
-        case 'loop':
-        case 'match':
-            if(!lang.isRust)
-                throw '?';
+        case 'subfn':
+            let passArgs = opts.passArgs;
+            let passRetTy = opts.passRetTy;
+            if(passRetTy === undefined || passArgs === undefined)
+                throw 'no args/retTy';
+            data.passArgs = passArgs;
+            data.passArgsPass = passArgs.map(([name, ty]) => name);
+            data.passRetTy = passRetTy;
             break;
+
         default:
             throw '?';
     }
     let ret = tableToSwitcherRec(node, data, indentStep);
     switch(opts.mode) {
     case 'goto':
-    case 'loop':
+    case 'subfn':
         ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
         ret = [...data.prefixLines, ...ret, ...data.suffixLines];
-        break;
-    case 'match':
-        ret = lang.finalRender('        ', ret, true);
-        ret = [
-            '    enum E {',
-            ...data.prefixLines,
-            '    }',
-            '    fn which(op: u32) -> E {',
-            ...ret,
-            '    }',
-            '    match which(op) {',
-            ...data.suffixLines,
-            '    }',
-        ];
         break;
     }
     return ret.join('\n');
@@ -1136,7 +1156,6 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
     };
     opts.makeCallUnidentified = () =>
         lang.return(lang.call(patternifyForCall('unidentified'), [extraArgs]));
-    opts.mode = lang.isRust ? 'loop' : 'goto';
 
     let ret = tableToSwitcher(node, opts);
 
@@ -1193,13 +1212,14 @@ function tableToDebugCaller(node, cbName, extraArgs) {
         makeCallUnidentified() {
             return opts.makeCall('unidentified', []);
         },
-        mode: lang.isRust ? 'match' : 'goto',
     };
+    opts.passArgs = [['op', lang.u32], [cbName, 'Callback']];
+    opts.passRetTy = null;
     let ret = tableToSwitcher(node, opts);
     if(lang.isRust) {
-        ret = 'use ::Operand;\n' +
+        ret = 'use ::{Callback, Operand};\n' +
               'fn unreachable() -> ! { unreachable!() }\n' +
-              'pub fn decode(op: u32, cb: &mut FnMut(&\'static str, &[Operand])) {\n' +
+              `pub fn decode(op: u32, ${cbName}: Callback) {\n` +
               ret +
               '\n}';
     }
@@ -1426,7 +1446,7 @@ let getopt = require('node-getopt').create([
     //['',  'gen-sema', 'Generate the step after the disassembler.'],
     ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes PC inputs and jumps'],
     ['',  'gen-jump-disassembler', 'only jumps'],
-    ['',  'gen-debug-disassembler', 'symbolic'],
+    ['',  'gen-debug-disassembler=OUTFILE', 'symbolic'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
     ['',  'print-op-positions=OP', 'Print all positions this op appears in'],
@@ -1519,7 +1539,7 @@ if(opt.options['gen-jump-disassembler']) {
     genHookDisassembler(true);
 }
 if(opt.options['gen-debug-disassembler']) {
-    genDebugDisassembler();
+    genDebugDisassembler(opt.options['gen-debug-disassembler']);
 }
 function genHookDisassembler(jumpDis) {
     let separateUndefined = true;
@@ -1740,7 +1760,7 @@ function genHookDisassembler(jumpDis) {
         return name;
     });
     //console.log(insns2);
-    let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: !lang.isRust});
+    let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: true});
     //console.log(ppTable(node));
     console.log(genGeneratedWarning());
     for(let [groupName, groupInsns] of items(groupBy(insn => insn.groupName, insns2))) {
@@ -1757,11 +1777,13 @@ function genHookDisassembler(jumpDis) {
         opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')));
 }
 
-function genDebugDisassembler() {
-    let node = genDisassembler(insns, ns, {maxLength: 5, uniqueNodes: !lang.isRust});
-    console.log(genGeneratedWarning());
-    console.log(tableToDebugCaller(node, 'cb',
-                [opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')]));
+function genDebugDisassembler(outfile) {
+    let node = genDisassembler(insns, ns, {maxLength: 5, uniqueNodes: true});
+    let data = genGeneratedWarning() + '\n';
+    data += tableToDebugCaller(node, 'cb',
+                               opt.options['dis-extra-args'] ? [opt.options['dis-extra-args']] : (lang.isRust ? [] : ['ctx']));
+    data += '\n';
+    fs.writeFileSync(outfile, data);
 }
 
 if(opt.options['gen-sema']) {

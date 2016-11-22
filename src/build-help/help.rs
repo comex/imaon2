@@ -2,6 +2,7 @@ extern crate libbindgen;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::fmt::Write as FmtWrite;
+//use std::time::SystemTime;
 #[macro_use]
 extern crate macros;
 extern crate regex;
@@ -95,7 +96,10 @@ pub fn run(c: &mut Command) {
     }
 }
 
-pub fn run_node(js: &Path, args: &[&OsStr]) {
+pub fn run_node(js: &str, args: &[&OsStr]) {
+    let root_dir = get_root_dir();
+    let js = rel(&root_dir, &["tables", js]);
+    println!("cargo:rerun-if-changed={}", js.to_str().unwrap());
     let node_path = format!("{}/node_modules:{}",
         std::env::var("DEP_FAKE_BUILD_NPM_UPDATE_NODEPATH").unwrap(),
         std::env::var("NODE_PATH").unwrap_or(String::new()));
@@ -135,4 +139,17 @@ pub fn get_root_dir() -> PathBuf {
 }
 pub fn get_llvm_src() -> PathBuf {
     PathBuf::from(std::env::var_os("LLVM_SRC").expect("need LLVM_SRC environment variable"))
+}
+/*
+pub fn modified(p: &Path) -> SystemTime {
+    std::fs::metadata(p).unwrap().modified()
+}
+*/
+
+pub fn copydir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for ent in src.read_dir().unwrap() {
+        let ent = ent.unwrap();
+        std::fs::copy(ent.path(), dst.join(ent.file_name())).expect("copy");
+    }
 }

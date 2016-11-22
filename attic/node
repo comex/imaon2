@@ -1,0 +1,5 @@
+#!/bin/sh
+path="$(ls -dt target/*/build/build_npm_update-*/out/node_modules 2>/dev/null | head -n 1)"
+if [ -z "$path" ]; then echo "error: no node_modules" >&2; exit 1; fi
+export NODE_PATH="$path:$NODE_PATH"
+exec node --harmony --use-strict "$@"

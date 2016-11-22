@@ -2,6 +2,8 @@
   "name": "tables",
   "version": "0.0.0",
   "dependencies": {
+    "hashmap": "^2.0.6",
+    "node-getopt": "^0.2.3",
     "pegjs": "~0.10.0"
   },
   "files": []

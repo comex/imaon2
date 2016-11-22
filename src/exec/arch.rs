@@ -47,7 +47,7 @@ impl FromStr for Arch {
 }
 
 impl Arch {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             X86 => "x86",
             X86_64 => "x86_64",
