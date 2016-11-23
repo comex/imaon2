@@ -48,13 +48,17 @@ pub enum TrawlLeadKind {
 pub trait Disassembler : 'static {
     fn arch(&self) -> &arch::ArchAndOptions;
     fn can_disassemble_to_str(&self) -> bool { false }
-    fn disassemble_insn_to_str(&self, _input: DisassemblerInput) -> Option<(Option<String>, u32)> { unimplemented!() }
-    fn disassemble_multiple_to_str(&self, input: DisassemblerInput) -> Vec<(Option<String>, exec::VMA, u32)> {
+    fn disassemble_insn_to_str(&self, _input: &DisassemblerInput) -> Option<(Option<String>, u32)> { unimplemented!() }
+    fn disassemble_multiple_to_str(&self, input: &DisassemblerInput) -> Vec<(Option<String>, exec::VMA, u32)> {
         let mut result = Vec::new();
         let mut off = 0;
         let nia = self.arch().natural_insn_align(&input.mode);
         while off < input.data.len() {
-            if let Some((dissed, length)) = self.disassemble_insn_to_str(DisassemblerInput { data: &input.data[off..], pc: input.pc + (off as u64), mode: input.mode}) {
+            if let Some((dissed, length)) = self.disassemble_insn_to_str(&DisassemblerInput {
+                data: &input.data[off..],
+                pc: input.pc + (off as u64),
+                mode: input.mode,
+            }) {
                 result.push((dissed, input.pc + (off as u64), length));
                 off += length as usize;
             } else {
@@ -67,7 +71,7 @@ pub trait Disassembler : 'static {
     // todo - disassemble_all_to_str?
 
     fn can_trawl(&self) -> bool { false }
-    fn trawl(&self, _input: DisassemblerInput, _leads: &mut Vec<TrawlLead>) { unimplemented!() }
+    fn trawl(&self, _input: &DisassemblerInput, _leads: &mut Vec<TrawlLead>) -> Option<()> { unimplemented!() }
 }
 pub trait DisassemblerStatics : Disassembler + Sized {
     fn new_with_args(arch: arch::ArchAndOptions, args: &[String]) -> Result<Self, CreateDisError>;

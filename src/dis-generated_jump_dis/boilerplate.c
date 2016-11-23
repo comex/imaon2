@@ -6,6 +6,7 @@ struct rust_str {
     size_t length;
 };
 struct ctx {
+    bool is_unidentified;
     bool is_tail;
     bool have_target_addr;
     bool target_addr_is_data; // (not code)
@@ -41,13 +42,12 @@ static void label_8_ADR(struct ctx *ctx, uint32_t label) {
 static void uninteresting_2721_ABSv16i8(struct ctx *ctx) {
 }
 static void unidentified(struct ctx *ctx) {
+    ctx->is_unidentified = true;
+    ctx->is_tail = true;
 }
 
 
 void FUNC_NAME(struct ctx *ctx, uint32_t op) {
-    ctx->is_tail = false;
-    ctx->have_target_addr = false;
-    ctx->target_addr_is_data = false;
     #include INCLUDE_PATH
 }
 

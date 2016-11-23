@@ -17,6 +17,6 @@ path = "lib.rs"
 
 [package]
 build = "build.rs"
-links = "fake-dis_llvm_debug_generated"
-name = "dis_llvm_debug_generated"
+links = "fake-dis_generated_debug_dis"
+name = "dis_generated_debug_dis"
 version = "0.0.0"

@@ -6,9 +6,12 @@
 path = "../dis"
 version = "=0.0.0"
 
-[dependencies.dis_llvm_debug_generated]
-optional = true
-path = "../dis-llvm_debug_generated"
+[dependencies.dis_generated_debug_dis]
+path = "../dis-generated_debug_dis"
+version = "=0.0.0"
+
+[dependencies.dis_generated_jump_dis]
+path = "../dis-generated_jump_dis"
 version = "=0.0.0"
 
 [dependencies.exec]
@@ -24,11 +27,11 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["dis/use_llvm", "dis_llvm_debug_generated/use_llvm", "dis_llvm_debug_generated", "exec/use_llvm", "macros/use_llvm", "util/use_llvm"]
+use_llvm = ["dis/use_llvm", "dis_generated_debug_dis/use_llvm", "dis_generated_jump_dis/use_llvm", "exec/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]
-path = "llvm_debug.rs"
+path = "gendis.rs"
 
 [package]
-name = "dis_llvm_debug"
+name = "dis_gendis"
 version = "0.0.0"
