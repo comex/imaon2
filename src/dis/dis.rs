@@ -40,8 +40,7 @@ pub struct TrawlLead {
     pub kind: TrawlLeadKind,
 }
 pub enum TrawlLeadKind {
-    ReadInsn { len: u32 },
-    TailInsn,
+    NextInsn,
     JumpRef { mode: CodeMode },
     OtherRef,
 }

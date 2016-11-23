@@ -7,6 +7,13 @@ let path = require('path');
 let HashMap = require('hashmap').HashMap;
 let child_process = require('child_process');
 
+function writeFile(filename, data) {
+    if(filename == '-' || filename == '/dev/stdout')
+        process.stdout.write(data)
+    else
+        return fs.writeFileSync(filename, data);
+}
+
 function hex(n, len) {
     let s = '';
     for(let pos = len - 4; pos >= 0; pos -= 4) {
@@ -523,6 +530,8 @@ function printHeads(insns) {
 function ppTable(node, indent, depth) {
     indent = (indent || '') + '  ';
     depth = (depth || 0) + 1;
+    if(node.fail)
+        return 'fail';
     if(node.insn)
         return '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name;
     let s = '{' + depth + '} ';
@@ -1154,7 +1163,7 @@ function tableToSwitcher(node, opts) {
     return ret.join('\n');
 }
 
-function tableToBitsliceCaller(node, pattern, extraArgs) {
+function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
     let prototypes = {};
     let patternifyForDef = n => pattern.replace(/XXX/g, n);
     let patternifyForCall = lang.isRust ? (n => 'h.'+patternifyForDef(n)) : patternifyForDef;
@@ -1165,8 +1174,10 @@ function tableToBitsliceCaller(node, pattern, extraArgs) {
         let out = [];
         let args = extraArgs ? [extraArgs] : [];
         for(let op in runsByOp) {
-            //push('unsigned ' + op + ' = ' + opRunsToExtractionFormula(runsByOp[op], 'op', false) + ';');
-            out.push(opRunsToBitsliceLiteral(op, runsByOp[op]));
+            if(useBitslice)
+                out.push(opRunsToBitsliceLiteral(op, runsByOp[op]));
+            else
+                out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runsByOp[op], 'op')));
             args.push(op);
         }
         out.push(lang.return(lang.call(patternifyForCall(nobitsName), args)));
@@ -1219,21 +1230,11 @@ function tableToDebugCaller(node, cbName, extraArgs) {
             let out = [];
             for(let [op, runs] of items(runsByOp))
                 out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runs, 'op')));
-            let args = [...extraArgs, lang.stringLit(nobitsName)];
-            if(lang.isRust) {
-                let ops = [];
+            if(1) {
                 for(let op in runsByOp)
-                    ops.push(`Operand(${lang.render(lang.stringLit(op))}, ${op})`);
-                args.push('&[' + ops.join(', ') + ']');
-            } else {
-                let ops = [];
-                for(let op in runsByOp)
-                    ops.push(`{${lang.render(lang.stringLit(op))}, ${op}}`);
-                out.push(`struct operand ops[] = {${ops.join(', ')}};`);
-                args.push('ops');
-                args.push(lang.u32DecLit(ops.length));
+                    out.push(lang.call('PUSH_OPERAND', [lang.stringLit(op), op]));
+                out.push(lang.call('RETURN_INSN', [lang.stringLit(nobitsName)]));
             }
-            out.push(lang.return(lang.call(cbName, args)));
 
             return out;
         },
@@ -1472,8 +1473,8 @@ let getopt = require('node-getopt').create([
     ['d', 'gen-disassembler', 'Generate a full disassembler.'],
     //['',  'gen-branch-disassembler', 'Generate a branch-only disassembler.'],
     //['',  'gen-sema', 'Generate the step after the disassembler.'],
-    ['',  'gen-hook-disassembler', 'Generate a disassembler that distinguishes PC inputs and jumps'],
-    ['',  'gen-jump-disassembler', 'only jumps'],
+    ['',  'gen-hook-disassembler=OUTFILE', 'Generate a disassembler that distinguishes PC inputs and jumps'],
+    ['',  'gen-jump-disassembler=OUTFILE', 'only jumps'],
     ['',  'gen-debug-disassembler=OUTFILE', 'symbolic'],
     ['',  'extraction-formulas', 'Test extraction formulas'],
     ['',  'print-constrained-bits', 'Test constraints'],
@@ -1561,15 +1562,22 @@ if(opt.options['gen-disassembler']) {
     console.log(ppTable(node));
 }
 if(opt.options['gen-hook-disassembler']) {
-    genHookDisassembler(false);
+    genHookishDisassembler('hook', opt.options['gen-hook-disassembler']);
 }
 if(opt.options['gen-jump-disassembler']) {
-    genHookDisassembler(true);
+    genHookishDisassembler('jump', opt.options['gen-jump-disassembler']);
 }
 if(opt.options['gen-debug-disassembler']) {
     genDebugDisassembler(opt.options['gen-debug-disassembler']);
 }
-function genHookDisassembler(jumpDis) {
+function genHookishDisassembler(submode, outfile) {
+    switch(submode) {
+    case 'hook':
+    case 'jump':
+        break;
+    default:
+        throw 'bad mode';
+    }
     let separateUndefined = true;
     let uninterestingReturn = insn => {
         if(!separateUndefined)
@@ -1586,20 +1594,6 @@ function genHookDisassembler(jumpDis) {
             return uninterestingReturn(insn);
         }
 
-            /*
-            case 'AArch64': {
-                // yay, highly restricted use of PC
-                let interestingAddrRef = bit[0] == 'label' || bit[0] == 'addr' ||
-                    (isBranch && (bit[0] == 'target' || bit[0] == 'cond'));
-                if(onlyStatic)
-                    interesting = interestingAddrRef;
-                else
-                    interesting = interestingAddrRef ||
-                        (insn.name.match(/^(LDR.*l|ADRP?)$/) &&
-                            (bit[0] == 'Rt' || bit[0] == 'Xd')) || // hack
-                        (insn.name.match(/^(RET|BLR)$/) && bit[0] == 'Rn');
-                break;
-            */
         let varInfo = {};
         {
             insn.inst.forEach((bit, i) => {
@@ -1626,7 +1620,13 @@ function genHookDisassembler(jumpDis) {
             visitDag(insn.outOperandList, cb);
             for(let varr in varInfo) {
                 if(varInfo[varr].type == '?') {
-                    if(!insn.name.match(/^t2TB[BH]$/))
+                    if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeThreeAddrSRegInstruction' && varr.match(/^(src|dst|shift)/))
+                        varInfo[varr].type = 'foo';
+                    else if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeAddSubERegInstruction' && varr.match(/^(R.|ext)$/))
+                        varInfo[varr].type = 'bar';
+                    else if(insn.name.match(/^t2TB[BH]$/))
+                        ;
+                    else
                         throw `unknown type for ${insn.name} var ${varr}`;
                 }
             }
@@ -1640,6 +1640,9 @@ function genHookDisassembler(jumpDis) {
                 if(insn.name.match(/^t2TB[BH]$/))
                     fakeVarName = 'xTB';
                 break;
+            case 'AArch64':
+                if(submode == 'jump' && insn.isBranchy && !insn.isCall)
+                    fakeVarName = insn.name.match(/^Bcc|TB/) ? 'condbranchy' : 'branchy';
             }
             if(fakeVarName !== null)
                 varInfo[fakeVarName] = {out: false, type: 'fake', size: 0};
@@ -1680,7 +1683,7 @@ function genHookDisassembler(jumpDis) {
                         if(varr == 'Rn' && varInfo['wb'])
                             info.relevantToGPRWrite = true; // $wb (writeback) = $Rn
                     }
-                } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg)$/) ||
+                } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg|addr_offset_none)$/) ||
                           (type == '?' && insn.name.match(/^t2TB/))) {
                     isGPR = true; // GPR read, can't writeback
                     info.mayReadPC = true;
@@ -1715,15 +1718,30 @@ function genHookDisassembler(jumpDis) {
 
                 // sanity check
                 if(varr.match(/^R[dtnm]/) && !isGPR)
-                    throw `? insn ${insn.name} var ${varr}`;
+                    throw `? insn ${insn.name} var ${varr} type ${type}`;
+                break;
+            }
+            case 'AArch64': {
+                // yay, highly restricted use of PC
+                //console.log(insn.name, insn.isBranchy, type);
+                if(insn.isBranchy && (type == 'addr' || type.match(/b.*target$/)))
+                    info.codeAddrRef = true;
+                else if(type.match(/^adrp?label|am_ldrlit$/))
+                    info.dataAddrRef = true;
+                if(submode == 'hook') {
+                    if((insn.name.match(/^(LDR.*l|ADRP?)$/) &&
+                       (type == 'Rt' || type == 'Xd')) || // hack
+                       (insn.name.match(/^(RET|BLR)$/) && type == 'Rn'))
+                        info.otherImportant = true;
+                }
                 break;
             }
             default:
                 throw '?';
             } // switch
 
-            info.interesting = info.codeAddrRef || info.dataAddrRef || info.otherImportant ||
-                               info.mayWritePC;
+            info.interesting = info.codeAddrRef || info.dataAddrRef ||
+                               info.otherImportant || info.mayWritePC;
             if(info.interesting) {
                 anyInteresting = true;
                 if(info.writesGPR)
@@ -1735,9 +1753,11 @@ function genHookDisassembler(jumpDis) {
         if(!anyInteresting)
             return uninterestingReturn(insn);
 
-        for(let [varr, stats] of items(varInfo))
-            if(anyWritesGPR && stats.relevantToGPRWrite)
-                stats.interesting = true;
+        if(submode == 'hook') {
+            for(let [varr, stats] of items(varInfo))
+                if(anyWritesGPR && stats.relevantToGPRWrite)
+                    stats.interesting = true;
+        }
 
         if(insn.namespace == 'ARM') {
             let eligible = Array.from(filter(varr => varInfo[varr].writesGPR && varInfo[varr].mayWritePC, keys(varInfo)));
@@ -1800,9 +1820,12 @@ function genHookDisassembler(jumpDis) {
         comment += ' */';
         console.log(comment);
     }
-    console.log(tableToBitsliceCaller(node,
+    let useBitslice = submode == 'hook';
+    let out = tableToBitsliceOrValCaller(node,
         opt.options['dis-pattern'] || 'XXX',
-        opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx')));
+        opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx'),
+        useBitslice);
+    writeFile(outfile, out);
 }
 
 function genDebugDisassembler(outfile) {
@@ -1811,7 +1834,7 @@ function genDebugDisassembler(outfile) {
     data += tableToDebugCaller(node, 'cb',
                                opt.options['dis-extra-args'] ? [opt.options['dis-extra-args']] : (lang.isRust ? [] : ['ctx']));
     data += '\n';
-    fs.writeFileSync(outfile, data);
+    writeFile(outfile, data);
 }
 
 if(opt.options['gen-sema']) {

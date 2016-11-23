@@ -41,9 +41,14 @@ var instructions = result.filter(function(defn) {
         predicates: predicates,
         namespace: defn.props.Namespace,
         decoderNamespace: defn.props.DecoderNamespace,
+        decoderMethod: defn.props.DecoderMethod,
         outOperandList: defn.props.OutOperandList,
         inOperandList: defn.props.InOperandList,
-        isBranch: defn.props.isBranch,
+        isBranchy: defn.props.isBranch ||
+                   defn.props.isIndirectBranch ||
+                   defn.props.isReturn ||
+                   defn.props.isCall,
+        isCall: defn.props.isCall,
     };
 });
 var patternOperators = {};

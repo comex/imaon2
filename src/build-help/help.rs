@@ -1,3 +1,4 @@
+extern crate gcc;
 extern crate libbindgen;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -152,4 +153,24 @@ pub fn copydir(src: &Path, dst: &Path) {
         let ent = ent.unwrap();
         std::fs::copy(ent.path(), dst.join(ent.file_name())).expect("copy");
     }
+}
+
+const VARIANTS: &'static [&'static str] =
+    &["AArch64", "ARM", "Thumb", "Thumb2"];
+pub fn dis_llvm_x_generated(kind: &'static str) {
+    let ddpath = std::path::PathBuf::from(std::env::var_os("DEP_FAKE_BUILD_RUN_GEN_DDPATH").unwrap());
+    let mut handles = Vec::new();
+    for variant_name in VARIANTS {
+        let ddpath = ddpath.clone();
+        handles.push(std::thread::spawn(move || {
+            gcc::Config::new()
+                .file("boilerplate.c")
+                .include(ddpath)
+                .define(&format!("VARIANT_{}", variant_name), None)
+                .define("FUNC_NAME", Some(&format!("{}_dis_{}", kind, variant_name)))
+                .define("INCLUDE_PATH", Some(&format!("\"{}-dis-{}.c\"", kind, variant_name)))
+                .compile(&format!("lib{}.a", variant_name));
+        }));
+    }
+    for handle in handles { handle.join().unwrap(); }
 }

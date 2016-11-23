@@ -13,12 +13,15 @@ fn main() {
     for &(combo_name, arch_name, extra_args) in X {
         let out_json = out_json_path.join(format!("out-{}.json", arch_name));
         let my_out = build_help::get_out_dir();
-        let debug_dis_rs = my_out.join(format!("debug-dis-{}.c", combo_name));
+        let debug_dis_c = my_out.join(format!("debug-dis-{}.c", combo_name));
+        let jump_dis_c = my_out.join(format!("jump-dis-{}.c", combo_name));
         threads.push(std::thread::spawn(move || {
             let mut args: Vec<&OsStr> = vec![
                 OsStr::new("-l"), OsStr::new("c"),
                 OsStr::new("--gen-debug-disassembler"),
-                debug_dis_rs.as_os_str(),
+                debug_dis_c.as_os_str(),
+                OsStr::new("--gen-jump-disassembler"),
+                jump_dis_c.as_os_str(),
                 out_json.as_os_str(),
             ];
             args.extend(extra_args.iter().map(OsStr::new));

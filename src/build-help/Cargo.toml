@@ -2,6 +2,9 @@
 [build-dependencies]
 
 [dependencies]
+[dependencies.gcc]
+version = "0.3.38"
+
 [dependencies.lazy_static]
 version = "0.2.2"
 
