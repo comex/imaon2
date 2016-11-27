@@ -13,7 +13,7 @@ use std::fmt;
 use std::mem::replace;
 use std::mem::transmute;
 use std::str::FromStr;
-use std::cmp::min;
+use std::cmp::{min, max};
 use std::any::Any;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
@@ -90,6 +90,14 @@ impl VMA {
     }
     pub fn trunc32(self) -> VMA {
         VMA(self.0 & 0xffffffff)
+    }
+    pub fn align_to(self, size: u64) -> VMA {
+        let mask = size - 1;
+        (self + mask) & !mask
+    }
+    pub fn wrapping_align_to(self, size: u64) -> VMA {
+        let mask = size - 1;
+        self.wrapping_add(mask) & !mask
     }
 }
 // TODO - should this be signed or something?
@@ -610,4 +618,11 @@ impl Drop for SegmentWriter {
             panic!("SegmentWriter should be finish()d");
         }
     }
+}
+
+pub fn intersect_start_size(a: (VMA, u64), b: (VMA, u64)) -> (VMA, u64) {
+    let start = max(a.0, b.0);
+    let size = min(a.0.wrapping_add(a.1).wrapping_sub(start),
+                   b.0.wrapping_add(b.1).wrapping_sub(start));
+    (start, size)
 }

@@ -567,22 +567,15 @@ impl MachODscExtraction for MachO {
              } else { ByteStr::from_str("??") }
         }
 
-        let sli = match dc.get_slide_info() {
-            Ok(Some(sli)) => sli,
-            Ok(None) => {
-                // no slide info so can't do it, oh well...
-                return;
-            },
-            Err(e) => {
-                errln!("check_no_other_lib_refs: couldn't get slide info: {}", e);
-                return;
-            },
-        };
+        let sli = some_or!(dc.slide_info.as_ref(), {
+            // no slide info so can't do it, oh well...
+            return;
+        });
         let arch = self.eb.arch;
         for segment in &self.eb.segments {
             let content = segment.data.as_ref().unwrap().get();
             let pointer_size = self.eb.pointer_size;
-            sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
+            sli.iter(Some((segment.vmaddr, segment.vmsize)), self.eb.whole_buf.as_ref().unwrap().get(), |ptr| {
                 let offset = (ptr - segment.vmaddr) as usize;
                 let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
                 if val == 0 { return; }

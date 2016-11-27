@@ -26,7 +26,7 @@ use std::any::Any;
 use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
 
 pub mod dyldcache;
-use dyldcache::{DyldCache, ImageCache};
+use dyldcache::{DyldCache, ImageCache, SlideInfo};
 
 pub const VM_PROT_WRITE: u32 = 2;
 pub const VM_PROT_READ: u32 = 1;
@@ -400,6 +400,9 @@ pub struct MachO {
     pub code_signature: MCRef,
 
     _linkedit_bits: Option<[LinkeditBit; 22]>,
+
+    // from dyld cache
+    pub dc_info: MachODCInfo,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -685,10 +688,26 @@ struct ParseDyldExportState<'a> {
     offset: usize,
 }
 
+pub enum GuessBrokenCacheSlideResult {
+    Guess(u64),
+    Inconsistent,
+    BlownAway,
+    GotNoBindSelf,
+}
+
+// info about the dyld cache containing this macho
+#[derive(Default, Copy, Clone, Debug)]
+pub struct MachODCInfo {
+    hdr_offset: usize,
+    have_images_text_offset: bool,
+}
+
 impl MachO {
-    pub fn new(mc: MCRef, do_lcs: bool, hdr_offset: usize) -> exec::ExecResult<MachO> {
+    pub fn new(mc: MCRef, do_lcs: bool, dc_info: Option<MachODCInfo>) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
-        me.hdr_offset = hdr_offset;
+        let dc_info = dc_info.unwrap_or(Default::default());
+        me.dc_info = dc_info;
+        let hdr_offset = dc_info.hdr_offset;
         let mut lc_off = try!(hdr_offset.checked_add(size_of::<mach_header>()).ok_or_truncated());
         {
             let buf = mc.get();
@@ -763,7 +782,7 @@ impl MachO {
         let self_ = self as *mut _;
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
-        let hdr_offset = self.hdr_offset as u64;
+        let hdr_offset = self.dc_info.hdr_offset as u64;
         let whole = mc.get();
         let mut segi: usize = 0;
         for lci in 0..self.mh.ncmds {
@@ -867,8 +886,10 @@ impl MachO {
                                 self.eb.whole_buf.as_ref().unwrap()
                             };
                             let mut ignore = false;
-                            if self.hdr_offset != 0 {
+                            if self.dc_info.hdr_offset != 0 && !self.dc_info.have_images_text_offset {
                                 // update_dsc is supposed to drop the others but... doesn't on iOS?
+                                // newer versions (approximated as those with imagesTextOffset) don't
+                                // have this bug
                                 match lc.cmd {
                                     LC_SYMTAB |
                                     LC_DYSYMTAB |
@@ -1631,15 +1652,13 @@ impl MachO {
         }
     }
 
-
-    pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> Option<u64> {
-        let mut guess: Option<u64> = None;
+    pub fn guess_broken_cache_slide(&self, dc: &DyldCache) -> GuessBrokenCacheSlideResult {
+        let mut result = GuessBrokenCacheSlideResult::GotNoBindSelf;
         let dyld_export = self.dyld_export.get();
-        self.parse_dyld_bind(self.dyld_bind.get(), WhichBind::Bind, &mut |bind_state: &ParseDyldBindState| {
+        self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, &mut |bind_state: &ParseDyldBindState| {
             if bind_state.source_dylib == SourceLib::Self_ {
                 let symbol = some_or!(bind_state.symbol.as_ref(), return true);
                 let mut got_one = false;
-                let mut bad = false;
                 self.parse_dyld_export(dyld_export, Some(symbol), &mut |export_state: &ParseDyldExportState| -> bool {
                     debug_assert_eq!(&export_state.name, symbol);
                     let true_addr = export_state.addr;
@@ -1647,30 +1666,43 @@ impl MachO {
                     let seg_off = some_or!(bind_state.seg_off, return true) as usize;
                     let broken_addr = VMA(dc.eb.ptr_from_slice(
                         &seg_data[seg_off..seg_off + (dc.eb.pointer_size as usize)]));
-                    let this_guess = broken_addr.wrapping_sub(true_addr);
-                    match guess {
-                        Some(old_guess) => {
+                    let this_guess = match dc.slide_info {
+                        None | Some(SlideInfo::V1(_)) => broken_addr.wrapping_sub(true_addr),
+                        Some(SlideInfo::V2(ref v2)) => {
+                            let delta_mask = v2.delta_mask;
+                            if broken_addr.0.wrapping_add(v2.value_add) & !delta_mask == true_addr.0 & !delta_mask {
+                                0
+                            } else if broken_addr & !delta_mask == true_addr & !delta_mask {
+                                result = GuessBrokenCacheSlideResult::BlownAway;
+                                return false;
+                            } else {
+                                result = GuessBrokenCacheSlideResult::Inconsistent;
+                                return false;
+                            }
+                        }
+                    };
+                    match result {
+                        GuessBrokenCacheSlideResult::GotNoBindSelf => result = GuessBrokenCacheSlideResult::Guess(this_guess),
+                        GuessBrokenCacheSlideResult::Guess(old_guess) => {
                             if this_guess != old_guess {
                                 errln!("guess_broken_cache_slide: got inconsistent results:");
                                 errln!("   old_guess={:x} this_guess={:x}", old_guess, this_guess);
-                                guess = None;
-                                bad = true;
+                                result = GuessBrokenCacheSlideResult::Inconsistent;
                                 return false;
                             }
                         },
-                        None => guess = Some(this_guess),
+                        _ => unreachable!(),
                     }
                     got_one = true;
                     true
                 });
-                if bad { return false; }
                 if !got_one {
                     errln!("guess_broken_cache_slide: self-bind named '{}' not found in exports", symbol);
                 }
             }
             true
         });
-        guess
+        result
     }
     pub fn get_exported_symbol_list(&self, search_for: Option<&ByteStr>) -> Vec<Symbol<'static>> {
         let mut out = Vec::new();
@@ -1706,7 +1738,7 @@ impl exec::ExecProber for MachOProber {
         "macho"
     }
     fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
-        if let Ok(m) = MachO::new(buf, false, 0) {
+        if let Ok(m) = MachO::new(buf, false, None) {
             vec!(exec::ProbeResult {
                 desc: m.desc(),
                 arch: m.eb.arch,
@@ -1721,7 +1753,7 @@ impl exec::ExecProber for MachOProber {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ))));
-        let mo: MachO = try!(MachO::new(buf, true, 0));
+        let mo: MachO = try!(MachO::new(buf, true, None));
         Ok((Box::new(mo) as Box<exec::Exec>, m.free))
     }
 }
@@ -1816,17 +1848,3 @@ impl exec::ExecProber for FatMachOProber {
         }
     }
 }
-
-
-//#[test]
-
-/*
-wtf rustc
-fn dummy_fix() {
-    //let mut segw = SegmentWriter::new(&mut self.eb.segments);
-    let vec = Vec::<u8>::new();
-    let rw = |size: u64| -> Option<&[u8]> {
-        Some(&vec[size as usize..])
-    };
-}
-*/
