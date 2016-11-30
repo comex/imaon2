@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul};
+use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, intersect_start_size};
@@ -58,8 +58,8 @@ pub struct SlideInfoV1 {
 }
 pub struct SlideInfoV2 {
     pub page_size: u64,
-    pub page_starts: Mem<u8>,
-    pub page_extras: Mem<u8>,
+    pub page_starts: Mem<u16>,
+    pub page_extras: Mem<u16>,
     pub delta_mask: u64,
     pub delta_shift: u32,
     pub value_add: u64,
@@ -176,15 +176,17 @@ impl SlideInfoV2 {
         }
         let slice = blob.get();
         let slide_info: dyld_cache_slide_info2 = util::copy_from_slice(&slice[..size], end);
-        let page_starts = ::file_array_64(&blob, "page starts",
-                                          slide_info.page_starts_offset as u64,
-                                          slide_info.page_starts_count as u64,
-                                          2);
+        let (page_starts, _) =
+            ::file_array_64(&blob, "page starts",
+                            slide_info.page_starts_offset as u64,
+                            slide_info.page_starts_count as u64,
+                            2).cast();
 
-        let page_extras = ::file_array_64(&blob, "page extras",
-                                          slide_info.page_extras_offset as u64,
-                                          slide_info.page_extras_count as u64,
-                                          2);
+        let (page_extras, _) =
+            ::file_array_64(&blob, "page extras",
+                            slide_info.page_extras_offset as u64,
+                            slide_info.page_extras_count as u64,
+                            2).cast();
         if slide_info.page_size % 4096 != 0 ||
            slide_info.page_size > 1048576 { // arbitrary
             return err(BadData, "unreasonable slide info 2 page size");

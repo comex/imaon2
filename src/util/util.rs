@@ -139,9 +139,15 @@ pub fn copy_to_new_vec<T: Swap>(t: &T, end: Endian) -> Vec<u8> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Unswapped<T: Swap> {
     pub unswapped: T,
 }
+impl<T: Swap> Swap for Unswapped<T> {
+    #[inline]
+    fn bswap(&mut self) {}
+}
+
 impl<T: Swap> Unswapped<T> {
     pub fn copy(&self, endian: Endian) -> T {
         let mut result = self.unswapped;
@@ -150,26 +156,82 @@ impl<T: Swap> Unswapped<T> {
     }
 }
 
-#[inline]
-pub fn slice_cast<T: Swap>(input: &[u8]) -> (&[Unswapped<T>], bool /* was uneven */) {
-    let len = input.len();
-    let elm_size = size_of::<T>();
-    let casted: &[Unswapped<T>] = unsafe {
-        slice::from_raw_parts(transmute(input.as_ptr()), len / elm_size)
-    };
-    (casted, len % elm_size != 0)
+pub trait Is { type T; }
+impl<T> Is for T { type T = T; }
+
+pub trait Cast<Other>: Sized {
+    type SelfBase;
+    type OtherBase;
+    fn _len(&self) -> usize;
+    unsafe fn raw_cast(self) -> Other;
+
+    #[inline]
+    fn cast_to_u8(self) -> Other where Self::OtherBase: Is<T=u8> {
+        unsafe { self.raw_cast() }
+    }
+    fn cast(self) -> (Other, usize /*slack*/ ) where Self::OtherBase: Swap {
+        let len = self._len();
+        (unsafe { self.raw_cast() },
+         len * size_of::<Self::SelfBase>() % size_of::<Self::OtherBase>())
+    }
 }
 
-pub unsafe fn vec_raw_cast<A, B>(a: Vec<A>) -> Vec<B> {
-    let (ptr, len, cap) = (a.as_ptr(), a.len(), a.capacity());
-    if (cap * size_of::<A>()) % size_of::<B>() != 0 {
-        // changing the effective capacity could cause allocation issues
-        std::intrinsics::abort();
+impl<'a, T, U> Cast<&'a [U]> for &'a [T] where T: Swap {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> &'a [U] {
+        let len = self.len();
+        slice::from_raw_parts(
+            transmute(self.as_ptr()),
+            len * size_of::<T>() / size_of::<U>()
+        )
     }
-    forget(a);
-    Vec::from_raw_parts(transmute(ptr),
-                        (len * size_of::<A>()) / size_of::<B>(),
-                        (cap * size_of::<A>()) / size_of::<B>())
+}
+impl<'a, T, U> Cast<&'a mut [U]> for &'a mut [T] where T: Swap {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> &'a mut [U] {
+        let len = self.len();
+        slice::from_raw_parts_mut(
+            transmute(self.as_ptr()),
+            len * size_of::<T>() / size_of::<U>()
+        )
+    }
+}
+impl<T, U> Cast<Mem<U>> for Mem<T> where T: Swap, U: Copy {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len }
+    #[inline]
+    unsafe fn raw_cast(self) -> Mem<U> {
+        Mem {
+            mc: self.mc,
+            ptr: transmute(self.ptr),
+            len: (self.len * size_of::<T>()) / size_of::<U>(),
+        }
+    }
+}
+
+impl<T, U> Cast<Vec<U>> for Vec<T> {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> Vec<U> {
+        let (ptr, len, cap) = (self.as_ptr(), self.len(), self.capacity());
+        let (sizeof_t, sizeof_u) = (size_of::<T>(), size_of::<U>());
+        if cap * sizeof_t % sizeof_u != 0 {
+            panic!("vec raw cast can't have slack since allocation might get wonky")
+        }
+        forget(self);
+        Vec::from_raw_parts(transmute(ptr),
+                            (len * sizeof_t) / sizeof_u,
+                            (cap * sizeof_t) / sizeof_u)
+    }
 }
 
 
@@ -650,7 +712,7 @@ impl<T: Copy> Mem<T> {
 
     pub fn with_vec(vec: Vec<T>) -> Self {
         let len = vec.len();
-        let vec: Vec<u8> = unsafe { vec_raw_cast(vec) };
+        let vec: Vec<u8> = unsafe { vec.raw_cast() };
         let bs = vec.into_boxed_slice();
         let ptr = bs.as_ptr();
         Mem {
@@ -679,7 +741,7 @@ impl<T: Copy> Mem<T> {
             } else { false };
             if ok {
                 if let MemoryContainer::BoxedSlice(bs) = replace(mc, MemoryContainer::Empty) {
-                    unsafe { return vec_raw_cast(bs.into_vec()); }
+                    return unsafe { bs.into_vec().raw_cast() };
                 } else { debug_assert!(false); }
             }
         }
