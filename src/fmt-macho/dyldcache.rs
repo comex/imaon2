@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul};
+use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, intersect_start_size};
@@ -24,9 +24,9 @@ pub struct ImageInfo {
 }
 
 pub struct LocalSymbols {
-    entries: MCRef,
-    symtab: MCRef,
-    strtab: MCRef,
+    entries: Mem<u8>,
+    symtab: Mem<u8>,
+    strtab: Mem<u8>,
     nlist_count: u32,
 }
 
@@ -35,7 +35,7 @@ pub struct DyldCache {
     pub slide_info: Option<SlideInfo>,
     pub image_info: Vec<ImageInfo>,
     pub uuid: Option<[u8; 16]>,
-    pub cs_blob: Option<MCRef>,
+    pub cs_blob: Option<Mem<u8>>,
     pub local_symbols: Option<LocalSymbols>,
     pub have_images_text_offset: bool,
 }
@@ -49,8 +49,8 @@ fn range_check(big: (usize, usize), little: (usize, usize)) {
 
 const SLIDE_GRANULARITY: u64 = 4;
 pub struct SlideInfoV1 {
-    pub toc: MCRef,
-    pub entries: MCRef,
+    pub toc: Mem<u8>,
+    pub entries: Mem<u8>,
     pub entries_size: usize,
     data_addr: VMA,
     data_size: u64,
@@ -58,8 +58,8 @@ pub struct SlideInfoV1 {
 }
 pub struct SlideInfoV2 {
     pub page_size: u64,
-    pub page_starts: MCRef,
-    pub page_extras: MCRef,
+    pub page_starts: Mem<u8>,
+    pub page_extras: Mem<u8>,
     pub delta_mask: u64,
     pub delta_shift: u32,
     pub value_add: u64,
@@ -72,7 +72,7 @@ pub enum SlideInfo {
 }
 
 impl SlideInfo {
-    pub fn new(blob: MCRef, end: util::Endian, is64: bool, data_addr: VMA, data_size: u64) -> ExecResult<SlideInfo> {
+    pub fn new(blob: Mem<u8>, end: util::Endian, is64: bool, data_addr: VMA, data_size: u64) -> ExecResult<SlideInfo> {
         let slide_info_version: u32 = {
             let slice = blob.get();
             if slice.len() < 4 {
@@ -94,7 +94,7 @@ impl SlideInfo {
     }
 }
 impl SlideInfoV1 {
-    pub fn new(blob: MCRef, end: util::Endian, data_addr: VMA, data_size: u64) -> ExecResult<Self> {
+    pub fn new(blob: Mem<u8>, end: util::Endian, data_addr: VMA, data_size: u64) -> ExecResult<Self> {
         let slice = blob.get();
         let size = size_of::<dyld_cache_slide_info>();
         if blob.len() < size {
@@ -169,7 +169,7 @@ impl SlideInfoV1 {
 }
 
 impl SlideInfoV2 {
-    pub fn new(blob: MCRef, end: util::Endian, is64: bool, data_addr: VMA) -> ExecResult<Self> {
+    pub fn new(blob: Mem<u8>, end: util::Endian, is64: bool, data_addr: VMA) -> ExecResult<Self> {
         let size = size_of::<dyld_cache_slide_info2>();
         if blob.len() < size {
             return err(BadData, "slide info blob too small for header");
@@ -239,7 +239,7 @@ impl RangeCast for Range<u64> {
 }
 
 impl DyldCache {
-    pub fn new(mc: MCRef, inner_sects: bool, unslide: bool) -> ExecResult<DyldCache> {
+    pub fn new(mc: Mem<u8>, inner_sects: bool, unslide: bool) -> ExecResult<DyldCache> {
         // note - not all fields in older caches, but at least a page should be there, so don't worry about size calculation
         let hdr_size = size_of::<dyld_cache_header>();
         let (arch, end, is64, hdr) = {
@@ -423,7 +423,7 @@ impl DyldCache {
         mo.dsc_tabs = self.get_ls_entry_for_offset(off);
         Ok(mo)
     }
-    fn make_slide_info(&self, blob: MCRef) -> ExecResult<Option<SlideInfo>> {
+    fn make_slide_info(&self, blob: Mem<u8>) -> ExecResult<Option<SlideInfo>> {
         let data_seg = some_or!(self.eb.segments.get(1), {
             return err(BadData, "no data segment");
         });
@@ -495,7 +495,7 @@ impl DyldCache {
         if check_overflow && overflow {
             return err(ErrorKind::Other, "slide_by: slide failed due to overflow");
         }
-        let mc = MCRef::with_vec(whole);
+        let mc = Mem::<u8>::with_vec(whole);
         for segment in &mut self.eb.segments {
             segment.data = Some(mc.slice(segment.fileoff as usize,
                                          (segment.fileoff as usize) + (segment.filesize as usize))
@@ -562,7 +562,7 @@ impl ExecProber for DyldWholeProber {
     fn name(&self) -> &str {
         "dyld-whole"
     }
-    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: Mem<u8>) -> Vec<ProbeResult> {
         if let Ok(c) = DyldCache::new(buf, false, false) {
             vec![ProbeResult {
                 desc: "whole dyld cache".to_string(),
@@ -574,7 +574,7 @@ impl ExecProber for DyldWholeProber {
             vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
+   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-whole", 0, std::usize::MAX, &mut vec![
             ::getopts::optflag("", "inner-sects", "show sections from inner libraries"),
         ])));
@@ -590,7 +590,7 @@ impl ExecProber for DyldSingleProber {
     fn name(&self) -> &str {
         "dyld-single"
     }
-    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef) -> Vec<ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static ExecProber>, buf: Mem<u8>) -> Vec<ProbeResult> {
         if let Ok(c) = DyldCache::new(buf, false, false) {
             let mut seen_basenames = HashSet::new();
             c.image_info.iter().enumerate().map(|(i, ii)| {
@@ -613,7 +613,7 @@ impl ExecProber for DyldSingleProber {
             vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
+   fn create(&self, _eps: &Vec<&'static ExecProber>, buf: Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "dyld-single [--idx] <basename or full path to lib>", 1, std::usize::MAX, &mut vec![
             ::getopts::optflag("i", "idx", "choose by idx"),
         ])));

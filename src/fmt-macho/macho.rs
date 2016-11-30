@@ -15,7 +15,7 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, MCRef, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
+use util::{VecStrExt, Mem, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Symbol};
 use std::{u64, u32, usize};
@@ -296,10 +296,10 @@ pub fn exec_sym_to_nlist_64(sym: &Symbol, strx: u32, ind_strx: Option<u32>, arch
     Ok(res)
 }
 
-fn file_array(buf: &MCRef, name: &str, off: u32, count: u32, elm_size: usize) -> MCRef {
+fn file_array(buf: &Mem<u8>, name: &str, off: u32, count: u32, elm_size: usize) -> Mem<u8> {
     file_array_64(buf, name, off as u64, count as u64, elm_size)
 }
-fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size: usize) -> MCRef {
+fn file_array_64(buf: &Mem<u8>, name: &str, mut off: u64, mut count: u64, elm_size: usize) -> Mem<u8> {
     let elm_size = elm_size as u64;
     let buf_len = buf.len() as u64;
     if off > buf_len {
@@ -320,8 +320,8 @@ fn file_array_64(buf: &MCRef, name: &str, mut off: u64, mut count: u64, elm_size
 
 #[derive(Clone)]
 pub struct DscTabs {
-    pub symtab: MCRef,
-    pub strtab: MCRef,
+    pub symtab: Mem<u8>,
+    pub strtab: Mem<u8>,
     pub start: u32,
     pub count: u32,
 }
@@ -365,39 +365,39 @@ pub struct MachO {
     pub is64: bool,
     pub mh: mach_header,
     pub hdr_offset: usize,
-    pub load_commands: Vec<MCRef>,
+    pub load_commands: Vec<Mem<u8>>,
     pub load_dylib: Vec<LoadDylib>,
     pub dyld_base: Option<VMA>,
     pub sect_private: Vec<SectPrivate>,
 
     // old-style symbol table:
     pub nlist_size: usize,
-    pub symtab: MCRef,
-    pub localsym: MCRef,
-    pub extdefsym: MCRef,
-    pub undefsym: MCRef,
-    pub strtab: MCRef,
+    pub symtab: Mem<u8>,
+    pub localsym: Mem<u8>,
+    pub extdefsym: Mem<u8>,
+    pub undefsym: Mem<u8>,
+    pub strtab: Mem<u8>,
     pub dsc_tabs: Option<DscTabs>,
-    pub toc: MCRef,
-    pub modtab: MCRef,
-    pub extrefsym: MCRef,
-    pub indirectsym: MCRef,
-    pub extrel: MCRef,
-    pub locrel: MCRef,
+    pub toc: Mem<u8>,
+    pub modtab: Mem<u8>,
+    pub extrefsym: Mem<u8>,
+    pub indirectsym: Mem<u8>,
+    pub extrel: Mem<u8>,
+    pub locrel: Mem<u8>,
     // new-style
     pub dyld_info_is_only: bool,
-    pub dyld_rebase: MCRef,
-    pub dyld_bind: MCRef,
-    pub dyld_weak_bind: MCRef,
-    pub dyld_lazy_bind: MCRef,
-    pub dyld_export: MCRef,
+    pub dyld_rebase: Mem<u8>,
+    pub dyld_bind: Mem<u8>,
+    pub dyld_weak_bind: Mem<u8>,
+    pub dyld_lazy_bind: Mem<u8>,
+    pub dyld_export: Mem<u8>,
     // linkedit_data_commands
-    pub segment_split_info: MCRef,
-    pub function_starts: MCRef,
-    pub data_in_code: MCRef,
-    pub linker_optimization_hint: MCRef,
-    pub dylib_code_sign_drs: MCRef,
-    pub code_signature: MCRef,
+    pub segment_split_info: Mem<u8>,
+    pub function_starts: Mem<u8>,
+    pub data_in_code: Mem<u8>,
+    pub linker_optimization_hint: Mem<u8>,
+    pub dylib_code_sign_drs: Mem<u8>,
+    pub code_signature: Mem<u8>,
 
     _linkedit_bits: Option<[LinkeditBit; 22]>,
 
@@ -415,7 +415,7 @@ pub enum WhichBind {
 #[derive(Clone, Copy)]
 struct LinkeditBit {
     name: &'static str,
-    self_field: FieldLens<MachO, MCRef>,
+    self_field: FieldLens<MachO, Mem<u8>>,
     cmd_id: u32,
     cmd_off_field_off: usize,
     cmd_count_field_off: usize,
@@ -703,7 +703,7 @@ pub struct MachODCInfo {
 }
 
 impl MachO {
-    pub fn new(mc: MCRef, do_lcs: bool, dc_info: Option<MachODCInfo>) -> exec::ExecResult<MachO> {
+    pub fn new(mc: Mem<u8>, do_lcs: bool, dc_info: Option<MachODCInfo>) -> exec::ExecResult<MachO> {
         let mut me: MachO = Default::default();
         let dc_info = dc_info.unwrap_or(Default::default());
         me.dc_info = dc_info;
@@ -778,7 +778,7 @@ impl MachO {
         // we don't really care about cpusubtype but could fill it in
     }
 
-    fn parse_load_commands(&mut self, mut lc_off: usize, mc: &MCRef) {
+    fn parse_load_commands(&mut self, mut lc_off: usize, mc: &Mem<u8>) {
         let self_ = self as *mut _;
         self.nlist_size = if self.is64 { size_of::<nlist_64>() } else { size_of::<nlist>() };
         let end = self.eb.endian;
@@ -816,7 +816,7 @@ impl MachO {
                     }
                     //let was_0 = sc.fileoff == 0;
                     //let fileoff = if was_0 { hdr_offset as u64 } else { sc.fileoff as u64 };
-                    let data: Option<MCRef> = mc.slice(fileoff as usize, (fileoff + (sc.filesize as u64)) as usize);
+                    let data: Option<Mem<u8>> = mc.slice(fileoff as usize, (fileoff + (sc.filesize as u64)) as usize);
                     let mut seg = exec::Segment {
                         vmaddr: VMA(sc.vmaddr as u64),
                         vmsize: sc.vmsize as u64,
@@ -872,7 +872,7 @@ impl MachO {
                 LC_SEGMENT_SPLIT_INFO | LC_LINKER_OPTIMIZATION_HINT | LC_CODE_SIGNATURE => {
                     for fb in self.linkedit_bits() {
                         if lc.cmd == fb.cmd_id || (lc.cmd == LC_DYLD_INFO_ONLY && fb.cmd_id == LC_DYLD_INFO) {
-                            let mcref: &mut MCRef = unsafe { fb.self_field.get_mut_unsafe(self_) };
+                            let mcref: &mut Mem<u8> = unsafe { fb.self_field.get_mut_unsafe(self_) };
                             let (off_data, count_data) =
                                 some_or!(         lc_buf.slice_opt(fb.cmd_off_field_off, fb.cmd_off_field_off+4)
                                          .and_tup(lc_buf.slice_opt(fb.cmd_count_field_off, fb.cmd_count_field_off+4)),
@@ -1047,7 +1047,7 @@ impl MachO {
 
     pub fn reallocate(&mut self) -> exec::ExecResult<()> {
         let _sw = stopwatch("reallocate");
-        self.code_signature = MCRef::default();
+        self.code_signature = Mem::<u8>::default();
         self.xsym_to_symtab();
         let page_size = self.page_size();
 
@@ -1060,7 +1060,7 @@ impl MachO {
                 linkedit_idx = Some(i);
                 seg.vmsize = (linkedit.len() as u64).align_to(page_size);
                 seg.filesize = linkedit.len() as u64;
-                seg.data = Some(MCRef::with_data(&linkedit[..]));
+                seg.data = Some(Mem::<u8>::with_data(&linkedit[..]));
             } else if seg.fileoff == self.hdr_offset.ext() && seg.filesize > 0 {
                 text_idx = Some(i);
             }
@@ -1122,7 +1122,7 @@ impl MachO {
                 copy_memory(&cmd[..], &mut sbuf[off..off+cmd.len()]);
                 off += cmd.len();
             }
-            let smc = MCRef::with_data(&sbuf[..]);
+            let smc = Mem::<u8>::with_data(&sbuf[..]);
             seg.data = Some(smc.clone());
             // update self.load_commands
             off = 0;
@@ -1139,7 +1139,7 @@ impl MachO {
         let mut linkedit: Vec<u8> = Vec::new();
         let mut allocs: Vec<(usize, usize)> = Vec::new();
         for fb in self.linkedit_bits() {
-            let mcref: &MCRef = fb.self_field.get(self);
+            let mcref: &Mem<u8> = fb.self_field.get(self);
             let buf = mcref.get();
             if fb.is_symtab {
                 if mcref.len() == 0 {
@@ -1181,7 +1181,7 @@ impl MachO {
         let mut new_vec = self.localsym.get().to_owned();
         new_vec.extend_slice(self.extdefsym.get());
         new_vec.extend_slice(self.undefsym.get());
-        let mc = MCRef::with_data(&new_vec[..]);
+        let mc = Mem::<u8>::with_data(&new_vec[..]);
         self.symtab = mc;
         let parts = [
             (0, self.localsym.len()),
@@ -1737,7 +1737,7 @@ impl exec::ExecProber for MachOProber {
     fn name(&self) -> &str {
         "macho"
     }
-    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: Mem<u8>) -> Vec<exec::ProbeResult> {
         if let Ok(m) = MachO::new(buf, false, None) {
             vec!(exec::ProbeResult {
                 desc: m.desc(),
@@ -1749,7 +1749,7 @@ impl exec::ExecProber for MachOProber {
             vec!()
         }
     }
-   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+   fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: Mem<u8>, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "macho ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ))));
@@ -1761,7 +1761,7 @@ impl exec::ExecProber for MachOProber {
 pub struct FatMachOProber;
 
 impl FatMachOProber {
-    fn probe_cb(&self, mc: &MCRef, cb: &mut FnMut(u64, fat_arch)) -> bool {
+    fn probe_cb(&self, mc: &Mem<u8>, cb: &mut FnMut(u64, fat_arch)) -> bool {
         let buf = mc.get();
         if buf.len() < 8 { return false }
         let fh: fat_header = util::copy_from_slice(&buf[..8], util::BigEndian);
@@ -1790,7 +1790,7 @@ impl exec::ExecProber for FatMachOProber {
     fn name(&self) -> &str {
         "fat"
     }
-    fn probe(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, eps: &Vec<exec::ExecProberRef>, mc: Mem<u8>) -> Vec<exec::ProbeResult> {
         let mut result = Vec::new();
         let ok = self.probe_cb(&mc, &mut |i, fa| {
             let arch = match mach_arch_desc(fa.cputype, fa.cpusubtype) {
@@ -1813,7 +1813,7 @@ impl exec::ExecProber for FatMachOProber {
         result
     }
 
-    fn create(&self, eps: &Vec<exec::ExecProberRef>, mc: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+    fn create(&self, eps: &Vec<exec::ExecProberRef>, mc: Mem<u8>, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
         let top = "fat (--arch ARCH | -s SLICE)";
         let mut optgrps = vec!(
             getopts::optopt("", "arch", "choose by arch (OS X standard names)", "arch"),

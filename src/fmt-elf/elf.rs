@@ -19,7 +19,7 @@ use vec_map::VecMap;
 use util::SmallVector;
 
 use exec::arch::Arch;
-use util::{MCRef, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, Narrow};
+use util::{Mem, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, Narrow};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib, read_cstr, ReadVMA};
 use elf_bind::*;
 
@@ -444,7 +444,7 @@ pub struct Elf {
     pub shdrs: Vec<Shdr>,
     pub dyns: Vec<Dyn>,
     pub dynamic_info: DynamicInfo,
-    pub dynstr: MCRef,
+    pub dynstr: Mem<u8>,
     verneed_info_cache: Lazy<VerneedInfo>,
 }
 
@@ -591,7 +591,7 @@ fn check_start_size(start: u64, size: u64) -> Option<(usize, usize)> {
     start.check_add(size).map(|end| (start, end))
 }
 
-fn fill_in_data(segs: &mut [Segment], buf: &MCRef) {
+fn fill_in_data(segs: &mut [Segment], buf: &Mem<u8>) {
     for seg in segs {
         seg.data = check_start_size(seg.fileoff, seg.filesize).and_then(|(s, e)| buf.slice(s, e));
     }
@@ -637,9 +637,9 @@ impl Dyn {
 }
 
 
-fn get_dynamic_data(segs: &[Segment], phdrs: &[Phdr], sects: &[Segment], shdrs: &[Shdr]) -> Option<(MCRef, bool)> {
+fn get_dynamic_data(segs: &[Segment], phdrs: &[Phdr], sects: &[Segment], shdrs: &[Shdr]) -> Option<(Mem<u8>, bool)> {
     // following readelf, find ".dynamic" if possible, else PT_DYNAMIC
-    let mut the_dynamic: Option<MCRef> = None;
+    let mut the_dynamic: Option<Mem<u8>> = None;
     for (sect, shdr) in sects.iter().zip(shdrs) {
         if sect.name.is_some() && &**sect.name.as_ref().unwrap() == ByteStr::from_str(".dynamic") {
             if the_dynamic.is_some() {
@@ -736,13 +736,13 @@ impl Swap for GNUHashHeader {
 struct GNUHash {
     header: GNUHashHeader,
     #[allow(dead_code)]
-    bitmask: MCRef,
-    buckets: MCRef,
+    bitmask: Mem<u8>,
+    buckets: Mem<u8>,
     chain_addr: VMA,
 }
 
 impl Elf {
-    fn new(buf: MCRef) -> ExecResult<Self> {
+    fn new(buf: Mem<u8>) -> ExecResult<Self> {
         let mut res = {
             let b = buf.get();
             let basics = try!(check_elf_basics(b, true).map_err(|a| exec::err_only(ErrorKind::BadData, a)));
@@ -834,7 +834,7 @@ impl Elf {
         }
         res
     }
-    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<(MCRef /*symtab*/, MCRef /*versym*/, usize /* syment */)> {
+    fn get_full_symtab(&self, mode: SymtabTraverseMode) -> Option<(Mem<u8> /*symtab*/, Mem<u8> /*versym*/, usize /* syment */)> {
         let symtab = some_or!(self.dynamic_info.symtab, { return None });
         let syment = self.dynamic_info.syment.unwrap_or_else(|| {
             errln!("warning: SYMTAB but no SYMENT? (get_full_symtab)");
@@ -914,7 +914,7 @@ impl Elf {
                 errln!("warning: couldn't read versym (got {}/{} bytes)", buf.len(), versym_length);
             }
             buf
-        } else { MCRef::default() };
+        } else { Mem::<u8>::default() };
 
         Some((buf.slice(0, read_symcount * syment).unwrap(), versym_buf, syment))
     }
@@ -1153,14 +1153,14 @@ impl exec::ExecProber for ElfProber {
     fn name(&self) -> &str {
         "elf"
     }
-    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: Mem<u8>, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "elf ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ))));
         let free = m.free;
         Elf::new(buf).map(|res| (box res as Box<exec::Exec>, free))
     }
-    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: Mem<u8>) -> Vec<exec::ProbeResult> {
         match check_elf_basics(buf.get(), false) {
             Err(_msg) => vec!(),
             Ok(ei) => {

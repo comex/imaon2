@@ -606,8 +606,6 @@ pub struct Mem<T: Copy> {
     len: usize
 }
 
-pub type MCRef = Mem<u8>; // old name XXX
-
 unsafe impl<T: Copy> Send for Mem<T> {}
 unsafe impl<T: Copy> Sync for Mem<T> {}
 
@@ -619,7 +617,7 @@ impl<T: Copy> std::default::Default for Mem<T> {
 
 impl<T: Copy> Debug for Mem<T> {
     fn fmt(&self, fmt: &mut Formatter) -> std::fmt::Result {
-        write!(fmt, "MCRef({:?}, {})", self.ptr, self.len)
+        write!(fmt, "Mem<u8>({:?}, {})", self.ptr, self.len)
     }
 }
 
@@ -638,7 +636,7 @@ static EMPTY_ARC_INNER: XArcInner<MemoryContainer> = XArcInner {
 impl Mem<u8> {
     pub fn with_mm(mm: Mmap) -> Self {
         let (ptr, len) = (mm.ptr() as *const _, mm.len());
-        MCRef {
+        Mem {
             mc: Arc::new(MemoryContainer::MemoryMap(mm)),
             ptr: ptr, len: len
         }
@@ -728,7 +726,7 @@ impl<T: Copy> Mem<T> {
         transmute(std::slice::from_raw_parts(self.ptr, self.len))
     }
 
-    pub fn offset_in(&self, other: &MCRef) -> Option<usize> {
+    pub fn offset_in(&self, other: &Mem<u8>) -> Option<usize> {
         let mine = self.ptr as usize;
         let theirs = other.ptr as usize;
         if mine >= theirs && mine < theirs + max(other.len, 1) {

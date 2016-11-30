@@ -15,7 +15,7 @@ impl exec::Exec for RawBinary {
 }
 
 impl RawBinary {
-    pub fn new(buf: util::MCRef, _args: Vec<String>) -> RawBinary {
+    pub fn new(buf: util::Mem<u8>, _args: Vec<String>) -> RawBinary {
         let len = buf.get().len();
         // todo: parse args
         let seg = exec::Segment {
@@ -49,7 +49,7 @@ impl exec::ExecProber for RawProber {
     fn name(&self) -> &str {
         "raw"
     }
-    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, _: util::MCRef) -> Vec<exec::ProbeResult> {
+    fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, _: util::Mem<u8>) -> Vec<exec::ProbeResult> {
         vec!(exec::ProbeResult {
             desc: "raw".to_string(),
             arch: arch::UnknownArch,
@@ -57,7 +57,7 @@ impl exec::ExecProber for RawProber {
             cmd: vec!("raw".to_string()),
         })
     }
-    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: util::MCRef, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
+    fn create(&self, _eps: &Vec<&'static exec::ExecProber>, buf: util::Mem<u8>, args: Vec<String>) -> exec::ExecResult<(Box<exec::Exec>, Vec<String>)> {
         let m = try!(exec::usage_to_invalid_args(util::do_getopts_or_usage(&*args, "raw ...", 0, std::usize::MAX, &mut vec!(
             // ...
         ))));

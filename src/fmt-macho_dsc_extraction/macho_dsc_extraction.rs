@@ -10,7 +10,7 @@ use macho::dyldcache::{ImageCache, ImageCacheEntry, SegMapEntry, DyldCache};
 use std::default::Default;
 use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
-use util::{MCRef, SliceExt, OptionExt, Endian, LittleEndian, Lazy, Fnv};
+use util::{Mem, SliceExt, OptionExt, Endian, LittleEndian, Lazy, Fnv};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, SourceLib, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
 use exec::arch::Arch;
@@ -98,7 +98,7 @@ impl MachODscExtraction for MachO {
                 pointers_sects_info.push(info);
             }
         }
-        let mut xindirectsym = replace(&mut self.indirectsym, MCRef::default());
+        let mut xindirectsym = replace(&mut self.indirectsym, Mem::<u8>::default());
         {
             let indirectsym = xindirectsym.get_mut_decow();
             let end = self.eb.endian;
@@ -983,10 +983,10 @@ pub fn extract_as_necessary(mo: &mut MachO, dc: Option<&DyldCache>, image_cache:
         };
         // we're in a cache...
         let res = mo.reaggregate_nlist_syms_from_cache();
-        mo.localsym = MCRef::with_data(&res.localsym);
-        mo.extdefsym = MCRef::with_data(&res.extdefsym);
-        mo.undefsym = MCRef::with_data(&res.undefsym);
-        mo.strtab = MCRef::with_data(&res.strtab);
+        mo.localsym = Mem::<u8>::with_data(&res.localsym);
+        mo.extdefsym = Mem::<u8>::with_data(&res.extdefsym);
+        mo.undefsym = Mem::<u8>::with_data(&res.undefsym);
+        mo.strtab = Mem::<u8>::with_data(&res.strtab);
         mo.xsym_to_symtab();
         mo.update_indirectsym(&res.sym_name_to_idx);
         if let Some(ic) = image_cache {

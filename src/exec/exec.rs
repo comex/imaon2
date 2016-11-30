@@ -17,7 +17,7 @@ use std::cmp::{min, max};
 use std::any::Any;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
-use util::{ByteString, ByteStr, MCRef, ReadCell, Narrow, CheckAdd, CheckSub};
+use util::{ByteString, ByteStr, Mem, ReadCell, Narrow, CheckAdd, CheckSub};
 
 pub mod arch;
 mod reloc;
@@ -173,7 +173,7 @@ pub struct Segment {
     pub filesize: u64,
     pub name: Option<ByteString>,
     pub prot: Prot,
-    pub data: Option<util::MCRef>,
+    pub data: Option<util::Mem<u8>>,
     pub seg_idx: Option<usize>, // for sections, which seg it belongs to
     pub private: usize,
 }
@@ -185,7 +185,7 @@ impl Segment {
     pub fn get_data(&self) -> &[u8] {
         self.data.as_ref().unwrap().get()
     }
-    pub fn steal_data(&mut self) -> MCRef {
+    pub fn steal_data(&mut self) -> Mem<u8> {
         replace(&mut self.data, None).unwrap()
     }
 }
@@ -197,7 +197,7 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
-    pub whole_buf: Option<util::MCRef>,
+    pub whole_buf: Option<util::Mem<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -306,9 +306,9 @@ pub trait Exec : 'static {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>;
+    fn probe(&self, eps: &Vec<ExecProberRef>, buf: util::Mem<u8>) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)>;
+    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)>;
 }
 
 pub type ExecProberRef = &'static (ExecProber+'static);
@@ -320,7 +320,7 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult> {
+pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>) -> Vec<ProbeResult> {
     let mut result = vec!();
     for epp in eps.iter() {
         result.extend(epp.probe(eps, buf.clone()).into_iter());
@@ -328,7 +328,7 @@ pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::MCRef) -> Vec<ProbeResult>
     result
 }
 
-pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+pub fn create(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     if args.len() == 0 {
         return err(ErrorKind::InvalidArgs, "empty argument list passed to exec::create");
     }
@@ -344,7 +344,7 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::MCRef, mut args: Vec<String>)
     err(ErrorKind::InvalidArgs, format!("no format named {}", prober_name))
 }
 
-fn create_auto(eps: &Vec<ExecProberRef>, buf: util::MCRef, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+fn create_auto(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     // TODO: error conversion
     let m = try!(usage_to_invalid_args(util::do_getopts_or_usage(&*args, "auto [--arch arch]", 0, std::usize::MAX, &mut vec![
         getopts::optopt("", "arch", "Architecture bias", "arch"),
@@ -398,16 +398,16 @@ pub fn addr_to_seg_off_range(segs: &[Segment], addr: VMA) -> Option<(&Segment, u
 }
 
 pub trait ReadVMA {
-    fn read<'a>(&'a self, addr: VMA, size: u64) -> MCRef;
+    fn read<'a>(&'a self, addr: VMA, size: u64) -> Mem<u8>;
 }
 
 impl ReadVMA for ExecBase {
-    fn read<'a>(&'a self, addr: VMA, mut size: u64) -> MCRef {
+    fn read<'a>(&'a self, addr: VMA, mut size: u64) -> Mem<u8> {
         let (seg, off, avail) = some_or!(addr_to_seg_off_range(&self.segments, addr),
-            { return MCRef::empty() });
+            { return Mem::<u8>::empty() });
         if size <= avail {
-            let data = some_or!(seg.data.as_ref(), { return MCRef::empty() });
-            if off > std::usize::MAX as u64 { return MCRef::empty(); }
+            let data = some_or!(seg.data.as_ref(), { return Mem::<u8>::empty() });
+            if off > std::usize::MAX as u64 { return Mem::<u8>::empty(); }
             return data.slice(off as usize, min(off + size, data.len() as u64) as usize).unwrap();
         }
         let mut res = Vec::new();
@@ -415,7 +415,7 @@ impl ReadVMA for ExecBase {
             let (seg, off, avail) = some_or!(addr_to_seg_off_range(&self.segments, addr),
                 { break });
             if off > std::usize::MAX as u64 { break; }
-            let data = some_or!(seg.data.as_ref(), { return MCRef::empty() });
+            let data = some_or!(seg.data.as_ref(), { return Mem::<u8>::empty() });
             let data = data.get();
             let desired = min(avail, size);
             let end = min(off + desired, data.len() as u64);
@@ -424,7 +424,7 @@ impl ReadVMA for ExecBase {
             if sl.len() as u64 != desired { break; }
             size -= desired;
         }
-        MCRef::with_data(&res) // xxx
+        Mem::<u8>::with_data(&res) // xxx
     }
 }
 
@@ -530,7 +530,7 @@ pub struct SegmentWriter {
     contents: Vec<(VMA, u64, SWContents)>,
 }
 enum SWContents {
-    RO(MCRef),
+    RO(Mem<u8>),
     RW(Vec<Cell<u8>>),
     Fail,
 }
@@ -617,7 +617,7 @@ impl SegmentWriter {
                 SWContents::RO(mcref) => mcref,
                 SWContents::RW(vec) => {
                     let orig: Vec<u8> = unsafe { transmute(vec) };
-                    MCRef::with_vec(orig)
+                    Mem::<u8>::with_vec(orig)
                 },
                 SWContents::Fail => panic!(),
             });

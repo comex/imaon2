@@ -30,7 +30,7 @@ use exec::arch::{ArchAndOptions, CodeMode};
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
-    let entry = |mc: &util::MCRef, name| {
+    let entry = |mc: &util::Mem<u8>, name| {
         if let Some(offset) = mc.offset_in(&mo.eb.whole_buf.as_ref().unwrap()) {
             println!("{:<16}: offset {:<#8x}, length {:<#8x}",
                 name, offset, mc.len());
