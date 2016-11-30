@@ -67,50 +67,26 @@ macro_rules! trait_alias {(($($bounds:ident),*), $name:ident, $($based:tt)*) => 
 }}
 
 #[macro_export]
-macro_rules! impl_check_math_option {($T:ty, $U:ty) => {
-    impl CheckMath<$U, $T> for Option<$T> {
-        type Output = <$T as CheckMath<$U, $T>>::Output;
+macro_rules! impl_check_x_option {($trait_:ident, $meth:ident, $T:ty, $U:ty) => {
+    impl $trait_<$U, $T> for Option<$T> {
+        type Output = <$T as $trait_<$U, $T>>::Output;
         #[inline]
-        fn check_add(self, other: $U) -> Option<Self::Output> {
-            if let Some(s) = self { s.check_add(other) } else { None }
-        }
-        #[inline]
-        fn check_sub(self, other: $U) -> Option<Self::Output> {
-            if let Some(s) = self { s.check_sub(other) } else { None }
-        }
-        #[inline]
-        fn check_mul(self, other: $U) -> Option<Self::Output> {
-            if let Some(s) = self { s.check_mul(other) } else { None }
+        fn $meth(self, other: $U) -> Option<Self::Output> {
+            if let Some(s) = self { s.$meth(other) } else { None }
         }
     }
-    impl CheckMath<Option<$U>, $T> for $T {
-        type Output = <$T as CheckMath<$U, $T>>::Output;
+    impl $trait_<Option<$U>, $T> for $T {
+        type Output = <$T as $trait_<$U, $T>>::Output;
         #[inline]
-        fn check_add(self, other: Option<$U>) -> Option<Self::Output> {
-            if let Some(o) = other { self.check_add(o) } else { None }
-        }
-        #[inline]
-        fn check_sub(self, other: Option<$U>) -> Option<Self::Output> {
-            if let Some(o) = other { self.check_sub(o) } else { None }
-        }
-        #[inline]
-        fn check_mul(self, other: Option<$U>) -> Option<Self::Output> {
-            if let Some(o) = other { self.check_mul(o) } else { None }
+        fn $meth(self, other: Option<$U>) -> Option<Self::Output> {
+            if let Some(o) = other { self.$meth(o) } else { None }
         }
     }
-    impl CheckMath<Option<$U>, $T> for Option<$T> {
-        type Output = <$T as CheckMath<$U, $T>>::Output;
+    impl $trait_<Option<$U>, $T> for Option<$T> {
+        type Output = <$T as $trait_<$U, $T>>::Output;
         #[inline]
-        fn check_add(self, other: Option<$U>) -> Option<Self::Output> {
-            if let (Some(s), Some(o)) = (self, other) { s.check_add(o) } else { None }
-        }
-        #[inline]
-        fn check_sub(self, other: Option<$U>) -> Option<Self::Output> {
-            if let (Some(s), Some(o)) = (self, other) { s.check_sub(o) } else { None }
-        }
-        #[inline]
-        fn check_mul(self, other: Option<$U>) -> Option<Self::Output> {
-            if let (Some(s), Some(o)) = (self, other) { s.check_mul(o) } else { None }
+        fn $meth(self, other: Option<$U>) -> Option<Self::Output> {
+            if let (Some(s), Some(o)) = (self, other) { s.$meth(o) } else { None }
         }
     }
 

@@ -23,7 +23,7 @@ use vec_map::VecMap;
 use std::collections::{HashSet};
 use std::borrow::Cow;
 use std::any::Any;
-use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckMath, TrivialState, stopwatch};
+use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckAdd, CheckSub, TrivialState, stopwatch};
 
 pub mod dyldcache;
 use dyldcache::{DyldCache, ImageCache, SlideInfo};
@@ -1033,16 +1033,16 @@ impl MachO {
     pub fn rewhole(&mut self) {
         let _sw = stopwatch("rewhole");
         let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
-        let mut mm = util::MemoryMap::with_fd_size(None, new_size as usize);
+        let mut mm = util::memmap_anon(new_size as usize).unwrap();
         {
-            let buf = mm.get_mut();
+            let buf = mm.get_mut().unwrap();
             for seg in &self.eb.segments {
                 let data = seg.get_data();
                 assert_eq!(seg.filesize, data.len() as u64);
                 copy_memory(data, &mut buf[seg.fileoff as usize..seg.fileoff as usize + seg.filesize as usize]);
             }
         }
-        self.eb.whole_buf = Some(MCRef::with_mm(mm));
+        self.eb.whole_buf = Some(mm);
     }
 
     pub fn reallocate(&mut self) -> exec::ExecResult<()> {

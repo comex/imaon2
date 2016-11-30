@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMath};
+use util::{MCRef, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, intersect_start_size};

@@ -17,7 +17,7 @@ use exec::arch::Arch;
 use std::collections::{HashSet, HashMap};
 use std::cell::Cell;
 use std::any::Any;
-use util::{ByteString, ByteStr, Ext, Narrow, CheckMath, stopwatch, RWSlicePtr};
+use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr};
 
 struct ReaggregatedSyms {
     localsym: Vec<u8>,

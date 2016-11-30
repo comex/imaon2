@@ -17,7 +17,7 @@ use std::cmp::{min, max};
 use std::any::Any;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
-use util::{ByteString, ByteStr, MCRef, CheckMath, ReadCell, Narrow};
+use util::{ByteString, ByteStr, MCRef, ReadCell, Narrow, CheckAdd, CheckSub};
 
 pub mod arch;
 mod reloc;
@@ -108,20 +108,32 @@ impl std::ops::Sub<VMA> for VMA {
         lhs - rhs
     }
 }
-impl util::CheckMath<u64, VMA> for VMA {
+impl util::CheckAdd<u64, VMA> for VMA {
     type Output = VMA;
     fn check_add(self, other: u64) -> Option<Self::Output> {
         self.0.checked_add(other).map(VMA)
     }
+}
+impl util::CheckSub<u64, VMA> for VMA {
+    type Output = VMA;
     fn check_sub(self, other: u64) -> Option<Self::Output> {
         self.0.checked_sub(other).map(VMA)
     }
-    fn check_mul(self, _other: u64) -> Option<Self::Output> {
-        panic!("lolwat")
+}
+impl util::CheckSub<VMA, VMA> for VMA {
+    type Output = u64;
+    fn check_sub(self, other: VMA) -> Option<Self::Output> {
+        if self >= other {
+            Some(self - other)
+        } else {
+            None
+        }
     }
 
 }
-impl_check_math_option!(VMA, u64);
+impl_check_x_option!(CheckAdd, check_add, VMA, u64);
+impl_check_x_option!(CheckSub, check_sub, VMA, u64);
+impl_check_x_option!(CheckSub, check_sub, VMA, VMA);
 
 impl Hash for VMA {
     fn hash<H>(&self, state: &mut H) where H: Hasher { self.0.hash(state) }

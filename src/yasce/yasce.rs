@@ -98,12 +98,12 @@ fn main() {
     let dc_path = &base_args[1];
     let filename = base_args.get(2);
 
-    let mut fp = File::open(&Path::new(&dc_path)).unwrap_or_else(|e| {
+    let fp = File::open(&Path::new(&dc_path)).unwrap_or_else(|e| {
         errln!("open {:?} failed: {}", dc_path, e);
         util::exit();
     });
 
-    let dc_buf = util::safe_mmap(&mut fp);
+    let dc_buf = util::memmap(&fp).unwrap();
     let dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
         errln!("parse dyld cache format fail: {}", e);
         util::exit();

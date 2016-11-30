@@ -317,7 +317,7 @@ fn main() {
         errln!("open {} failed: {}", filename, e);
         util::exit();
     });
-    let mm = util::safe_mmap(&mut fp);
+    let mm = util::memmap(&fp).unwrap();
     if args.len() > 0 {
         if args[0].starts_with("-") {
             let m_ = util::do_getopts_or_usage(&*args, top, 0, 0, &mut optgrps).unwrap_or_else(usage_panic);

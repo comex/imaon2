@@ -3,18 +3,18 @@
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
+extern crate memmap;
+use memmap::Mmap;
 
 #[macro_use]
 extern crate macros;
 
-use std::mem::{size_of, uninitialized, transmute, replace};
+use std::mem::{size_of, uninitialized, transmute, replace, forget};
 use std::ptr;
-use std::ptr::{copy, null_mut};
+use std::ptr::copy;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::default::Default;
-use std::io::{SeekFrom, Seek};
-use std::os::unix::prelude::AsRawFd;
 use std::num::ParseIntError;
 use std::cmp::max;
 use std::slice;
@@ -25,6 +25,8 @@ use std::cell::{UnsafeCell, Cell};
 use std::marker::PhantomData;
 use std::hash::{Hash, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io;
 
 extern crate fnv;
 use fnv::FnvHasher;
@@ -128,7 +130,7 @@ pub fn copy_to_vec<T: Copy + Swap>(vec: &mut Vec<u8>, t: &T, end: Endian) {
     }
 }
 
-pub fn copy_to_new_vec<T: Copy + Swap>(t: &T, end: Endian) -> Vec<u8> {
+pub fn copy_to_new_vec<T: Swap>(t: &T, end: Endian) -> Vec<u8> {
     unsafe {
         let mut res: Vec<u8> = slice::from_raw_parts(transmute(t), size_of::<T>()).to_vec();
         let newt: *mut T = transmute(res.as_mut_ptr());
@@ -136,6 +138,40 @@ pub fn copy_to_new_vec<T: Copy + Swap>(t: &T, end: Endian) -> Vec<u8> {
         res
     }
 }
+
+pub struct Unswapped<T: Swap> {
+    pub unswapped: T,
+}
+impl<T: Swap> Unswapped<T> {
+    pub fn copy(&self, endian: Endian) -> T {
+        let mut result = self.unswapped;
+        result.bswap_from(endian);
+        result
+    }
+}
+
+#[inline]
+pub fn slice_cast<T: Swap>(input: &[u8]) -> (&[Unswapped<T>], bool /* was uneven */) {
+    let len = input.len();
+    let elm_size = size_of::<T>();
+    let casted: &[Unswapped<T>] = unsafe {
+        slice::from_raw_parts(transmute(input.as_ptr()), len / elm_size)
+    };
+    (casted, len % elm_size != 0)
+}
+
+pub unsafe fn vec_raw_cast<A, B>(a: Vec<A>) -> Vec<B> {
+    let (ptr, len, cap) = (a.as_ptr(), a.len(), a.capacity());
+    if (cap * size_of::<A>()) % size_of::<B>() != 0 {
+        // changing the effective capacity could cause allocation issues
+        std::intrinsics::abort();
+    }
+    forget(a);
+    Vec::from_raw_parts(transmute(ptr),
+                        (len * size_of::<A>()) / size_of::<B>(),
+                        (cap * size_of::<A>()) / size_of::<B>())
+}
+
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Endian {
@@ -154,7 +190,7 @@ impl Endian {
     }
 }
 
-pub trait Swap {
+pub trait Swap: Copy {
     fn bswap(&mut self);
     #[inline]
     fn bswap_from(&mut self, end: Endian) {
@@ -162,10 +198,16 @@ pub trait Swap {
     }
 }
 
-pub trait CheckMath<Other, Dummy> {
+pub trait CheckAdd<Other, DummyForCoherence> {
     type Output;
     fn check_add(self, other: Other) -> Option<Self::Output>;
+}
+pub trait CheckSub<Other, DummyForCoherence> {
+    type Output;
     fn check_sub(self, other: Other) -> Option<Self::Output>;
+}
+pub trait CheckMul<Other, DummyForCoherence> {
+    type Output;
     fn check_mul(self, other: Other) -> Option<Self::Output>;
 }
 
@@ -186,22 +228,30 @@ macro_rules! impl_int {($ty:ident) => {
             (self + mask) & !mask
         }
     }
-    impl CheckMath<$ty, $ty> for $ty {
+    impl CheckAdd<$ty, $ty> for $ty {
         type Output = $ty;
         #[inline]
         fn check_add(self, other: $ty) -> Option<Self::Output> {
             self.checked_add(other)
         }
+    }
+    impl CheckSub<$ty, $ty> for $ty {
+        type Output = $ty;
         #[inline]
         fn check_sub(self, other: $ty) -> Option<Self::Output> {
             self.checked_sub(other)
         }
+    }
+    impl CheckMul<$ty, $ty> for $ty {
+        type Output = $ty;
         #[inline]
         fn check_mul(self, other: $ty) -> Option<Self::Output> {
             self.checked_mul(other)
         }
     }
-    impl_check_math_option!($ty, $ty);
+    impl_check_x_option!(CheckAdd, check_add, $ty, $ty);
+    impl_check_x_option!(CheckSub, check_sub, $ty, $ty);
+    impl_check_x_option!(CheckMul, check_mul, $ty, $ty);
 }}
 
 
@@ -301,7 +351,7 @@ impl<A: Swap, B: Swap> Swap for (A, B) {
 
 // dumb
 macro_rules! impl_for_array{($cnt:expr) => (
-    impl<T> Swap for [T; $cnt] {
+    impl<T: Swap> Swap for [T; $cnt] {
         fn bswap(&mut self) {}
     }
 )}
@@ -311,7 +361,7 @@ impl_for_array!(3);
 impl_for_array!(4);
 impl_for_array!(8);
 impl_for_array!(16);
-impl<T> Swap for Option<T> {
+impl<T: Swap> Swap for Option<T> {
     fn bswap(&mut self) {}
 }
 
@@ -543,65 +593,31 @@ pub fn from_cstr_strict<'a, S: ?Sized + ROSlicePtr>(chs: &S) -> Option<&'a ByteS
 }
 
 
-// XXX using my own MemoryMap for now
-pub struct MemoryMap {
-    ptr: *mut u8,
-    len: usize
-}
-unsafe impl Sync for MemoryMap {}
-
-impl MemoryMap {
-    pub fn with_fd_size(fd: Option<libc::c_int>, size: usize) -> MemoryMap {
-        if size > std::usize::MAX - 0x1000 {
-            panic!("MemoryMap::with_fd_size: size {} too big", size);
-        }
-        let rsize = max(size, 1);
-        unsafe {
-            let anon = if fd.is_some() { 0 } else { libc::MAP_ANON };
-            let ptr = libc::mmap(0 as *mut libc::c_void, rsize as libc::size_t, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | anon, fd.unwrap_or(0), 0);
-            if ptr == null_mut() {
-                panic!("mmap failed");
-            }
-            MemoryMap { ptr: transmute(ptr), len: size }
-        }
-    }
-    pub fn data(&self) -> *mut u8 { self.ptr }
-    pub fn len(&self) -> usize { self.len }
-    pub fn get_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut::<u8>(self.ptr, self.len) }
-    }
-}
-impl Drop for MemoryMap {
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.len as libc::size_t);
-        }
-    }
-}
-
 enum MemoryContainer {
     Empty,
-    MemoryMap(MemoryMap),
+    MemoryMap(Mmap),
     BoxedSlice(Box<[u8]>),
 }
 
 #[derive(Clone)]
-pub struct MCRef {
+pub struct Mem<T: Copy> {
     mc: Arc<MemoryContainer>,
-    ptr: *const u8,
+    ptr: *const T,
     len: usize
 }
 
-unsafe impl Send for MCRef {}
-unsafe impl Sync for MCRef {}
+pub type MCRef = Mem<u8>; // old name XXX
 
-impl std::default::Default for MCRef {
-    fn default() -> MCRef {
-        MCRef::empty()
+unsafe impl<T: Copy> Send for Mem<T> {}
+unsafe impl<T: Copy> Sync for Mem<T> {}
+
+impl<T: Copy> std::default::Default for Mem<T> {
+    fn default() -> Self {
+        Mem::empty()
     }
 }
 
-impl Debug for MCRef {
+impl<T: Copy> Debug for Mem<T> {
     fn fmt(&self, fmt: &mut Formatter) -> std::fmt::Result {
         write!(fmt, "MCRef({:?}, {})", self.ptr, self.len)
     }
@@ -619,93 +635,96 @@ static EMPTY_ARC_INNER: XArcInner<MemoryContainer> = XArcInner {
     _data: MemoryContainer::Empty,
 };
 
-impl MCRef {
-    pub fn with_data(data: &[u8]) -> MCRef {
-        MCRef::with_vec(data.to_owned())
-    }
-
-    pub fn with_vec(vec: Vec<u8>) -> MCRef {
-        let bs = vec.into_boxed_slice();
-        let (ptr, len) = (bs.as_ptr(), bs.len());
-        MCRef {
-            mc: Arc::new(MemoryContainer::BoxedSlice(bs)),
-            ptr: ptr, len: len
-        }
-    }
-
-    pub fn with_mm(mm: MemoryMap) -> MCRef {
-        let (ptr, len) = (mm.data() as *const _, mm.len());
+impl Mem<u8> {
+    pub fn with_mm(mm: Mmap) -> Self {
+        let (ptr, len) = (mm.ptr() as *const _, mm.len());
         MCRef {
             mc: Arc::new(MemoryContainer::MemoryMap(mm)),
             ptr: ptr, len: len
         }
     }
+}
+
+impl<T: Copy> Mem<T> {
+    pub fn with_data(data: &[T]) -> Self where T: Clone {
+        Mem::with_vec(data.to_owned())
+    }
+
+    pub fn with_vec(vec: Vec<T>) -> Self {
+        let len = vec.len();
+        let vec: Vec<u8> = unsafe { vec_raw_cast(vec) };
+        let bs = vec.into_boxed_slice();
+        let ptr = bs.as_ptr();
+        Mem {
+            mc: Arc::new(MemoryContainer::BoxedSlice(bs)),
+            ptr: unsafe { transmute(ptr) }, len: len
+        }
+    }
 
     #[inline]
-    pub fn empty() -> MCRef {
+    pub fn empty() -> Self {
         let old_size = EMPTY_ARC_INNER.strong.fetch_add(1, Ordering::Relaxed);
         if old_size > std::isize::MAX as usize {
             unsafe { std::intrinsics::abort(); }
         }
-        MCRef {
+        Mem {
             mc: unsafe { transmute(&EMPTY_ARC_INNER) },
-            ptr: 0 as *const u8,
+            ptr: 0 as *const T,
             len: 0,
         }
     }
 
-    pub fn into_vec(mut self) -> Vec<u8> {
+    pub fn into_vec(mut self) -> Vec<T> {
         if let Some(mc) = Arc::get_mut(&mut self.mc) {
             let ok = if let &mut MemoryContainer::BoxedSlice(ref bs) = mc {
-                bs.as_ptr() == self.ptr && bs.len() == self.len
+                bs.as_ptr() == (self.ptr as *const u8) && bs.len() == self.len * size_of::<T>()
             } else { false };
             if ok {
                 if let MemoryContainer::BoxedSlice(bs) = replace(mc, MemoryContainer::Empty) {
-                    return bs.into_vec();
+                    unsafe { return vec_raw_cast(bs.into_vec()); }
                 } else { debug_assert!(false); }
             }
         }
         fast_slice_to_owned(self.get())
     }
 
-    pub fn slice(&self, from: usize, to: usize) -> Option<MCRef> {
+    pub fn slice(&self, from: usize, to: usize) -> Option<Self> {
         let len = to - from;
         if from > self.len || len > self.len - from {
             return None
         }
         unsafe {
-            Some(MCRef { mc: self.mc.clone(), ptr: self.ptr.offset(from as isize), len: len })
+            Some(Mem { mc: self.mc.clone(), ptr: self.ptr.offset(from as isize), len: len })
         }
     }
 
-    pub fn get(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts::<u8>(self.ptr, self.len) }
+    pub fn get(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts::<T>(self.ptr, self.len) }
     }
 
-    pub fn get_mut(&mut self) -> Option<&mut [u8]> {
+    pub fn get_mut(&mut self) -> Option<&mut [T]> {
         if let Some(mc) = Arc::get_mut(&mut self.mc) {
-            if let &mut MemoryContainer::BoxedSlice(ref mut bs) = mc {
-                return Some(&mut bs[..]);
+            if let &mut MemoryContainer::BoxedSlice(_) = mc {
+                unsafe { return Some(std::slice::from_raw_parts_mut::<T>(self.ptr as *mut T, self.len)); }
             }
         }
         None
     }
 
-    pub fn get_mut_decow(&mut self) -> &mut [u8] {
-        // ugh!
-        let wtf: *mut Self = self;
+    pub fn get_mut_decow(&mut self) -> &mut [T] {
         if let Some(sl) = self.get_mut() {
-            sl
-        } else {
-            let wtf: &'static mut Self = unsafe { transmute(wtf) };
-            let vec = wtf.get().to_owned();
-            *wtf = MCRef::with_vec(vec);
-            wtf.get_mut().unwrap()
+            // sl is already &mut [T], but this fudges the lifetimes.  This shouldn't be necessary,
+            // but since both mutable borrows (this one and the else branch) have the same lifetime
+            // as self, rustc thinks the borrows conflict.
+            let sl: &mut [T] = unsafe { transmute(sl) };
+            return sl;
         }
+        *self = Mem::with_vec(self.get().to_owned());
+        self.get_mut().unwrap()
     }
 
     // only safe to call if there are no mutable references
-    pub unsafe fn get_cells(&self) -> &[Cell<u8>] {
+    pub unsafe fn get_cells(&self) -> &[Cell<T>] {
         transmute(std::slice::from_raw_parts(self.ptr, self.len))
     }
 
@@ -721,25 +740,14 @@ impl MCRef {
     }
 }
 
-pub fn safe_mmap(fil: &mut std::fs::File) -> MCRef {
-    let oldpos = fil.seek(SeekFrom::Current(0)).unwrap();
-    let size = fil.seek(SeekFrom::End(0)).unwrap();
-    fil.seek(SeekFrom::Start(oldpos)).unwrap();
-    let fd = fil.as_raw_fd();
-    /*
-    XXX put back when MemoryMap is back
-    let mm = MemoryMap::new(rsize, &[
-        std::os::MapOption::MapReadable,
-        std::os::MapOption::MapWritable,
-        std::os::MapOption::MapFd(fd),
-    ]).unwrap();
-    */
-    if size > std::usize::MAX as u64 {
-        panic!("safe_mmap: size {} too big", size);
-    }
-    MCRef::with_mm(MemoryMap::with_fd_size(Some(fd), size as usize))
+pub fn memmap(fil: &File) -> io::Result<Mem<u8>> {
+    Ok(Mem::with_mm(try!(Mmap::open(fil, memmap::Protection::ReadCopy))))
 }
 
+pub fn memmap_anon(size: usize) -> io::Result<Mem<u8>> {
+    Ok(Mem::with_mm(try!(Mmap::anonymous(size, memmap::Protection::ReadWrite))))
+
+}
 
 pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
     if let Ok(m) = getopts::getopts(args, &optgrps) {
