@@ -10,7 +10,7 @@ use std::mem::{size_of, uninitialized, transmute, transmute_copy, replace, forge
 use std::ptr;
 use std::ptr::copy;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::default::Default;
 use std::num::ParseIntError;
 use std::cmp::max;
@@ -1087,6 +1087,36 @@ impl<T> Drop for Lazy<T> {
         if self.is_valid.load(Ordering::Acquire) {
             unsafe { ptr::read(&mut **self.val.get()); }
         }
+    }
+}
+
+pub struct LazyBox<T> {
+    val: AtomicPtr<T>,
+}
+
+impl<T> LazyBox<T> {
+    pub fn new() -> Self {
+        LazyBox { val: AtomicPtr::new(ptr::null_mut()) }
+    }
+    pub fn get(&self) -> Option<&T> {
+        unsafe { transmute(self.val.load(Ordering::Acquire)) }
+    }
+    pub fn store(&self, val: Box<T>) -> Option<Box<T>> {
+        let val = val.into_raw();
+        let ret = self.val.compare_and_swap(0 as *mut T,
+                                            val,
+                                            Ordering::Release);
+        if ret.is_null() {
+            None
+        } else {
+            Some(Box::from_raw(val))
+        }
+    }
+}
+impl<T> Drop for LazyBox<T> {
+    let ptr = self.val.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        let _ = Box::from_raw(ptr);
     }
 }
 

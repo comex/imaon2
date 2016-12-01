@@ -98,12 +98,17 @@ impl VMA {
         VMA(self.0 & 0xffffffff)
     }
     #[inline]
-    pub fn align_to(self, size: u64) -> VMA {
+    pub fn align_down_to(self, size: u64) -> VMA {
+        let mask = size - 1;
+        self & !mask
+    }
+    #[inline]
+    pub fn align_up_to(self, size: u64) -> VMA {
         let mask = size - 1;
         (self + mask) & !mask
     }
     #[inline]
-    pub fn wrapping_align_to(self, size: u64) -> VMA {
+    pub fn wrapping_align_up_to(self, size: u64) -> VMA {
         let mask = size - 1;
         self.wrapping_add(mask) & !mask
     }
@@ -649,3 +654,10 @@ pub fn intersect_start_size(a: (VMA, u64), b: (VMA, u64)) -> (VMA, u64) {
                    b.0.wrapping_add(b.1).wrapping_sub(start));
     (start, size)
 }
+/*
+pub fn align_start_size(a: (VMA, u64), align: u64) -> (VMA, u64) {
+    let start = a.align_down_to(align);
+    let end = a.0.wrapping_add(a.1).wrapping_align_up_to(align);
+    (start, end.wrapping_sub(start))
+}
+*/

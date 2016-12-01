@@ -1057,7 +1057,7 @@ impl MachO {
         for (i, seg) in self.eb.segments.iter_mut().enumerate() {
             if seg.name.as_ref().map(|s| &s[..]) == Some(ByteStr::from_str("__LINKEDIT")) {
                 linkedit_idx = Some(i);
-                seg.vmsize = (linkedit.len() as u64).align_to(page_size);
+                seg.vmsize = (linkedit.len() as u64).align_up_to(page_size);
                 seg.filesize = linkedit.len() as u64;
                 seg.data = Some(Mem::<u8>::with_data(&linkedit[..]));
             } else if seg.fileoff == text_fileoff && seg.filesize > 0 {
@@ -1164,7 +1164,7 @@ impl MachO {
         let mut off: u64 = 0;
         for seg in &mut self.eb.segments {
             seg.fileoff = off;
-            off += seg.filesize.align_to(page_size);
+            off += seg.filesize.align_up_to(page_size);
         }
         for sect in &mut self.eb.sections {
             if sect.filesize == 0 {
