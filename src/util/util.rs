@@ -1,3 +1,4 @@
+#![feature(arc_counts)]
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 extern crate memmap;
@@ -755,6 +756,7 @@ impl<T: Copy> Mem<T> {
                 } else { debug_assert!(false); }
             }
         }
+        let _sw = stopwatch("into_vec copy");
         fast_slice_to_owned(self.get())
     }
 
@@ -773,10 +775,8 @@ impl<T: Copy> Mem<T> {
     }
 
     pub fn get_mut(&mut self) -> Option<&mut [T]> {
-        if let Some(mc) = Arc::get_mut(&mut self.mc) {
-            if let &mut MemoryContainer::BoxedSlice(_) = mc {
-                unsafe { return Some(std::slice::from_raw_parts_mut::<T>(self.ptr as *mut T, self.len)); }
-            }
+        if let Some(_) = Arc::get_mut(&mut self.mc) {
+            unsafe { return Some(std::slice::from_raw_parts_mut::<T>(self.ptr as *mut T, self.len)); }
         }
         None
     }
@@ -789,6 +789,7 @@ impl<T: Copy> Mem<T> {
             let sl: &mut [T] = unsafe { transmute(sl) };
             return sl;
         }
+        let _sw = stopwatch("get_mut_decow decow (vec)");
         *self = Mem::with_vec(self.get().to_owned());
         self.get_mut().unwrap()
     }
@@ -798,7 +799,7 @@ impl<T: Copy> Mem<T> {
         transmute(std::slice::from_raw_parts(self.ptr, self.len))
     }
 
-    pub fn offset_in(&self, other: &Mem<u8>) -> Option<usize> {
+    pub fn byte_offset_in(&self, other: &Mem<u8>) -> Option<usize> {
         let mine = self.ptr as usize;
         let theirs = other.ptr as usize;
         if mine >= theirs && mine < theirs + max(other.len, 1) {

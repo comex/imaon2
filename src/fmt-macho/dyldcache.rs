@@ -5,7 +5,7 @@ use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul,
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
-use std::mem::{size_of};
+use std::mem::size_of;
 use std::cmp::{min, Ordering};
 use std::ops::Range;
 use std::collections::{HashSet, HashMap};
@@ -14,6 +14,52 @@ use std::any::Any;
 use std;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info, dyld_cache_slide_info2, DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE, DYLD_CACHE_SLIDE_PAGE_ATTR_EXTRA, DYLD_CACHE_SLIDE_PAGE_ATTR_END};
 use ::{MachO, GuessBrokenCacheSlideResult, MachODCInfo};
+
+struct MemEscrow {
+    base: Mem<u8>,
+    offset_size_pairs: VecDeque<Option<(usize, usize)>>
+}
+struct MemEscrowed {
+    offset_size_pairs: VecDeque<Option<(usize, usize)>>
+}
+struct MemUnescrow {
+    base: Mem<u8>,
+    offset_size_pairs: VecDeque<Option<(usize, usize)>>
+}
+impl MemEscrow {
+    fn new(base: Mem<u8>) -> Self {
+        MemEscrow { base: base, offset_size_pairs: Vec::new() }
+    }
+    fn escrowed(self) -> MemEscrowed {
+        MemEscrowed { offset_size_pairs: self.offset_size_pairs }
+    }
+}
+impl MemEscrowed {
+    fn unescrow(self, base: Mem<u8>) -> MemUnescrow {
+        MemUnescrow { base: base, offset_size_pairs: self.offset_size_pairs }
+    }
+}
+trait VisitMem {
+    fn visit<T>(&mut self, memp: &mut Mem<T>) {
+}
+impl VisitMem for MemEscrow {
+    fn visit<T>(&mut self, memp: &mut Mem<T>) {
+        let mut pair = None;
+        if let Some(offset) = memp.byte_offset_in(&self.base) {
+            pair = Some((offset, memp.size));
+            *memp = Mem::empty();
+        }
+        self.offset_size_pairs.push_back(pair);
+    }
+}
+impl VisitMem for MemUnescrow {
+    fn visit<T>(&mut self, memp: &mut Mem<T>) {
+        let front = self.offset_size_pairs.pop_front().unwrap();
+        if let Some((offset, size)) = front {
+            *memp = unsafe { self.base.slice(offset, offset + size).raw_cast() };
+        }
+    }
+}
 
 pub struct ImageInfo {
     pub address: u64,
@@ -583,30 +629,33 @@ impl DyldCache {
         }
         if self.eb.segments.len() < 2 { return Ok(()); } // no data?
         let rebases = v2.save_rebase_list(&self.eb);
+        let mut escrow = MemEscrow::new(self.eb.whole.clone());
+        self.mem_visit(&mut escrow);
+        let escrow = escrow.escrowed();
         branch! { if (self.eb.pointer_size == 8) {
             type Ptr = u64;
         } else {
             type Ptr = u32;
         } then {
-            Self::transform_whole(&mut self.eb, &mut |eb: &mut ExecBase, mut whole: Vec<u8>| {
-                let value_mask = !v2.delta_mask as Ptr;
-                let value_add = v2.value_add as Ptr;
-                let data = &eb.segments[1];
-                for &rebase in rebases {
-                    if rebase.straddle { continue; }
-                    //println!("doing fixup addr={}", rebase.addr);
-                    let off = (rebase.addr - data.vmaddr + data.fileoff) as usize;
-                    let slice = &mut whole[off..off+size_of::<Ptr>()];
-                    let old: Ptr = util::copy_from_slice(slice, util::LittleEndian);
-                    let mut val = old & value_mask;
-                    if val != 0 {
-                        val = val.wrapping_add(value_add);
-                    }
-                    util::copy_to_slice(slice, &val, util::LittleEndian);
+            let whole_slice = self.eb.whole.get_mut_decow();
+            let value_mask = !v2.delta_mask as Ptr;
+            let value_add = v2.value_add as Ptr;
+            let data = &self.eb.segments[1];
+            for &rebase in rebases {
+                if rebase.straddle { continue; }
+                //println!("doing fixup addr={}", rebase.addr);
+                let off = (rebase.addr - data.vmaddr + data.fileoff) as usize;
+                let slice = &mut whole_slice[off..off+size_of::<Ptr>()];
+                let old: Ptr = util::copy_from_slice(slice, util::LittleEndian);
+                let mut val = old & value_mask;
+                if val != 0 {
+                    val = val.wrapping_add(value_add);
                 }
-                Ok(whole)
-            })
+                util::copy_to_slice(slice, &val, util::LittleEndian);
+            }
         } }
+        let escrow = escrow.unescrow();
+        self.mem_visit(&mut escrow);
     }
 
     pub fn unslide_v1(&mut self, slide: u32) -> ExecResult<()> {
@@ -618,19 +667,24 @@ impl DyldCache {
             return err(ErrorKind::Other, "unslide_v1: not little endian");
         }
         let mut overflow = false;
-        try!(Self::transform_whole(&mut self.eb, &mut |eb, mut whole| {
-            for segment in &eb.segments {
+        let mut escrow = MemEscrow::new(self.eb.whole.clone());
+        self.mem_visit(&mut escrow);
+        let escrow = escrow.escrowed();
+        {
+            let whole_slice = self.eb.whole.get_mut_decow();
+            for segment in &self.eb.segments {
                 v1.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
                     let off = (ptr - segment.vmaddr + segment.fileoff) as usize;
-                    let slice = &mut whole[off..off+4];
+                    let slice = &mut whole_slice[off..off+4];
                     let old: u32 = util::copy_from_slice(slice, util::LittleEndian);
                     let new = old.wrapping_sub(slide);
                     overflow = overflow || new > old;
                     util::copy_to_slice(slice, &new, util::LittleEndian);
                 });
             }
-            Ok(whole)
-        }));
+        }
+        let escrow = escrow.unescrow();
+        self.mem_visit(&mut escrow);
         let check_overflow = self.eb.pointer_size > 4;
         if check_overflow && overflow {
             return err(ErrorKind::Other, "slide_by: slide failed due to overflow");
@@ -638,23 +692,16 @@ impl DyldCache {
         Ok(())
     }
 
-    fn transform_whole(eb: &mut ExecBase, func: &mut FnMut(&mut ExecBase, Vec<u8>) -> ExecResult<Vec<u8>>) -> ExecResult<()> {
-        for segment in &mut eb.segments {
-            segment.data = None;
+    fn mem_visit<V: VisitMem>(&mut self, v: &mut V) {
+        for seg in self.eb.segments {
+            if let Some(ref mut data) = seg.data {
+                v.visit(data);
+            }
         }
-        let whole = {
-            let _sw = util::stopwatch("transform_whole->into_vec");
-            eb.whole_buf.take().unwrap().into_vec()
-        };
-        let whole = try!(func(eb, whole));
-        let mc = Mem::<u8>::with_vec(whole);
-        for segment in &mut eb.segments {
-            segment.data = Some(mc.slice(segment.fileoff as usize,
-                                         (segment.fileoff as usize) + (segment.filesize as usize))
-                                .unwrap());
+        if let Some(ref mut cs_blob) = self.cs_blob {
+            v.visit(cs_blob);
         }
-        eb.whole_buf = Some(mc);
-        Ok(())
+
     }
 
     pub fn make_canonical_path_map(&self) -> Vec<usize> {
