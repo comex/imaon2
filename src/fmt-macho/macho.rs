@@ -1,7 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
-#![feature(const_fn)]
 extern crate vec_map;
 #[macro_use]
 extern crate macros;
@@ -1482,7 +1481,7 @@ impl MachO {
                 BIND_OPCODE_SET_ADDEND_SLEB => state.addend = leb!(true) as i64,
                 BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB => {
                     let offset = leb!(false);
-                    let seg = some_or!(self.eb.segments.get(immediate.ext()), {
+                    let seg = some_or!(self.eb.segments.get(immediate as usize), {
                         errln!("parse_dyld_bind: BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: bad segment index {}", immediate);
                         continue;
                     });
