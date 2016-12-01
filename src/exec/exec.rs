@@ -68,32 +68,41 @@ delegate_arith!(VMA, BitOr, bitor, u64);
 delegate_arith!(VMA, BitAnd, bitand, u64);
 
 impl VMA {
+    #[inline]
     pub fn offset_from(self, other: VMA) -> Option<u64> {
         if self.0 >= other.0 { Some(self.0 - other.0) } else { None }
     }
+    #[inline]
     pub fn full_range_midpoint() -> VMA {
         VMA(1u64 << 63)
     }
+    #[inline]
     pub fn midpoint(VMA(lo): VMA, VMA(hi): VMA) -> VMA {
         assert!(lo <= hi);
         VMA(lo + (hi - lo) / 2)
     }
+    #[inline]
     pub fn wrapping_add(self, addend: u64) -> VMA {
         VMA(self.0.wrapping_add(addend))
     }
+    #[inline]
     pub fn wrapping_sub(self, other: VMA) -> u64 {
         self.0.wrapping_sub(other.0)
     }
+    #[inline]
     pub fn saturating_add(self, addend: u64) -> VMA {
         VMA(self.0.saturating_add(addend))
     }
+    #[inline]
     pub fn trunc32(self) -> VMA {
         VMA(self.0 & 0xffffffff)
     }
+    #[inline]
     pub fn align_to(self, size: u64) -> VMA {
         let mask = size - 1;
         (self + mask) & !mask
     }
+    #[inline]
     pub fn wrapping_align_to(self, size: u64) -> VMA {
         let mask = size - 1;
         self.wrapping_add(mask) & !mask
@@ -102,6 +111,7 @@ impl VMA {
 // TODO - should this be signed or something?
 impl std::ops::Sub<VMA> for VMA {
     type Output = u64;
+    #[inline]
     fn sub(self, VMA(rhs): VMA) -> u64 {
         let lhs = self.0;
         lhs - rhs
@@ -109,18 +119,21 @@ impl std::ops::Sub<VMA> for VMA {
 }
 impl util::CheckAdd<u64, VMA> for VMA {
     type Output = VMA;
+    #[inline]
     fn check_add(self, other: u64) -> Option<Self::Output> {
         self.0.checked_add(other).map(VMA)
     }
 }
 impl util::CheckSub<u64, VMA> for VMA {
     type Output = VMA;
+    #[inline]
     fn check_sub(self, other: u64) -> Option<Self::Output> {
         self.0.checked_sub(other).map(VMA)
     }
 }
 impl util::CheckSub<VMA, VMA> for VMA {
     type Output = u64;
+    #[inline]
     fn check_sub(self, other: VMA) -> Option<Self::Output> {
         if self >= other {
             Some(self - other)

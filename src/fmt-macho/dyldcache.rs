@@ -228,6 +228,8 @@ impl SlideInfoV2 {
     }
     pub fn save_rebase_list(&self, eb: &ExecBase) -> &[V2Rebase] {
         self.rebase_list.get(|| {
+            let _sw = util::stopwatch("save_rebase_list");
+            // TODO capacity
             let mut rebase_list: Vec<V2Rebase> = Vec::new();
             let page_extras = self.page_extras.get();
             let page_size = self.page_size as usize;
@@ -586,9 +588,9 @@ impl DyldCache {
         } else {
             type Ptr = u32;
         } then {
-            let value_mask = !v2.delta_mask as Ptr;
-            let value_add = v2.value_add as Ptr;
             Self::transform_whole(&mut self.eb, &mut |eb: &mut ExecBase, mut whole: Vec<u8>| {
+                let value_mask = !v2.delta_mask as Ptr;
+                let value_add = v2.value_add as Ptr;
                 let data = &eb.segments[1];
                 for &rebase in rebases {
                     if rebase.straddle { continue; }
@@ -637,7 +639,13 @@ impl DyldCache {
     }
 
     fn transform_whole(eb: &mut ExecBase, func: &mut FnMut(&mut ExecBase, Vec<u8>) -> ExecResult<Vec<u8>>) -> ExecResult<()> {
-        let whole = eb.whole_buf.take().unwrap().into_vec();
+        for segment in &mut eb.segments {
+            segment.data = None;
+        }
+        let whole = {
+            let _sw = util::stopwatch("transform_whole->into_vec");
+            eb.whole_buf.take().unwrap().into_vec()
+        };
         let whole = try!(func(eb, whole));
         let mc = Mem::<u8>::with_vec(whole);
         for segment in &mut eb.segments {

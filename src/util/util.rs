@@ -1130,14 +1130,16 @@ pub fn stopwatch(desc: &str) -> Stopwatch {
 }
 
 impl<'a> Stopwatch<'a> {
+    #[inline(always)]
     pub fn stop(self) {}
 }
 impl<'a> Drop for Stopwatch<'a> {
     fn drop(&mut self) {
         if unsafe { ENABLE_STOPWATCH } {
             let duration = Instant::now() - self.start_time.unwrap();
-            println!("{blank:spaces$}{desc}: {duration:?}", blank="", spaces=self.indent,
-                     desc=self.desc, duration=duration);
+            let duration_f = (duration.as_secs() as f64 * 1000.0) + (duration.subsec_nanos() as f64 * 0.000001);
+            println!("{blank:spaces$}{desc}: {duration:?}ms", blank="", spaces=self.indent,
+                     desc=self.desc, duration=duration_f);
             STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
         }
     }
