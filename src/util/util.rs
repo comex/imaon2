@@ -1,5 +1,3 @@
-#![feature(plugin, core_intrinsics, const_fn)]
-
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 extern crate memmap;
@@ -45,7 +43,7 @@ pub struct ReadCell<T: Copy> {
     pub value: UnsafeCell<T>
 }
 impl<T: Copy> ReadCell<T> {
-    pub const fn new(value: T) -> Self {
+    pub /*const*/ fn new(value: T) -> Self {
         ReadCell { value: UnsafeCell::new(value) }
     }
     pub fn get(&self) -> T {
@@ -682,12 +680,14 @@ impl<T: Copy> Debug for Mem<T> {
     }
 }
 
+#[cfg(feature = "nightly")]
 struct XArcInner<T: ?Sized> {
     strong: AtomicUsize,
     _weak: AtomicUsize,
     _data: T,
 }
 
+#[cfg(feature = "nightly")]
 static EMPTY_ARC_INNER: XArcInner<MemoryContainer> = XArcInner {
     strong: AtomicUsize::new(1),
     _weak: AtomicUsize::new(1),
@@ -721,13 +721,24 @@ impl<T: Copy> Mem<T> {
     }
 
     #[inline]
+    #[cfg(feature = "nightly")]
     pub fn empty() -> Self {
         let old_size = EMPTY_ARC_INNER.strong.fetch_add(1, Ordering::Relaxed);
         if old_size > std::isize::MAX as usize {
-            unsafe { std::intrinsics::abort(); }
+            panic!()
         }
         Mem {
             mc: unsafe { transmute(&EMPTY_ARC_INNER) },
+            ptr: 0 as *const T,
+            len: 0,
+        }
+    }
+
+    #[inline]
+    #[cfg(not(feature = "nightly"))]
+    pub fn empty() -> Self {
+        Mem {
+            mc: Arc::new(MemoryContainer::Empty),
             ptr: 0 as *const T,
             len: 0,
         }
@@ -1010,6 +1021,7 @@ unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {
         extern { pub fn strnlen(s: *const u8, maxlen: usize) -> usize; }
     }
     let res = orig::strnlen(s, maxlen);
+    #[cfg(feature = "nightly")]
     std::intrinsics::assume(res <= maxlen);
     res
 }

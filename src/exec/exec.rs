@@ -1,6 +1,5 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-#![feature(box_syntax)]
 
 #[macro_use]
 extern crate macros;
@@ -43,14 +42,14 @@ impl std::error::Error for Error {
 
 pub type ExecResult<T> = Result<T, Box<Error>>;
 pub fn err<T, S: Into<Cow<'static, str>>>(kind: ErrorKind, s: S) -> ExecResult<T> {
-    Err(box Error { kind: kind, message: s.into() })
+    Err(Box::new(Error { kind: kind, message: s.into() }))
 }
 pub fn err_only<S: Into<Cow<'static, str>>>(kind: ErrorKind, s: S) -> Box<Error> {
-    box Error { kind: kind, message: s.into() }
+    Box::new(Error { kind: kind, message: s.into() })
 }
 
 pub fn usage_to_invalid_args<T>(o: Result<T, String>) -> ExecResult<T> {
-    o.map_err(|msg| box Error { kind: ErrorKind::InvalidArgs, message: msg.into() })
+    o.map_err(|msg| Box::new(Error { kind: ErrorKind::InvalidArgs, message: msg.into() }))
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]

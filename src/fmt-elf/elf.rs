@@ -1,5 +1,3 @@
-#![feature(box_syntax)]
-#![feature(stmt_expr_attributes)]
 #![allow(non_camel_case_types)]
 #[macro_use]
 extern crate macros;
@@ -1158,7 +1156,7 @@ impl exec::ExecProber for ElfProber {
             // ...
         ))));
         let free = m.free;
-        Elf::new(buf).map(|res| (box res as Box<exec::Exec>, free))
+        Elf::new(buf).map(|res| (Box::new(res) as Box<exec::Exec>, free))
     }
     fn probe(&self, _eps: &Vec<&'static exec::ExecProber>, buf: Mem<u8>) -> Vec<exec::ProbeResult> {
         match check_elf_basics(buf.get(), false) {

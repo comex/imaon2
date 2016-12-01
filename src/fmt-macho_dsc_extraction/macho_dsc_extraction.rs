@@ -1,4 +1,3 @@
-#![feature(box_syntax, step_by)]
 extern crate util;
 extern crate exec;
 extern crate fmt_macho as macho;
@@ -136,9 +135,8 @@ impl MachODscExtraction for MachO {
                     errln!("warning: update_indirectsym: couldn't read stubs section data");
                 }
                 for ((stub, addr), new_ind_idx) in data.chunks(info.item_size)
-                                    .zip((info.sect_addr.0..).step_by(info.item_size as u64))
+                                    .zip((0..).map(|i| i * (info.item_size as u64) + info.sect_addr)) // XXX step_by
                                     .zip(info.ind_idx_base..) {
-                    let addr = VMA(addr);
                     if stub.len() < info.item_size { break; }
                     let target_addr = some_or!(decode_stub(stub, addr, self.eb.endian, self.eb.arch),
                                                continue);
@@ -528,14 +526,14 @@ impl MachODscExtraction for MachO {
 
         {
             let (base_addr, len) = self.sect_bounds_named("__objc_protorefs");
-            for addr in (0..len).step_by(pointer_size64) {
-                visit_protocol_pp(addr + base_addr);
+            for i in 0..(len / pointer_size64) {
+                visit_selector_pp(base_addr + i * pointer_size64);
             }
         }
         {
             let (base_addr, len) = self.sect_bounds_named("__objc_selrefs");
-            for addr in (0..len).step_by(pointer_size64) {
-                visit_selector_pp(addr + base_addr);
+            for i in 0..(len / pointer_size64) {
+                visit_selector_pp(base_addr + i * pointer_size64);
             }
         }
         {
@@ -918,7 +916,7 @@ fn ice_get_addr_syms(this: &ImageCacheEntry) -> &Vec<exec::Symbol<'static>> {
             SymbolValue::Addr(vma) => vma,
             _ => panic!()
         });
-        box list as Box<Any+Send>
+        Box::new(list) as Box<Any+Send>
     });
     any.downcast_ref().unwrap()
 }

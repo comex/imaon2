@@ -1,4 +1,3 @@
-#![feature(box_syntax)]
 extern crate exec;
 extern crate util;
 extern crate llvm_sys;
@@ -105,7 +104,7 @@ impl dis::DisassemblerStatics for LLVMDisassembler {
             triple.as_ref().map(|x| &**x),
             cpu.as_ref().map(|x| &**x),
             features.as_ref().map(|x| &**x)
-        ).map_err(|e| dis::CreateDisError::Other(box e))
+        ).map_err(|e| dis::CreateDisError::Other(Box::new(e)))
     }
     fn name() -> &'static str { "llvm" }
 }

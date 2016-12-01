@@ -1,7 +1,5 @@
-#![feature(stmt_expr_attributes)]
-
-#![cfg_attr(opt, feature(alloc_system))]
-#[cfg(opt)]
+#![cfg_attr(feature = "nightly", feature(alloc_system))]
+#[cfg(feature = "nightly")]
 extern crate alloc_system;
 
 use std::os::unix::ffi::{OsStringExt, OsStrExt};

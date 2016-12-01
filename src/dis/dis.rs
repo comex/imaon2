@@ -1,4 +1,3 @@
-#![feature(box_syntax)]
 extern crate exec;
 #[macro_use]
 extern crate macros;
@@ -86,14 +85,14 @@ pub trait DisassemblerFamily : Sync + 'static {
 pub struct DisassemblerFamilyImpl<Dis: 'static>(pub PhantomData<fn()->Dis>);
 impl<Dis: DisassemblerStatics> DisassemblerFamily for DisassemblerFamilyImpl<Dis> {
     fn create_disassembler(&self, arch: arch::ArchAndOptions, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
-        Dis::new_with_args(arch, args).map(|dis| box dis as Box<Disassembler>).map_err(|err| box err)
+        Dis::new_with_args(arch, args).map(|dis| Box::new(dis) as Box<Disassembler>).map_err(Box::new)
     }
     fn name(&self) -> &str { Dis::name() }
 }
 
 pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::ArchAndOptions, args: &[String]) -> Result<Box<Disassembler>, Box<CreateDisError>> {
     if args.len() == 0 {
-        return Err(box CreateDisError::InvalidArgs("empty argument list passed to dis::create".to_owned()));
+        return Err(Box::new(CreateDisError::InvalidArgs("empty argument list passed to dis::create".to_owned())));
     }
     let name = &args[0];
     for df in dfs.iter() {
@@ -101,7 +100,7 @@ pub fn create(dfs: &[&'static DisassemblerFamily], arch: arch::ArchAndOptions, a
             return df.create_disassembler(arch, &args[1..]);
         }
     }
-    Err(box CreateDisError::InvalidArgs(format!("no disassembler named {}", name)))
+    Err(Box::new(CreateDisError::InvalidArgs(format!("no disassembler named {}", name))))
 }
 
 // this belongs more to the LLVM stuff specifically, but no better place to put it
