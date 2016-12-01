@@ -1036,7 +1036,7 @@ impl MachO {
     pub fn rewhole(&mut self) {
         let _sw = stopwatch("rewhole");
         let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
-        let mut mm = util::memmap_anon(new_size as usize).unwrap();
+        let mut mm = Mem::with_vec(vec![0; new_size as usize]);
         {
             let buf = mm.get_mut().unwrap();
             for seg in &self.eb.segments {

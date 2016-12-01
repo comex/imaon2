@@ -104,10 +104,15 @@ fn main() {
     });
 
     let dc_buf = util::memmap(&fp).unwrap();
-    let dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
+    let mut dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
         errln!("parse dyld cache format fail: {}", e);
         util::exit();
     });
+    // TODO should this be parallelized?
+    if let Err(e) = dc.fix_data_v2() {
+        errln!("fix_data_v2 -> {}", e);
+        util::exit();
+    }
     let image_cache = Arc::new(if dc.eb.arch == arch::AArch64 {
         Some(ImageCache::new(&dc))
     } else { None });

@@ -1,5 +1,4 @@
 #![feature(plugin, core_intrinsics, const_fn)]
-#![cfg_attr(stopwatch, feature(time2))]
 
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
@@ -804,11 +803,6 @@ pub fn memmap(fil: &File) -> io::Result<Mem<u8>> {
     Ok(Mem::with_mm(try!(Mmap::open(fil, memmap::Protection::ReadCopy))))
 }
 
-pub fn memmap_anon(size: usize) -> io::Result<Mem<u8>> {
-    Ok(Mem::with_mm(try!(Mmap::anonymous(size, memmap::Protection::ReadWrite))))
-
-}
-
 pub fn do_getopts(args: &[String], min_expected_free: usize, max_expected_free: usize, optgrps: &mut Vec<getopts::OptGroup>) -> Option<getopts::Matches> {
     if let Ok(m) = getopts::getopts(args, &optgrps) {
         if m.free.len() >= min_expected_free &&
@@ -1131,7 +1125,7 @@ impl<'a> Stopwatch<'a> {
 #[cfg(stopwatch)]
 impl<'a> Drop for Stopwatch<'a> {
     fn drop(&mut self) {
-        let duration = Instant::now().duration_from_earlier(self.start_time);
+        let duration = Instant::now() - self.start_time;
         println!("{blank:spaces$}{desc}: {duration:?}", blank="", spaces=self.indent,
                  desc=self.desc, duration=duration);
         STOPWATCH_INDENT.with(|cell| cell.set(self.indent));

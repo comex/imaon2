@@ -577,7 +577,10 @@ impl MachODscExtraction for MachO {
             let pointer_size = self.eb.pointer_size;
             sli.iter(&dc.eb, Some((segment.vmaddr, segment.vmsize)), |ptr| {
                 let offset = (ptr - segment.vmaddr) as usize;
-                let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
+                let mut val: u64 = self.eb.ptr_from_slice(some_or!(content.slice_opt(offset, offset+pointer_size), {
+                    return;
+                }));
+
                 if val == 0 { return; }
                 if arch == arch::AArch64 {
                     // http://sourcerytools.com/pipermail/cxx-abi-dev/2013-November/002623.html

@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast, Unswapped, CheckAdd};
+use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast, Unswapped, CheckAdd, CheckSub};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
@@ -62,11 +62,17 @@ pub struct SlideInfoV2 {
     pub delta_mask: u64,
     pub delta_shift: u32, // not including the -2
     pub value_add: u64,
-    rebase_list: Lazy<Vec<VMA>>,
+    rebase_list: Lazy<Vec<V2Rebase>>,
 }
 pub enum SlideInfo {
     V1(SlideInfoV1),
     V2(SlideInfoV2),
+}
+#[derive(Copy, Clone)]
+pub struct V2Rebase {
+    addr: VMA,
+    straddle: bool,
+    skippable_null: bool,
 }
 
 impl SlideInfo {
@@ -90,15 +96,16 @@ impl SlideInfo {
             &SlideInfo::V2(ref v2) => {
                 let mut list = v2.save_rebase_list(eb);
                 if let Some((start_addr, size)) = range {
-                    let start_idx = list.binary_search(&start_addr).unwrap_or_else(|idx| idx);
+                    fn key(r: &V2Rebase) -> VMA { r.addr }
+                    let start_idx = list.binary_search_by_key(&start_addr, key).unwrap_or_else(|idx| idx);
                     let end_idx = if let Some(end_addr) = start_addr.check_add(size) {
-                        list.binary_search(&end_addr).unwrap_or_else(|idx| idx)
+                        list.binary_search_by_key(&end_addr, key).unwrap_or_else(|idx| idx)
                     } else {
                         list.len()
                     };
                     list = &list[start_idx..end_idx];
                 }
-                for &addr in list { func(addr); }
+                for reloc in list { func(reloc.addr); }
             },
         }
     }
@@ -208,7 +215,6 @@ impl SlideInfoV2 {
         if (page_starts.len() as u64).check_mul(slide_info.page_size as u64).is_none() {
             return err(BadData, "unreasonable slide info 2 page count");
         }
-        println!("page_starts.len() = {}", page_starts.len());
         let delta_shift = slide_info.delta_mask.trailing_zeros();
         Ok(SlideInfoV2 {
             page_size: slide_info.page_size.ext(),
@@ -220,9 +226,9 @@ impl SlideInfoV2 {
             rebase_list: Lazy::new(),
         })
     }
-    pub fn save_rebase_list(&self, eb: &ExecBase) -> &[VMA] {
+    pub fn save_rebase_list(&self, eb: &ExecBase) -> &[V2Rebase] {
         self.rebase_list.get(|| {
-            let mut rebase_list: Vec<VMA> = Vec::new();
+            let mut rebase_list: Vec<V2Rebase> = Vec::new();
             let page_extras = self.page_extras.get();
             let page_size = self.page_size as usize;
             let pointer_size = eb.pointer_size;
@@ -233,12 +239,13 @@ impl SlideInfoV2 {
             assert!(data_seg.name.is_none()); // the eb has to be the whole dyldcache, not a member...
             let data_data: &[u8] = data_seg.data.as_ref().unwrap().get();
             let endian = eb.endian;
-            let mut addr: VMA = data_seg.vmaddr;
-            let mut offset: usize = 0;
+            let mut got_straddle = false;
             // for each page...
-            for ps in self.page_starts.get() {
+            for (i, ps) in self.page_starts.get().iter().enumerate() {
+                let offset: usize = i * page_size;
+                let addr: VMA = data_seg.vmaddr.wrapping_add(offset as u64);
                 let ps = ps.copy(endian);
-                println!("ps={:x}", ps);
+                //println!("{:x}: ps={:x}", i, ps);
                 let start: u16;
                 let rest_extras: &[Unswapped<u16>];
                 if ps == (DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE as u16) {
@@ -268,22 +275,32 @@ impl SlideInfoV2 {
                 loop {
                     // for each entry in the list...
                     loop {
-                        println!("offset={:x} offset_in_page={:x}", offset, offset_in_page);
-                        if offset_in_page > page_size - pointer_size {
+                        //println!("offset={:x} offset_in_page={:x}", offset, offset_in_page);
+                        if offset_in_page > page_size - 4 {
                             errln!("SlideInfoV2::save_rebase_list: offset-in-page past page size");
                             break;
+                        }
+                        if offset_in_page > page_size - pointer_size {
+                            // a 64-bit pointer that straddles a page boundary is okay for some reason
+                            // and isn't checked for being 0 nor subject to value_add (see vm_shared_region.c)
+                            // value_add should be 0 for 64-bit platforms, per dyld
+                            if (offset as u64) >= data_seg.vmsize.check_sub(page_size.ext()).unwrap_or(0) {
+                                errln!("SlideInfoV2::save_rebase_list: broken straddle hits end?");
+                            }
+                            got_straddle = true;
+                            rebase_list.push(V2Rebase { addr: addr + offset_in_page.ext(), straddle: true, skippable_null: false });
+                            break;
+
                         }
                         let slice = some_or!(data_data.slice_opt(offset + offset_in_page, offset + offset_in_page + pointer_size), {
                             errln!("SlideInfoV2::save_rebase_list: out of range of data segment");
                             break;
                         });
                         let number = eb.ptr_from_slice(slice);
-                        println!("number={:x} delta_shift={} delta_mask={:x}", number, self.delta_shift, self.delta_mask);
+                        //println!("number={:x} delta_shift={} delta_mask={:x}", number, self.delta_shift, self.delta_mask);
                         let delta = 4 * ((number & self.delta_mask) >> self.delta_shift);
                         let value = number & !self.delta_mask;
-                        if value != 0 {
-                            rebase_list.push(addr + offset.ext());
-                        }
+                        rebase_list.push(V2Rebase { addr: addr + offset_in_page.ext(), straddle: false, skippable_null: value == 0 });
                         if delta == 0 {
                             break;
                         }
@@ -297,9 +314,9 @@ impl SlideInfoV2 {
                     let next = some_or!(rest_extras.next(), { break });
                     offset_in_page = (next.copy(endian) & !(DYLD_CACHE_SLIDE_PAGE_ATTR_END as u16)).ext();
                 }
-
-                addr = addr.wrapping_add(page_size as u64);
-                offset += page_size;
+            }
+            if got_straddle && self.value_add != 0 {
+                errln!("warning: SlideInfoV2::save_rebase_list: value_add != 0 and we have 64-bit relocs straddling a page boundary? my behavior will be correct according to what xnu does as of writing, but this is weird so please double-check");
             }
             rebase_list
         })
@@ -554,30 +571,36 @@ impl DyldCache {
         }
     }
     pub fn fix_data_v2(&mut self) -> ExecResult<()> {
+        let v2 = match self.slide_info {
+            Some(SlideInfo::V2(ref mut v2)) => v2,
+            _ => return Ok(()),
+        };
+        let _sw = util::stopwatch("fix_data_v2");
         if self.eb.endian != util::LittleEndian {
             return err(ErrorKind::Other, "fix_data_v2: not little endian");
         }
         if self.eb.segments.len() < 2 { return Ok(()); } // no data?
-        let v2 = match self.slide_info {
-            Some(SlideInfo::V2(ref mut v2)) => v2,
-            _ => panic!("fix_data_v2: not v2"),
-        };
         let rebases = v2.save_rebase_list(&self.eb);
         branch! { if (self.eb.pointer_size == 8) {
             type Ptr = u64;
         } else {
             type Ptr = u32;
         } then {
-            let value_mask = v2.delta_mask as Ptr;
+            let value_mask = !v2.delta_mask as Ptr;
             let value_add = v2.value_add as Ptr;
             Self::transform_whole(&mut self.eb, &mut |eb: &mut ExecBase, mut whole: Vec<u8>| {
                 let data = &eb.segments[1];
-                for &addr in rebases {
-                    let off = (addr - data.vmaddr + data.fileoff) as usize;
+                for &rebase in rebases {
+                    if rebase.straddle { continue; }
+                    //println!("doing fixup addr={}", rebase.addr);
+                    let off = (rebase.addr - data.vmaddr + data.fileoff) as usize;
                     let slice = &mut whole[off..off+size_of::<Ptr>()];
                     let old: Ptr = util::copy_from_slice(slice, util::LittleEndian);
-                    let new = (old & value_mask).wrapping_add(value_add);
-                    util::copy_to_slice(slice, &new, util::LittleEndian);
+                    let mut val = old & value_mask;
+                    if val != 0 {
+                        val = val.wrapping_add(value_add);
+                    }
+                    util::copy_to_slice(slice, &val, util::LittleEndian);
                 }
                 Ok(whole)
             })
@@ -670,8 +693,10 @@ impl Exec for DyldCache {
                 ret
             },
             Some(SlideInfo::V2(ref v2)) => {
-                v2.save_rebase_list(&self.eb).iter().map(|&addr| {
-                    Reloc { address: addr, kind: RelocKind::Pointer, base: None, target: RelocTarget::ThisImageSlide }
+                v2.save_rebase_list(&self.eb).iter().filter_map(|reloc| {
+                    if reloc.skippable_null { return None; }
+                    let kind = if reloc.straddle { RelocKind::_32Bit } else { RelocKind::Pointer };
+                    Some(Reloc { address: reloc.addr, kind: kind, base: None, target: RelocTarget::ThisImageSlide })
                 }).collect()
             },
             None => Vec::new(),
