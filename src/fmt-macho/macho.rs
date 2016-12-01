@@ -14,7 +14,6 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use std::str::FromStr;
 use std::cmp::max;
-use util::{VecStrExt, Mem, Swap, VecCopyExt, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, ByteSliceIterator, DepLib, SourceLib, ErrorKind, err, SymbolSource, Symbol};
 use std::{u64, u32, usize};
@@ -22,7 +21,7 @@ use vec_map::VecMap;
 use std::collections::{HashSet};
 use std::borrow::Cow;
 use std::any::Any;
-use util::{ByteString, ByteStr, FieldLens, Ext, Narrow, CheckAdd, CheckSub, TrivialState, stopwatch};
+use util::{VecStrExt, Mem, Swap, SliceExt, OptionExt, copy_memory, into_cow, IntStuff, Endian, ByteString, ByteStr, FieldLens, Ext, Narrow, CheckAdd, CheckSub, TrivialState, ReadCell, stopwatch, vec_extend_from_slice, fast_slice_to_owned};
 
 pub mod dyldcache;
 use dyldcache::{DyldCache, ImageCache, SlideInfo};
@@ -190,7 +189,7 @@ pub fn u32_to_prot(ip: u32) -> exec::Prot {
 
 #[inline(always)]
 // probably 100% counterproductive optimization
-pub fn copy_nlist_from_slice(slice: &[u8], end: Endian) -> x_nlist_64 {
+pub fn copy_nlist_from_slice(slice: &[ReadCell<u8>], end: Endian) -> x_nlist_64 {
     let len = slice.len();
     let is64 = if len == size_of::<x_nlist_64>() { true }
           else if len == size_of::<x_nlist>() { false }
@@ -295,10 +294,7 @@ pub fn exec_sym_to_nlist_64(sym: &Symbol, strx: u32, ind_strx: Option<u32>, arch
     Ok(res)
 }
 
-fn file_array(buf: &Mem<u8>, name: &str, off: u32, count: u32, elm_size: usize) -> Mem<u8> {
-    file_array_64(buf, name, off as u64, count as u64, elm_size)
-}
-fn file_array_64(buf: &Mem<u8>, name: &str, mut off: u64, mut count: u64, elm_size: usize) -> Mem<u8> {
+fn file_array(buf: &Mem<u8>, name: &str, mut off: u64, mut count: u64, elm_size: usize) -> Mem<u8> {
     let elm_size = elm_size as u64;
     let buf_len = buf.len() as u64;
     if off > buf_len {
@@ -897,7 +893,7 @@ impl MachO {
                                 }
                             }
                             if !ignore {
-                                *mcref = file_array(buf, fb.name, off, count, fb.elm_size);
+                                *mcref = file_array(buf, fb.name, off.ext(), count.ext(), fb.elm_size);
                             }
                         }
                     }
@@ -950,7 +946,7 @@ impl MachO {
         self.dc_info.hdr_offset.ext()
     }
 
-    fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<Symbol<'a>>) {
+    fn push_nlist_symbols<'a>(&self, symtab: &[ReadCell<u8>], strtab: &'a [ReadCell<u8>], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<Symbol<'a>>) {
         let mut off = start * self.nlist_size;
         for _ in start..start+count {
             let slice = &symtab[off..off + self.nlist_size];
@@ -1037,7 +1033,7 @@ impl MachO {
         let new_size = self.eb.segments.iter().map(|seg| seg.fileoff + seg.filesize).max().unwrap_or(0);
         let mut mm = Mem::with_vec(vec![0; new_size as usize]);
         {
-            let buf = mm.get_mut().unwrap();
+            let buf = mm.get_uniq().unwrap();
             for seg in &self.eb.segments {
                 let data = seg.get_data();
                 assert_eq!(seg.filesize, data.len() as u64);
@@ -1148,11 +1144,11 @@ impl MachO {
                 if mcref.len() == 0 {
                     allocs.push((0, 0));
                 } else {
-                    allocs.push((mcref.offset_in(&self.symtab).unwrap(), buf.len()));
+                    allocs.push((mcref.byte_offset_in(&self.symtab).unwrap(), buf.len()));
                 }
             } else {
                 allocs.push((linkedit.len(), buf.len()));
-                linkedit.extend_slice(buf);
+                vec_extend_from_slice(&mut linkedit, buf);
             }
         }
         (linkedit, allocs)
@@ -1182,9 +1178,9 @@ impl MachO {
 
 
     pub fn xsym_to_symtab(&mut self) {
-        let mut new_vec = self.localsym.get().to_owned();
-        new_vec.extend_slice(self.extdefsym.get());
-        new_vec.extend_slice(self.undefsym.get());
+        let mut new_vec: Vec<u8> = fast_slice_to_owned(self.localsym.get());
+        vec_extend_from_slice(&mut new_vec, self.extdefsym.get());
+        vec_extend_from_slice(&mut new_vec, self.undefsym.get());
         let mc = Mem::<u8>::with_data(&new_vec[..]);
         self.symtab = mc;
         let parts = [
@@ -1286,7 +1282,7 @@ impl MachO {
                         }
                         continue;
                     }
-                    cmds.push(cmd.to_owned());
+                    cmds.push(fast_slice_to_owned(cmd));
                 },
             }
         }
@@ -1383,9 +1379,9 @@ impl MachO {
         self.parse_dyld_bind(self.dyld_lazy_bind.get(), WhichBind::LazyBind, cb);
     }
 
-    fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [u8], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
+    fn parse_dyld_bind<'a>(&'a self, mut slice: &'a [ReadCell<u8>], which: WhichBind, cb: &mut FnMut(&ParseDyldBindState<'a>) -> bool) {
         let pointer_size = self.eb.pointer_size as u64;
-        let leb = |slice_: &mut &[u8], signed| -> Option<u64> {
+        let leb = |slice_: &mut &[ReadCell<u8>], signed| -> Option<u64> {
             let mut it = ByteSliceIterator(slice_);
             exec::read_leb128_inner_noisy(&mut it, signed, "parse_dyld_bind")
         };
@@ -1445,7 +1441,7 @@ impl MachO {
             };
         };
         while !slice.is_empty() {
-            let byte = slice[0];
+            let byte = slice[0].get();
             slice = &slice[1..];
             let immediate = byte & (BIND_IMMEDIATE_MASK as u8);
             let opcode = byte & (BIND_OPCODE_MASK as u8);
@@ -1513,7 +1509,7 @@ impl MachO {
             }
         }
     }
-    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [u8], search_for: Option<&'a ByteStr>, cb: &mut for<'b> FnMut(&'b ParseDyldExportState<'b>) -> bool) {
+    fn parse_dyld_export<'a>(&'a self, dyld_export: &'a [ReadCell<u8>], search_for: Option<&'a ByteStr>, cb: &mut for<'b> FnMut(&'b ParseDyldExportState<'b>) -> bool) {
         if dyld_export.is_empty() { return; }
         enum State<'x> {
             Search { search_for: &'x ByteStr, sf_offset: usize, offset: usize, count: usize },

@@ -17,7 +17,7 @@ use vec_map::VecMap;
 use util::SmallVector;
 
 use exec::arch::Arch;
-use util::{Mem, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMul, CheckAdd, CheckSub, Ext, Lazy, Narrow};
+use util::{Mem, SliceExt, ByteStr, ByteString, Swap, CheckMul, CheckAdd, CheckSub, Ext, Lazy, Narrow, ReadCell};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib, read_cstr, ReadVMA};
 use elf_bind::*;
 
@@ -466,7 +466,7 @@ fn fix_ocs(cs: &mut OffCountSize, len: usize, what: &str) {
     }
 }
 
-fn get_ehdr(basics: &ElfBasics, buf: &[u8]) -> ExecResult<Ehdr> {
+fn get_ehdr(basics: &ElfBasics, buf: &[ReadCell<u8>]) -> ExecResult<Ehdr> {
     let mut eh = branch!(if (basics.is64) {
         type ElfX_Ehdr = Elf64_Ehdr;
     } else {
@@ -492,7 +492,7 @@ fn get_ehdr(basics: &ElfBasics, buf: &[u8]) -> ExecResult<Ehdr> {
     Ok(eh)
 }
 
-fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Phdr>) {
+fn get_phdrs(basics: &ElfBasics, buf: &[ReadCell<u8>], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Phdr>) {
     let mut off = ocs.off as usize;
     let mut segs = Vec::new();
     let mut phdrs = Vec::new();
@@ -536,7 +536,7 @@ fn get_phdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment
     (segs, phdrs)
 }
 
-fn get_shdrs(basics: &ElfBasics, buf: &[u8], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Shdr>) {
+fn get_shdrs(basics: &ElfBasics, buf: &[ReadCell<u8>], ocs: &OffCountSize) -> (Vec<Segment>, Vec<Shdr>) {
     let mut off = ocs.off as usize;
     let mut segs = Vec::new();
     let mut shdrs = Vec::new();
@@ -1066,9 +1066,11 @@ impl exec::Exec for Elf {
     }
 }
 
-fn check_elf_basics(buf: &[u8], warn: bool) -> Result<ElfBasics, &'static str> {
-    let mut ident: [u8; 20] = [0; 20]; // plus e_{type, machine}
-    copy_memory(some_or!(buf.slice_opt(0, 20), { return Err("too short"); }), &mut ident);
+fn check_elf_basics(buf: &[ReadCell<u8>], warn: bool) -> Result<ElfBasics, &'static str> {
+    // ident plus e_{type, machine}
+    let ident: [u8; 20] = util::copy_from_slice(
+        some_or!(buf.slice_opt(0, 20), { return Err("too short"); }),
+        util::LittleEndian /*doesn't matter*/);
     if ident[0] != 0x7f ||
        ident[1] != 0x45 ||
        ident[2] != 0x4c ||

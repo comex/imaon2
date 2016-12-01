@@ -23,14 +23,14 @@ use std::cmp::min;
 use std::str::FromStr;
 use std::any::Any;
 
-use util::{VecCopyExt, into_cow, Ext};
+use util::{into_cow, Ext, vec_extend_from_slice};
 use exec::{arch, SymbolValue, VMA};
 use exec::arch::{ArchAndOptions, CodeMode};
 
 fn macho_filedata_info(mo: &macho::MachO) {
     println!("File data:");
     let entry = |mc: &util::Mem<u8>, name| {
-        if let Some(offset) = mc.offset_in(&mo.eb.whole_buf.as_ref().unwrap()) {
+        if let Some(offset) = mc.byte_offset_in(&mo.eb.whole_buf.as_ref().unwrap()) {
             println!("{:<16}: offset {:<#8x}, length {:<#8x}",
                 name, offset, mc.len());
         }
@@ -94,7 +94,7 @@ fn get_dump_from_spec(ex: &Box<exec::Exec>, dump_spec: String) -> Result<Vec<u8>
                 return Err(format!("zerofill at: {} (in segment '{}')", addr + seg.filesize, seg.pretty_name()));
             }
             let buf = seg.data.as_ref().unwrap().get();
-            ret.extend_slice(&buf[off as usize..(off+osize) as usize]);
+            vec_extend_from_slice(&mut ret, &buf[off as usize..(off+osize) as usize]);
             addr = addr + osize;
             size -= osize;
         } else {
@@ -265,7 +265,8 @@ fn do_mut_stuff(ex: &mut exec::Exec, m: &getopts::Matches) {
         let macho = get_macho(ex);
         macho_dsc_extraction::extract_as_necessary(macho, None, None, /*minimal_processing*/ false).unwrap();
         let mut fp = fs::File::create(&Path::new(&out_file)).unwrap();
-        fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();
+        let buf = unsafe { macho.eb.whole_buf.as_ref().unwrap().get_plain_slice() };
+        fp.write_all(buf).unwrap();
     }
     if m.opt_present("elf-dynamic") {
         let elf = get_elf(ex);

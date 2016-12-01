@@ -1,7 +1,7 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast, Unswapped, CheckAdd, CheckSub};
+use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast, Unswapped, CheckAdd, CheckSub, ReadCell};
 use exec::ErrorKind::BadData;
 use exec::arch;
 use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
@@ -13,53 +13,7 @@ use std::collections::hash_map::Entry;
 use std::any::Any;
 use std;
 pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info, dyld_cache_slide_info2, DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE, DYLD_CACHE_SLIDE_PAGE_ATTR_EXTRA, DYLD_CACHE_SLIDE_PAGE_ATTR_END};
-use ::{MachO, GuessBrokenCacheSlideResult, MachODCInfo};
-
-struct MemEscrow {
-    base: Mem<u8>,
-    offset_size_pairs: VecDeque<Option<(usize, usize)>>
-}
-struct MemEscrowed {
-    offset_size_pairs: VecDeque<Option<(usize, usize)>>
-}
-struct MemUnescrow {
-    base: Mem<u8>,
-    offset_size_pairs: VecDeque<Option<(usize, usize)>>
-}
-impl MemEscrow {
-    fn new(base: Mem<u8>) -> Self {
-        MemEscrow { base: base, offset_size_pairs: Vec::new() }
-    }
-    fn escrowed(self) -> MemEscrowed {
-        MemEscrowed { offset_size_pairs: self.offset_size_pairs }
-    }
-}
-impl MemEscrowed {
-    fn unescrow(self, base: Mem<u8>) -> MemUnescrow {
-        MemUnescrow { base: base, offset_size_pairs: self.offset_size_pairs }
-    }
-}
-trait VisitMem {
-    fn visit<T>(&mut self, memp: &mut Mem<T>) {
-}
-impl VisitMem for MemEscrow {
-    fn visit<T>(&mut self, memp: &mut Mem<T>) {
-        let mut pair = None;
-        if let Some(offset) = memp.byte_offset_in(&self.base) {
-            pair = Some((offset, memp.size));
-            *memp = Mem::empty();
-        }
-        self.offset_size_pairs.push_back(pair);
-    }
-}
-impl VisitMem for MemUnescrow {
-    fn visit<T>(&mut self, memp: &mut Mem<T>) {
-        let front = self.offset_size_pairs.pop_front().unwrap();
-        if let Some((offset, size)) = front {
-            *memp = unsafe { self.base.slice(offset, offset + size).raw_cast() };
-        }
-    }
-}
+use ::{MachO, GuessBrokenCacheSlideResult, MachODCInfo, file_array};
 
 pub struct ImageInfo {
     pub address: u64,
@@ -84,13 +38,6 @@ pub struct DyldCache {
     pub local_symbols: Option<LocalSymbols>,
     pub have_images_text_offset: bool,
 }
-
-/*
-// (off, size), (off, size)
-fn range_check(big: (usize, usize), little: (usize, usize)) {
-    little.0 >= big.0 && little.1 <= (big.0 + big.1 - little.0)
-}
-*/
 
 const SLIDE_GRANULARITY: u64 = 4;
 pub struct SlideInfoV1 {
@@ -164,13 +111,13 @@ impl SlideInfoV1 {
             return err(BadData, "slide info blob too small for header");
         }
         let slide_info: dyld_cache_slide_info =  util::copy_from_slice(&slice[..size], end);
-        let toc = ::file_array_64(&blob, "toc", slide_info.toc_offset as u64,
-                                                slide_info.toc_count as u64,
-                                                2);
+        let toc = file_array(&blob, "toc", slide_info.toc_offset.ext(),
+                                           slide_info.toc_count.ext(),
+                                           2);
         let entries_size = slide_info.entries_size.ext();
-        let entries = ::file_array_64(&blob, "entries", slide_info.entries_offset as u64,
-                                                        slide_info.entries_count as u64,
-                                                        entries_size);
+        let entries = file_array(&blob, "entries", slide_info.entries_offset.ext(),
+                                                   slide_info.entries_count.ext(),
+                                                   entries_size);
         if entries_size > 0xffff {
             return err(BadData, "entries_size too big");
         }
@@ -211,7 +158,8 @@ impl SlideInfoV1 {
                 continue
             });
             let mut data_off = (entry_bytes * i) as u64 + skipped_off;
-            for &c in subblob.iter() {
+            for c in subblob.iter() {
+                let c = c.get();
                 for j in 0..8 {
                     if (c >> j) & 1 != 0 {
                         if data_off >= data_size {
@@ -240,15 +188,15 @@ impl SlideInfoV2 {
         let slice = blob.get();
         let slide_info: dyld_cache_slide_info2 = util::copy_from_slice(&slice[..size], end);
         let (page_starts, _) =
-            ::file_array_64(&blob, "page starts",
-                            slide_info.page_starts_offset as u64,
-                            slide_info.page_starts_count as u64,
-                            2).cast();
+            file_array(&blob, "page starts",
+                       slide_info.page_starts_offset.ext(),
+                       slide_info.page_starts_count.ext(),
+                       2).cast();
 
         let (page_extras, _) =
-            ::file_array_64(&blob, "page extras",
-                            slide_info.page_extras_offset as u64,
-                            slide_info.page_extras_count as u64,
+            file_array(&blob, "page extras",
+                            slide_info.page_extras_offset.ext(),
+                            slide_info.page_extras_count.ext(),
                             2).cast();
         if slide_info.page_size % 4096 != 0 ||
            slide_info.page_size > 1048576 { // arbitrary
@@ -285,7 +233,7 @@ impl SlideInfoV2 {
                 return rebase_list;
             });
             assert!(data_seg.name.is_none()); // the eb has to be the whole dyldcache, not a member...
-            let data_data: &[u8] = data_seg.data.as_ref().unwrap().get();
+            let data_data: &[ReadCell<u8>] = data_seg.data.as_ref().unwrap().get();
             let endian = eb.endian;
             let mut got_straddle = false;
             // for each page...
@@ -295,7 +243,7 @@ impl SlideInfoV2 {
                 let ps = ps.copy(endian);
                 //println!("{:x}: ps={:x}", i, ps);
                 let start: u16;
-                let rest_extras: &[Unswapped<u16>];
+                let rest_extras: &[ReadCell<Unswapped<u16>>];
                 if ps == (DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE as u16) {
                     continue;
                 } else if ps & (DYLD_CACHE_SLIDE_PAGE_ATTR_EXTRA as u16) == 0 {
@@ -393,10 +341,11 @@ impl DyldCache {
         let (arch, end, is64, hdr) = {
             let buf = mc.get();
             if buf.len() < hdr_size { return err(BadData, "truncated"); }
-            if &buf[..7] != b"dyld_v1" {
+            let top: [u8; 16] = util::copy_from_slice(&buf[..16], util::LittleEndian);
+            if &top[..7] != b"dyld_v1" {
                 return err(BadData, "bad magic");
             }
-            let padded_arch = &buf[7..16];
+            let padded_arch = &top[7..16];
             let (arch, is64) = if padded_arch == b"    i386\0" {
                 (arch::X86, false)
             } else if padded_arch == b"  x86_64\0" {
@@ -417,14 +366,14 @@ impl DyldCache {
         };
         let min_low_offset = min(min(hdr.mappingOffset, hdr.imagesOffset) as u64, hdr.slideInfoOffset) as usize;
         let cs_blob = if min_low_offset >= offset_of!(dyld_cache_header, codeSignatureSize) {
-            Some(::file_array_64(&mc, "code signature", hdr.codeSignatureOffset, hdr.codeSignatureSize, 1))
+            Some(file_array(&mc, "code signature", hdr.codeSignatureOffset, hdr.codeSignatureSize, 1))
         } else { None };
         let slide_info_blob = if min_low_offset >= offset_of!(dyld_cache_header, slideInfoSize) {
-            Some(::file_array_64(&mc, "slide info", hdr.slideInfoOffset, hdr.slideInfoSize, 1))
+            Some(file_array(&mc, "slide info", hdr.slideInfoOffset, hdr.slideInfoSize, 1))
         } else { None };
         // TODO these checks should become bypassable
         let local_symbols = if min_low_offset >= offset_of!(dyld_cache_header, localSymbolsSize) {
-            let ls_mc = ::file_array_64(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1);
+            let ls_mc = file_array(&mc, "slide info blob", hdr.localSymbolsOffset, hdr.localSymbolsSize, 1);
             let so = size_of::<dyld_cache_local_symbols_info>() as u64;
             if hdr.localSymbolsSize < so {
                 if hdr.localSymbolsSize > 0 {
@@ -438,10 +387,10 @@ impl DyldCache {
                 } else {
                     size_of::<macho_bind::nlist>()
                 } as usize;
-                let symtab = ::file_array(&ls_mc, "dyld cache local symbols - nlist", ls_hdr.nlistOffset, ls_hdr.nlistCount, nlist_size);
-                let strtab = ::file_array(&ls_mc, "dyld cache local symbols - strtab", ls_hdr.stringsOffset, ls_hdr.stringsSize, 1);
+                let symtab = file_array(&ls_mc, "dyld cache local symbols - nlist", ls_hdr.nlistOffset.ext(), ls_hdr.nlistCount.ext(), nlist_size);
+                let strtab = file_array(&ls_mc, "dyld cache local symbols - strtab", ls_hdr.stringsOffset.ext(), ls_hdr.stringsSize.ext(), 1);
                 let entry_size = size_of::<dyld_cache_local_symbols_entry>();
-                let entries = ::file_array(&ls_mc, "dyld cache local symbols - entries", ls_hdr.entriesOffset, ls_hdr.entriesCount, entry_size);
+                let entries = file_array(&ls_mc, "dyld cache local symbols - entries", ls_hdr.entriesOffset.ext(), ls_hdr.entriesCount.ext(), entry_size);
                 Some(LocalSymbols {
                     entries: entries,
                     symtab: symtab,
@@ -458,7 +407,7 @@ impl DyldCache {
 
         let image_info = {
             let so = size_of::<dyld_cache_image_info>();
-            let hdrmc = ::file_array(&mc, "images info", hdr.imagesOffset, hdr.imagesCount, so);
+            let hdrmc = file_array(&mc, "images info", hdr.imagesOffset.ext(), hdr.imagesCount.ext(), so);
             let hdrbuf = hdrmc.get();
             let buf = mc.get();
             hdrbuf.chunks(so).map(|ii_buf| {
@@ -473,7 +422,7 @@ impl DyldCache {
         };
         let segments: Vec<_> = {
             let so = size_of::<dyld_cache_mapping_info>();
-            let mapping_mc = ::file_array(&mc, "mapping info", hdr.mappingOffset, hdr.mappingCount, so);
+            let mapping_mc = file_array(&mc, "mapping info", hdr.mappingOffset.ext(), hdr.mappingCount.ext(), so);
             let len = mc.len() as u64;
             mapping_mc.get().chunks(so).enumerate().map(|(i, mi_buf)| {
                 let mut mi: dyld_cache_mapping_info = util::copy_from_slice(mi_buf, end);
@@ -629,15 +578,12 @@ impl DyldCache {
         }
         if self.eb.segments.len() < 2 { return Ok(()); } // no data?
         let rebases = v2.save_rebase_list(&self.eb);
-        let mut escrow = MemEscrow::new(self.eb.whole.clone());
-        self.mem_visit(&mut escrow);
-        let escrow = escrow.escrowed();
         branch! { if (self.eb.pointer_size == 8) {
             type Ptr = u64;
         } else {
             type Ptr = u32;
         } then {
-            let whole_slice = self.eb.whole.get_mut_decow();
+            let whole_slice = self.eb.whole_buf.as_ref().unwrap().get_mut();
             let value_mask = !v2.delta_mask as Ptr;
             let value_add = v2.value_add as Ptr;
             let data = &self.eb.segments[1];
@@ -645,7 +591,7 @@ impl DyldCache {
                 if rebase.straddle { continue; }
                 //println!("doing fixup addr={}", rebase.addr);
                 let off = (rebase.addr - data.vmaddr + data.fileoff) as usize;
-                let slice = &mut whole_slice[off..off+size_of::<Ptr>()];
+                let slice = &whole_slice[off..off+size_of::<Ptr>()];
                 let old: Ptr = util::copy_from_slice(slice, util::LittleEndian);
                 let mut val = old & value_mask;
                 if val != 0 {
@@ -654,8 +600,7 @@ impl DyldCache {
                 util::copy_to_slice(slice, &val, util::LittleEndian);
             }
         } }
-        let escrow = escrow.unescrow();
-        self.mem_visit(&mut escrow);
+        Ok(())
     }
 
     pub fn unslide_v1(&mut self, slide: u32) -> ExecResult<()> {
@@ -667,15 +612,12 @@ impl DyldCache {
             return err(ErrorKind::Other, "unslide_v1: not little endian");
         }
         let mut overflow = false;
-        let mut escrow = MemEscrow::new(self.eb.whole.clone());
-        self.mem_visit(&mut escrow);
-        let escrow = escrow.escrowed();
         {
-            let whole_slice = self.eb.whole.get_mut_decow();
+            let whole_slice = self.eb.whole_buf.as_ref().unwrap().get_mut();
             for segment in &self.eb.segments {
                 v1.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
                     let off = (ptr - segment.vmaddr + segment.fileoff) as usize;
-                    let slice = &mut whole_slice[off..off+4];
+                    let slice = &whole_slice[off..off+4];
                     let old: u32 = util::copy_from_slice(slice, util::LittleEndian);
                     let new = old.wrapping_sub(slide);
                     overflow = overflow || new > old;
@@ -683,25 +625,11 @@ impl DyldCache {
                 });
             }
         }
-        let escrow = escrow.unescrow();
-        self.mem_visit(&mut escrow);
         let check_overflow = self.eb.pointer_size > 4;
         if check_overflow && overflow {
             return err(ErrorKind::Other, "slide_by: slide failed due to overflow");
         }
         Ok(())
-    }
-
-    fn mem_visit<V: VisitMem>(&mut self, v: &mut V) {
-        for seg in self.eb.segments {
-            if let Some(ref mut data) = seg.data {
-                v.visit(data);
-            }
-        }
-        if let Some(ref mut cs_blob) = self.cs_blob {
-            v.visit(cs_blob);
-        }
-
     }
 
     pub fn make_canonical_path_map(&self) -> Vec<usize> {

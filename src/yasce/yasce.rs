@@ -36,7 +36,8 @@ fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Opti
         Err(e) => { errln!("for '{}', extract fail: {}", ii.path, e); return },
     }
     let mut fp = File::create(outpath).unwrap();
-    fp.write_all(macho.eb.whole_buf.as_ref().unwrap().get()).unwrap();
+    let buf = unsafe { macho.eb.whole_buf.as_ref().unwrap().get_plain_slice() };
+    fp.write_all(buf).unwrap();
 }
 
 #[cfg(unix)]

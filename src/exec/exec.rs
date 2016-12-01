@@ -16,7 +16,7 @@ use std::cmp::{min, max};
 use std::any::Any;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
-use util::{ByteString, ByteStr, Mem, ReadCell, Narrow, CheckAdd, CheckSub};
+use util::{ByteString, ByteStr, Mem, ReadCell, Narrow, CheckAdd, CheckSub, slice_find_byte};
 
 pub mod arch;
 mod reloc;
@@ -194,7 +194,7 @@ impl Segment {
     pub fn pretty_name<'a>(&'a self) -> Cow<'a, str> {
         self.name.as_ref().map_or("<unnamed>".into(), |a| a.lossy())
     }
-    pub fn get_data(&self) -> &[u8] {
+    pub fn get_data(&self) -> &[ReadCell<u8>] {
         self.data.as_ref().unwrap().get()
     }
     pub fn steal_data(&mut self) -> Mem<u8> {
@@ -209,7 +209,7 @@ pub struct ExecBase {
     pub endian: util::Endian,
     pub segments: Vec<Segment>,
     pub sections: Vec<Segment>,
-    pub whole_buf: Option<util::Mem<u8>>,
+    pub whole_buf: Option<Mem<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -318,9 +318,9 @@ pub trait Exec : 'static {
 
 pub trait ExecProber {
     fn name(&self) -> &str;
-    fn probe(&self, eps: &Vec<ExecProberRef>, buf: util::Mem<u8>) -> Vec<ProbeResult>;
+    fn probe(&self, eps: &Vec<ExecProberRef>, buf: Mem<u8>) -> Vec<ProbeResult>;
     // May fail.
-    fn create(&self, eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)>;
+    fn create(&self, eps: &Vec<ExecProberRef>, buf: Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec>, Vec<String>)>;
 }
 
 pub type ExecProberRef = &'static (ExecProber+'static);
@@ -332,7 +332,7 @@ pub struct ProbeResult {
     pub cmd: Vec<String>,
 }
 
-pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>) -> Vec<ProbeResult> {
+pub fn probe_all(eps: &Vec<ExecProberRef>, buf: Mem<u8>) -> Vec<ProbeResult> {
     let mut result = vec!();
     for epp in eps.iter() {
         result.extend(epp.probe(eps, buf.clone()).into_iter());
@@ -340,7 +340,7 @@ pub fn probe_all(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>) -> Vec<ProbeResul
     result
 }
 
-pub fn create(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+pub fn create(eps: &Vec<ExecProberRef>, buf: Mem<u8>, mut args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     if args.len() == 0 {
         return err(ErrorKind::InvalidArgs, "empty argument list passed to exec::create");
     }
@@ -356,7 +356,7 @@ pub fn create(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, mut args: Vec<String
     err(ErrorKind::InvalidArgs, format!("no format named {}", prober_name))
 }
 
-fn create_auto(eps: &Vec<ExecProberRef>, buf: util::Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
+fn create_auto(eps: &Vec<ExecProberRef>, buf: Mem<u8>, args: Vec<String>) -> ExecResult<(Box<Exec+'static>, Vec<String>)> {
     // TODO: error conversion
     let m = try!(usage_to_invalid_args(util::do_getopts_or_usage(&*args, "auto [--arch arch]", 0, std::usize::MAX, &mut vec![
         getopts::optopt("", "arch", "Architecture bias", "arch"),
@@ -436,7 +436,7 @@ impl ReadVMA for ExecBase {
             if sl.len() as u64 != desired { break; }
             size -= desired;
         }
-        Mem::<u8>::with_data(&res) // xxx
+        Mem::<u8>::with_data(&res[..]) // xxx
     }
 }
 
@@ -476,7 +476,7 @@ pub fn read_leb128_inner_noisy<It: Iterator<Item=u8>>(it: &mut It, signed: bool,
     }
 }
 
-pub struct ByteSliceIterator<'a, 'b: 'a>(pub &'a mut &'b [u8]);
+pub struct ByteSliceIterator<'a, 'b: 'a>(pub &'a mut &'b [ReadCell<u8>]);
 impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
     type Item = u8;
     #[inline]
@@ -484,7 +484,7 @@ impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
         if self.0.is_empty() {
             None
         } else {
-            let res = self.0[0];
+            let res = self.0[0].get();
             *self.0 = &(*self.0)[1..];
             Some(res)
         }
@@ -493,7 +493,7 @@ impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
 
 impl ExecBase {
     // exact size, in one segment
-    pub fn read_sane(&self, addr: VMA, size: u64) -> Option<&[u8]> {
+    pub fn read_sane(&self, addr: VMA, size: u64) -> Option<&[ReadCell<u8>]> {
         let (seg, off, avail) =
             some_or!(addr_to_seg_off_range(&self.segments, addr),
                      { return None; });
@@ -501,14 +501,14 @@ impl ExecBase {
         let data = some_or!(seg.data.as_ref(), { return None; });
         Some(&data.get()[off as usize .. min(off + size, data.len() as u64) as usize])
     }
-    pub fn ptr_from_slice<S: ?Sized + util::ROSlicePtr>(&self, slice: &S) -> u64 {
+    pub fn ptr_from_slice<S: ?Sized + util::ROSlicePtr<u8>>(&self, slice: &S) -> u64 {
         match self.pointer_size {
             8 => util::copy_from_slice::<u64, _>(slice, self.endian),
             4 => util::copy_from_slice::<u32, _>(slice, self.endian) as u64,
             _ => panic!("pointer_size")
         }
     }
-    pub fn ptr_to_slice<'a, S: util::RWSlicePtr<'a>>(&'a self, slice: S, ptr: u64) {
+    pub fn ptr_to_slice<'a, S: util::RWSlicePtr<'a, u8>>(&'a self, slice: S, ptr: u64) {
         match self.pointer_size {
             8 => util::copy_to_slice::<'a, u64, _>(slice, &ptr, self.endian),
             4 => util::copy_to_slice::<'a, u32, _>(slice, &ptr.narrow().unwrap(), self.endian),
@@ -530,7 +530,7 @@ pub fn read_cstr<'a>(reader: &ReadVMA, offset: VMA) -> Option<ByteString> {
     loop {
         let res = reader.read(offset, size);
         let res = res.get();
-        if let Some(o) = ByteStr::from_bytes(res).find(b'\0') {
+        if let Some(o) = slice_find_byte(res, b'\0') {
             return Some(ByteString::from_bytes(&res[..o]));
         }
         if (res.len() as u64) < size { return None; }
@@ -551,7 +551,6 @@ pub enum SWGetSaneError {
     NotWritable,
     Unmapped,
 }
-
 
 impl SegmentWriter {
     pub fn new(segs: &mut [Segment]) -> Self {

@@ -16,7 +16,7 @@ use exec::arch::Arch;
 use std::collections::{HashSet, HashMap};
 use std::cell::Cell;
 use std::any::Any;
-use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr};
+use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr, ReadCell};
 
 struct ReaggregatedSyms {
     localsym: Vec<u8>,
@@ -26,7 +26,7 @@ struct ReaggregatedSyms {
     sym_name_to_idx: HashMap<ByteString, (usize, u8), Fnv>,
 }
 
-fn strx_to_name(strtab: &[u8], strx: u64) -> &ByteStr {
+fn strx_to_name(strtab: &[ReadCell<u8>], strx: u64) -> &ByteStr {
     // todo: fix push_nlist_symbols to use this kind of logic
     if strx == 0 {
         ByteStr::from_str("")
@@ -99,7 +99,7 @@ impl MachODscExtraction for MachO {
         }
         let mut xindirectsym = replace(&mut self.indirectsym, Mem::<u8>::default());
         {
-            let indirectsym = xindirectsym.get_mut_decow();
+            let indirectsym = xindirectsym.get_uniq_decow();
             let end = self.eb.endian;
             self.parse_each_dyld_bind(&mut |state: &ParseDyldBindState| {
                 if state.source_dylib == SourceLib::Self_ { return true; }
@@ -207,7 +207,7 @@ impl MachODscExtraction for MachO {
                     let (start, count) = (start as usize, count as usize);
                     (&symtab.get()[start*nlist_size..(start+count)*nlist_size],
                      strtab.get())
-                } else { (&[] as &[u8], &[] as &[u8]) };
+                } else { (&[] as &[ReadCell<u8>], &[] as &[ReadCell<u8>]) };
 
             let mut external_chunks = external_symtab.chunks(nlist_size);
 
@@ -351,7 +351,7 @@ impl MachODscExtraction for MachO {
                 }
             }
         }
-        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [u8]> {
+        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [ReadCell<u8>]> {
             if vma.0 == 4 { panic!() }
             let res = dc.eb.read_sane(vma, size);
             if let None = res {
@@ -921,12 +921,13 @@ fn ice_get_addr_syms(this: &ImageCacheEntry) -> &Vec<exec::Symbol<'static>> {
     any.downcast_ref().unwrap()
 }
 
-fn decode_stub(stub: &[u8], stub_addr: VMA, end: Endian, arch: Arch) -> Option<VMA> {
+fn decode_stub(stub: &[ReadCell<u8>], stub_addr: VMA, end: Endian, arch: Arch) -> Option<VMA> {
     match arch {
         arch::X86 | arch::X86_64 => {
             assert_eq!(end, LittleEndian);
             if stub.len() != 6 { return None; }
-            if &stub[0..2] != &[0xff, 0x25] { return None; }
+            let bytes: [u8; 2] = util::copy_from_slice(&stub[0..2], LittleEndian);
+            if bytes != [0xff, 0x25] { return None; }
             let rel: i32 = util::copy_from_slice(&stub[2..], LittleEndian);
             let mut res = stub_addr.wrapping_add(rel as u64);
             if arch == arch::X86 { res = res.trunc32(); }
@@ -984,10 +985,10 @@ pub fn extract_as_necessary(mo: &mut MachO, dc: Option<&DyldCache>, image_cache:
         };
         // we're in a cache...
         let res = mo.reaggregate_nlist_syms_from_cache();
-        mo.localsym = Mem::<u8>::with_data(&res.localsym);
-        mo.extdefsym = Mem::<u8>::with_data(&res.extdefsym);
-        mo.undefsym = Mem::<u8>::with_data(&res.undefsym);
-        mo.strtab = Mem::<u8>::with_data(&res.strtab);
+        mo.localsym = Mem::<u8>::with_data(&res.localsym[..]);
+        mo.extdefsym = Mem::<u8>::with_data(&res.extdefsym[..]);
+        mo.undefsym = Mem::<u8>::with_data(&res.undefsym[..]);
+        mo.strtab = Mem::<u8>::with_data(&res.strtab[..]);
         mo.xsym_to_symtab();
         mo.update_indirectsym(&res.sym_name_to_idx);
         if let Some(ic) = image_cache {

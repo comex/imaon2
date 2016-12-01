@@ -1,4 +1,3 @@
-#![feature(arc_counts)]
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 extern crate memmap;
@@ -7,7 +6,7 @@ use memmap::Mmap;
 #[macro_use]
 extern crate macros;
 
-use std::mem::{size_of, uninitialized, transmute, replace, forget};
+use std::mem::{size_of, uninitialized, transmute, transmute_copy, replace, forget};
 use std::ptr;
 use std::ptr::copy;
 use std::sync::{Arc, Mutex};
@@ -44,41 +43,55 @@ pub struct ReadCell<T: Copy> {
     pub value: UnsafeCell<T>
 }
 impl<T: Copy> ReadCell<T> {
+    #[inline]
     pub /*const*/ fn new(value: T) -> Self {
         ReadCell { value: UnsafeCell::new(value) }
     }
+    #[inline]
     pub fn get(&self) -> T {
         unsafe { *self.value.get() }
     }
-}
-
-pub unsafe trait ROSlicePtr {
-    fn as_ptr(&self) -> *const u8;
-    fn len(&self) -> usize;
-}
-pub unsafe trait RWSlicePtr<'a>: Sized {
-    fn as_mut_ptr(self) -> *mut u8;
-    fn len(&self) -> usize;
+    // shortcut - can't do this for Cell though
     #[inline]
-    fn set_memory(self, byte: u8) {
-        let len = self.len();
-        unsafe { memset(self.as_mut_ptr(), byte as i32, len); }
+    pub fn copy<U>(&self, endian: Endian) -> U where U: Swap, T: Is<T=Unswapped<U>> {
+        self.get().concretify().copy(endian)
+
     }
 }
-macro_rules! impl_rosp { ($ty:ty) => {
-    unsafe impl ROSlicePtr for $ty {
+// really this should be copy, but lolrust
+impl<T: Copy> Clone for ReadCell<T> {
+    fn clone(&self) -> Self {
+        ReadCell::new(self.get())
+    }
+}
+
+pub unsafe trait ROSlicePtr<T> {
+    fn as_ptr(&self) -> *const T;
+    fn len(&self) -> usize;
+}
+pub unsafe trait RWSlicePtr<'a, T>: Sized {
+    fn as_mut_ptr(self) -> *mut T;
+    fn len(&self) -> usize;
+    #[inline]
+    fn set_memory(self, byte: u8) where T: Swap {
+        let len = self.len();
+        unsafe { memset(self.as_mut_ptr() as *mut u8, byte as i32, len); }
+    }
+}
+macro_rules! impl_rosp { ($T:ident, $ty:ty) => {
+    unsafe impl<$T> ROSlicePtr<$T> for $ty where $T: Copy {
         #[inline(always)]
-        fn as_ptr(&self) -> *const u8 {
+        fn as_ptr(&self) -> *const T {
             unsafe { transmute(self.as_ptr()) }
         }
         #[inline(always)]
         fn len(&self) -> usize { self.len() }
     }
 } }
-macro_rules! impl_rwsp { ($ty:ty) => {
-    unsafe impl<'a> RWSlicePtr<'a> for $ty {
+macro_rules! impl_rwsp { ($T:ident, $ty:ty) => {
+    unsafe impl<'a, $T> RWSlicePtr<'a, $T> for $ty where $T: Copy {
         #[inline(always)]
-        fn as_mut_ptr(self) -> *mut u8 {
+        fn as_mut_ptr(self) -> *mut $T {
             unsafe { transmute(self.as_ptr()) }
         }
         #[inline(always)]
@@ -86,16 +99,15 @@ macro_rules! impl_rwsp { ($ty:ty) => {
     }
 } }
 
-impl_rosp!([u8]);
-impl_rosp!([Cell<u8>]);
-impl_rosp!([ReadCell<u8>]);
-impl_rosp!([i8]);
+impl_rosp!(T, [T]);
+impl_rosp!(T, [Cell<T>]);
+impl_rosp!(T, [ReadCell<T>]);
 
-impl_rwsp!(&'a [Cell<u8>]);
-impl_rwsp!(&'a mut [u8]);
+impl_rwsp!(T, &'a [Cell<T>]);
+impl_rwsp!(T, &'a mut [T]);
 
 #[inline]
-pub fn copy_from_slice<'a, T: Copy + Swap, S: ?Sized + ROSlicePtr>(slice: &S, end: Endian) -> T {
+pub fn copy_from_slice<'a, T: Copy + Swap, S: ?Sized + ROSlicePtr<u8>>(slice: &S, end: Endian) -> T {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let mut t : T = uninitialized();
@@ -106,7 +118,7 @@ pub fn copy_from_slice<'a, T: Copy + Swap, S: ?Sized + ROSlicePtr>(slice: &S, en
 }
 
 #[inline]
-pub fn copy_to_slice<'a, T: Copy + Swap, S: RWSlicePtr<'a>>(slice: S, t: &T, end: Endian) {
+pub fn copy_to_slice<'a, T: Copy + Swap, S: RWSlicePtr<'a, u8>>(slice: S, t: &T, end: Endian) {
     assert_eq!(slice.len(), size_of::<T>());
     unsafe {
         let stp: *mut T = transmute(slice.as_mut_ptr());
@@ -154,12 +166,20 @@ impl<T: Swap> Unswapped<T> {
     }
 }
 
-pub trait Is { type T; }
+pub trait Is {
+    type T;
+    #[inline(always)]
+    fn concretify(self) -> Self::T where Self: Sized, Self::T: Sized {
+        let res = unsafe { transmute_copy(&self) };
+        forget(self);
+        res
+    }
+}
 impl<T> Is for T { type T = T; }
 
-pub trait Cast<Other>: Sized {
-    type SelfBase;
-    type OtherBase;
+pub trait Cast<Other, Dummy>: Sized {
+    type SelfBase: Swap;
+    type OtherBase: Swap;
     fn _len(&self) -> usize;
     unsafe fn raw_cast(self) -> Other;
 
@@ -167,14 +187,14 @@ pub trait Cast<Other>: Sized {
     fn cast_to_u8(self) -> Other where Self::OtherBase: Is<T=u8> {
         unsafe { self.raw_cast() }
     }
-    fn cast<U>(self) -> (Other, usize /*slack*/) where U: Swap, Self::OtherBase: Is<T=Unswapped<U>> {
+    fn cast<U>(self) -> (Other, usize /*slack*/) where Self::SelfBase: Swap, U: Swap, Self::OtherBase: Is<T=Unswapped<U>> {
         let len = self._len();
         (unsafe { self.raw_cast() },
          len * size_of::<Self::SelfBase>() % size_of::<Self::OtherBase>())
     }
 }
 
-impl<'a, T, U> Cast<&'a [U]> for &'a [T] where T: Swap {
+impl<'a, T: Swap, U: Swap> Cast<&'a [U], ()> for &'a [T] {
     type SelfBase = T;
     type OtherBase = U;
     fn _len(&self) -> usize { self.len() }
@@ -187,7 +207,7 @@ impl<'a, T, U> Cast<&'a [U]> for &'a [T] where T: Swap {
         )
     }
 }
-impl<'a, T, U> Cast<&'a mut [U]> for &'a mut [T] where T: Swap {
+impl<'a, T: Swap, U: Swap> Cast<&'a mut [U], ()> for &'a mut [T] {
     type SelfBase = T;
     type OtherBase = U;
     fn _len(&self) -> usize { self.len() }
@@ -200,7 +220,36 @@ impl<'a, T, U> Cast<&'a mut [U]> for &'a mut [T] where T: Swap {
         )
     }
 }
-impl<T, U> Cast<Mem<U>> for Mem<T> where T: Swap, U: Copy {
+// These two impls cannot conflict with the generic read-only slice impl because of the Copy bound.
+// ...But rustc thinks they do, hence the dummy parameter.  In the future, hack around this with
+// specialization instead.
+impl<'a, T: Swap, U: Swap> Cast<&'a [Cell<U>], i8> for &'a [Cell<T>] {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> &'a [Cell<U>] {
+        let len = self.len();
+        slice::from_raw_parts(
+            transmute(self.as_ptr()),
+            len * size_of::<T>() / size_of::<U>()
+        )
+    }
+}
+impl<'a, T: Swap, U: Swap> Cast<&'a [ReadCell<U>], i8> for &'a [ReadCell<T>] {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> &'a [ReadCell<U>] {
+        let len = self.len();
+        slice::from_raw_parts(
+            transmute(self.as_ptr()),
+            len * size_of::<T>() / size_of::<U>()
+        )
+    }
+}
+impl<T: Swap, U: Swap> Cast<Mem<U>, ()> for Mem<T> {
     type SelfBase = T;
     type OtherBase = U;
     fn _len(&self) -> usize { self.len }
@@ -214,7 +263,7 @@ impl<T, U> Cast<Mem<U>> for Mem<T> where T: Swap, U: Copy {
     }
 }
 
-impl<T, U> Cast<Vec<U>> for Vec<T> {
+impl<T: Swap, U: Swap> Cast<Vec<U>, ()> for Vec<T> {
     type SelfBase = T;
     type OtherBase = U;
     fn _len(&self) -> usize { self.len() }
@@ -382,6 +431,10 @@ impl_unsigned_unsigned!(u16, u32);
 impl_unsigned_unsigned!(u8, u32);
 impl_unsigned_unsigned!(u8, u16);
 
+pub trait X8 : Swap {}
+impl X8 for u8 {}
+impl X8 for i8 {}
+
 
 impl Swap for u8 {
     fn bswap(&mut self) {}
@@ -421,6 +474,7 @@ impl_for_array!(3);
 impl_for_array!(4);
 impl_for_array!(8);
 impl_for_array!(16);
+impl_for_array!(20);
 impl<T: Swap> Swap for Option<T> {
     fn bswap(&mut self) {}
 }
@@ -447,13 +501,7 @@ impl ByteStr {
         unsafe { transmute(s) }
     }
     pub fn find(&self, pat: u8) -> Option<usize> {
-        let ptr = self.0.as_ptr();
-        let chr = unsafe { memchr(ptr, pat as i32, self.0.len()) };
-        if chr == 0 as *mut u8 {
-            None
-        } else {
-            Some((chr as usize) - (ptr as usize))
-        }
+        slice_find_byte(&self.0, pat)
     }
     /*
     pub fn rfind<P>(&self, pat: P) -> Option<usize>
@@ -519,8 +567,8 @@ impl ByteString {
     pub fn new(s: &ByteStr) -> Self {
         ByteString(s.0.to_owned())
     }
-    pub fn from_bytes(s: &[u8]) -> Self {
-        ByteString(s.to_owned())
+    pub fn from_bytes<S: ?Sized + ROSlicePtr<u8>>(s: &S) -> Self {
+        ByteString(fast_slice_to_owned(s))
     }
     pub fn from_str(s: &str) -> ByteString {
         ByteString::from_bytes(s.as_bytes())
@@ -637,21 +685,24 @@ impl PartialEq<str> for ByteString {
 }
 
 #[inline]
-pub fn from_cstr<'a, S: ?Sized + ROSlicePtr>(chs: &S) -> &'a ByteStr {
-    let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
-    unsafe { ByteStr::from_bytes(std::slice::from_raw_parts(chs.as_ptr(), len)) }
+pub fn from_cstr<'a, X: X8, S: ?Sized + ROSlicePtr<X>>(chs: &S) -> &'a ByteStr {
+    let (ptr, len) = (chs.as_ptr() as *const u8, chs.len());;
+    let true_len = unsafe { strnlen(ptr, len) };
+    unsafe { ByteStr::from_bytes(std::slice::from_raw_parts(ptr, true_len)) }
 }
 
 #[inline]
-pub fn from_cstr_strict<'a, S: ?Sized + ROSlicePtr>(chs: &S) -> Option<&'a ByteStr> {
-    let len = unsafe { strnlen(chs.as_ptr(), chs.len()) };
-    if len == chs.len() {
+pub fn from_cstr_strict<'a, X: X8, S: ?Sized + ROSlicePtr<X>>(chs: &S) -> Option<&'a ByteStr> {
+    let (ptr, len) = (chs.as_ptr() as *const u8, chs.len());;
+    let true_len = unsafe { strnlen(ptr, len) };
+    if true_len == len {
         None
     } else {
-        unsafe { Some(ByteStr::from_bytes(std::slice::from_raw_parts(chs.as_ptr(), len))) }
+        unsafe { Some(ByteStr::from_bytes(std::slice::from_raw_parts(ptr, true_len))) }
     }
 }
 
+type MaybeArc<T> = Arc<T>; // todo
 
 enum MemoryContainer {
     Empty,
@@ -660,40 +711,26 @@ enum MemoryContainer {
 }
 
 #[derive(Clone)]
-pub struct Mem<T: Copy> {
-    mc: Arc<MemoryContainer>,
+pub struct Mem<T: Swap> {
+    mc: MaybeArc<MemoryContainer>,
     ptr: *const T,
     len: usize
 }
 
-unsafe impl<T: Copy> Send for Mem<T> {}
-unsafe impl<T: Copy> Sync for Mem<T> {}
+unsafe impl<T: Swap> Send for Mem<T> {}
+unsafe impl<T: Swap> Sync for Mem<T> {}
 
-impl<T: Copy> std::default::Default for Mem<T> {
+impl<T: Swap> std::default::Default for Mem<T> {
     fn default() -> Self {
         Mem::empty()
     }
 }
 
-impl<T: Copy> Debug for Mem<T> {
+impl<T: Swap> Debug for Mem<T> {
     fn fmt(&self, fmt: &mut Formatter) -> std::fmt::Result {
-        write!(fmt, "Mem<u8>({:?}, {})", self.ptr, self.len)
+        write!(fmt, "Mem({:?}, {})", self.ptr, self.len)
     }
 }
-
-#[cfg(feature = "nightly")]
-struct XArcInner<T: ?Sized> {
-    strong: AtomicUsize,
-    _weak: AtomicUsize,
-    _data: T,
-}
-
-#[cfg(feature = "nightly")]
-static EMPTY_ARC_INNER: XArcInner<MemoryContainer> = XArcInner {
-    strong: AtomicUsize::new(1),
-    _weak: AtomicUsize::new(1),
-    _data: MemoryContainer::Empty,
-};
 
 impl Mem<u8> {
     pub fn with_mm(mm: Mmap) -> Self {
@@ -705,9 +742,9 @@ impl Mem<u8> {
     }
 }
 
-impl<T: Copy> Mem<T> {
-    pub fn with_data(data: &[T]) -> Self where T: Clone {
-        Mem::with_vec(data.to_owned())
+impl<T: Swap> Mem<T> {
+    pub fn with_data<S: ?Sized + ROSlicePtr<T>>(data: &S) -> Self where T: Clone {
+        Mem::with_vec(fast_slice_to_owned(data))
     }
 
     pub fn with_vec(vec: Vec<T>) -> Self {
@@ -722,22 +759,8 @@ impl<T: Copy> Mem<T> {
     }
 
     #[inline]
-    #[cfg(feature = "nightly")]
     pub fn empty() -> Self {
-        let old_size = EMPTY_ARC_INNER.strong.fetch_add(1, Ordering::Relaxed);
-        if old_size > std::isize::MAX as usize {
-            panic!()
-        }
-        Mem {
-            mc: unsafe { transmute(&EMPTY_ARC_INNER) },
-            ptr: 0 as *const T,
-            len: 0,
-        }
-    }
-
-    #[inline]
-    #[cfg(not(feature = "nightly"))]
-    pub fn empty() -> Self {
+        // todo
         Mem {
             mc: Arc::new(MemoryContainer::Empty),
             ptr: 0 as *const T,
@@ -770,32 +793,38 @@ impl<T: Copy> Mem<T> {
         }
     }
 
-    pub fn get(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts::<T>(self.ptr, self.len) }
-    }
-
-    pub fn get_mut(&mut self) -> Option<&mut [T]> {
+    pub fn get_uniq(&mut self) -> Option<&mut [T]> {
         if let Some(_) = Arc::get_mut(&mut self.mc) {
             unsafe { return Some(std::slice::from_raw_parts_mut::<T>(self.ptr as *mut T, self.len)); }
         }
         None
     }
 
-    pub fn get_mut_decow(&mut self) -> &mut [T] {
-        if let Some(sl) = self.get_mut() {
+    pub fn get_uniq_decow(&mut self) -> &mut [T] {
+        if let Some(sl) = self.get_uniq() {
             // sl is already &mut [T], but this fudges the lifetimes.  This shouldn't be necessary,
             // but since both mutable borrows (this one and the else branch) have the same lifetime
             // as self, rustc thinks the borrows conflict.
             let sl: &mut [T] = unsafe { transmute(sl) };
             return sl;
         }
-        let _sw = stopwatch("get_mut_decow decow (vec)");
-        *self = Mem::with_vec(self.get().to_owned());
-        self.get_mut().unwrap()
+        let _sw = stopwatch("get_uniq_decow decow (vec)");
+        *self = Mem::with_vec(fast_slice_to_owned(self.get()));
+        self.get_uniq().unwrap()
     }
 
-    // only safe to call if there are no mutable references
-    pub unsafe fn get_cells(&self) -> &[Cell<T>] {
+    #[inline]
+    pub fn get(&self) -> &[ReadCell<T>] {
+        unsafe { transmute(std::slice::from_raw_parts(self.ptr, self.len)) }
+    }
+
+    #[inline]
+    pub fn get_mut(&self) -> &[Cell<T>] {
+        unsafe { transmute(std::slice::from_raw_parts(self.ptr, self.len)) }
+    }
+
+    // only safe to call if nobody is going to mutate
+    pub unsafe fn get_plain_slice(&self) -> &[T] {
         transmute(std::slice::from_raw_parts(self.ptr, self.len))
     }
 
@@ -806,6 +835,7 @@ impl<T: Copy> Mem<T> {
             Some(mine - theirs)
         } else { None }
     }
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
@@ -921,22 +951,6 @@ impl<T> SliceExt<T> for [T] {
     }
 }
 
-pub trait VecCopyExt<T> {
-    fn extend_slice(&mut self, other: &[T]);
-}
-
-impl<T: Copy> VecCopyExt<T> for Vec<T> {
-    fn extend_slice(&mut self, other: &[T]) {
-        unsafe {
-            let ol = other.len();
-            let sl = self.len();
-            self.reserve(ol);
-            self.set_len(sl + ol);
-            copy(other.as_ptr(), self.as_mut_ptr().offset(sl as isize), ol);
-        }
-    }
-}
-
 pub trait VecStrExt {
     fn strings(&self) -> Vec<String>;
 }
@@ -1027,9 +1041,13 @@ unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {
     res
 }
 #[inline]
-pub fn copy_memory(src: &[u8], dst: &mut [u8]) {
-    assert_eq!(dst.len(), src.len());
-    unsafe { memmove(dst.as_mut_ptr(), src.as_ptr(), dst.len()); }
+pub fn copy_memory<'a, T, Src, Dst>(src: &Src, dst: Dst)
+    where T: Copy, Src: ?Sized + ROSlicePtr<T>, Dst: RWSlicePtr<'a, T> {
+    let len = dst.len();
+    assert_eq!(len, src.len());
+    unsafe { memmove(dst.as_mut_ptr() as *mut u8,
+                     src.as_ptr() as *const u8,
+                     len * size_of::<T>()); }
 }
 
 pub fn into_cow<'a, T: ?Sized + ToOwned, S: Into<Cow<'a, T>>>(s: S) -> Cow<'a, T> {
@@ -1151,12 +1169,34 @@ pub fn empty_slice<T>() -> &'static [T] {
     unsafe { std::slice::from_raw_parts(!0 as *const T, 0) }
 }
 
-pub fn fast_slice_to_owned<T: Copy>(slice: &[T]) -> Vec<T> {
+pub fn fast_slice_to_owned<T: Swap, S: ?Sized + ROSlicePtr<T>>(slice: &S) -> Vec<T> {
     // extend_from_slice is supposed to be fast.  in unoptimized mode, it takes 60s to copy a few hundred MB.
     let len = slice.len();
-    let mut res = Vec::with_capacity(len);
-    unsafe { res.set_len(len); }
-    res.copy_from_slice(slice);
+    let mut res: Vec<T> = Vec::with_capacity(len);
+    unsafe {
+        res.set_len(len);
+        copy(slice.as_ptr(), res.as_mut_ptr() as *mut T, len);
+    }
     res
+}
 
+pub fn slice_find_byte<X: X8, S: ?Sized + ROSlicePtr<X>>(slice: &S, pat: u8) -> Option<usize> {
+    let ptr = slice.as_ptr() as *const u8;
+    let chr = unsafe { memchr(ptr, pat as i32, slice.len()) };
+    if chr == 0 as *mut u8 {
+        None
+    } else {
+        Some((chr as usize) - (ptr as usize))
+    }
+}
+
+// same as Vec::extend_from_slice but with ROSlicePtr
+pub fn vec_extend_from_slice<T: Copy, S: ?Sized + ROSlicePtr<T>>(this: &mut Vec<T>, other: &S) {
+    unsafe {
+        let ol = other.len();
+        let sl = this.len();
+        this.reserve(ol);
+        this.set_len(sl + ol);
+        copy(other.as_ptr(), this.as_mut_ptr().offset(sl as isize), ol);
+    }
 }
