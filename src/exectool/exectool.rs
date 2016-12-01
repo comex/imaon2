@@ -1,8 +1,7 @@
 #![allow(non_camel_case_types)]
-#![feature(stmt_expr_attributes)] // disall
-#![cfg_attr(opt, feature(alloc_system))]
+#![cfg_attr(feature = "nightly", feature(alloc_system))]
 
-#[cfg(opt)]
+#[cfg(feature = "nightly")]
 extern crate alloc_system;
 
 extern crate util;

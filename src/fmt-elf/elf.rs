@@ -1025,7 +1025,7 @@ impl exec::Exec for Elf {
                     _ => if self.ehdr.type_ as u32 != ET_REL {
                         SymbolValue::Addr(VMA(stval))
                     } else {
-                        if let Some(sect) = self.eb.sections.get(sym.st_shndx.ext()) {
+                        if let Some(sect) = self.eb.sections.get(sym.st_shndx as usize) {
                             if stval > sect.vmsize || sym.st_size as u64 > sect.vmsize - stval {
                                 errln!("warning: section offset out of range for symbol {}", i);
                             }
