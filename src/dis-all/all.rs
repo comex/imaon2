@@ -10,5 +10,5 @@ pub static ALL_FAMILIES: &'static [&'static dis::DisassemblerFamily] = &[
     #[cfg(feature = "use_llvm")]
     (&DisassemblerFamilyImpl::<llvmdis::LLVMDisassembler>(PhantomData) as &DisassemblerFamily),
     #[cfg(feature = "use_llvm")]
-    (&DisassemblerFamilyImpl::<dis_gendis::LLVMDebugDisassembler>(PhantomData) as &DisassemblerFamily),
+    (&DisassemblerFamilyImpl::<gendis::GenDisassembler>(PhantomData) as &DisassemblerFamily),
 ];

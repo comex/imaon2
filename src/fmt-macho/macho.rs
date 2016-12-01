@@ -364,7 +364,6 @@ pub struct MachO {
     pub eb: exec::ExecBase,
     pub is64: bool,
     pub mh: mach_header,
-    pub hdr_offset: usize,
     pub load_commands: Vec<Mem<u8>>,
     pub load_dylib: Vec<LoadDylib>,
     pub dyld_base: Option<VMA>,
@@ -940,12 +939,16 @@ impl MachO {
     }
 
     pub fn update_dyld_base(&mut self) {
+        let text_fileoff = self.text_fileoff();
         for seg in &self.eb.segments {
-            if seg.fileoff == self.hdr_offset.ext() && seg.filesize != 0 {
+            if seg.fileoff == text_fileoff && seg.filesize != 0 {
                 self.dyld_base = Some(seg.vmaddr);
                 break;
             }
         }
+    }
+    pub fn text_fileoff(&self) -> u64 {
+        self.dc_info.hdr_offset.ext()
     }
 
     fn push_nlist_symbols<'a>(&self, symtab: &[u8], strtab: &'a [u8], start: usize, count: usize, skip_redacted: bool, out: &mut Vec<Symbol<'a>>) {
@@ -1055,13 +1058,14 @@ impl MachO {
 
         let mut linkedit_idx: Option<usize> = None;
         let mut text_idx: Option<usize> = None;
+        let text_fileoff = self.text_fileoff();
         for (i, seg) in self.eb.segments.iter_mut().enumerate() {
             if seg.name.as_ref().map(|s| &s[..]) == Some(ByteStr::from_str("__LINKEDIT")) {
                 linkedit_idx = Some(i);
                 seg.vmsize = (linkedit.len() as u64).align_to(page_size);
                 seg.filesize = linkedit.len() as u64;
                 seg.data = Some(Mem::<u8>::with_data(&linkedit[..]));
-            } else if seg.fileoff == self.hdr_offset.ext() && seg.filesize > 0 {
+            } else if seg.fileoff == text_fileoff && seg.filesize > 0 {
                 text_idx = Some(i);
             }
         }
@@ -1174,6 +1178,7 @@ impl MachO {
                 sect.fileoff += self.eb.segments[sect.seg_idx.unwrap()].fileoff;
             }
         }
+        self.dc_info.hdr_offset = 0;
     }
 
 

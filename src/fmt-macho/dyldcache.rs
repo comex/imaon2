@@ -60,7 +60,7 @@ pub struct SlideInfoV2 {
     pub page_starts: Mem<Unswapped<u16>>,
     pub page_extras: Mem<Unswapped<u16>>,
     pub delta_mask: u64,
-    pub delta_shift: u32,
+    pub delta_shift: u32, // not including the -2
     pub value_add: u64,
     rebase_list: Lazy<Vec<VMA>>,
 }
@@ -208,6 +208,7 @@ impl SlideInfoV2 {
         if (page_starts.len() as u64).check_mul(slide_info.page_size as u64).is_none() {
             return err(BadData, "unreasonable slide info 2 page count");
         }
+        println!("page_starts.len() = {}", page_starts.len());
         let delta_shift = slide_info.delta_mask.trailing_zeros();
         Ok(SlideInfoV2 {
             page_size: slide_info.page_size.ext(),
@@ -229,6 +230,7 @@ impl SlideInfoV2 {
                 errln!("SlideInfoV2::save_rebase_list: no data segment");
                 return rebase_list;
             });
+            assert!(data_seg.name.is_none()); // the eb has to be the whole dyldcache, not a member...
             let data_data: &[u8] = data_seg.data.as_ref().unwrap().get();
             let endian = eb.endian;
             let mut addr: VMA = data_seg.vmaddr;
@@ -236,6 +238,7 @@ impl SlideInfoV2 {
             // for each page...
             for ps in self.page_starts.get() {
                 let ps = ps.copy(endian);
+                println!("ps={:x}", ps);
                 let start: u16;
                 let rest_extras: &[Unswapped<u16>];
                 if ps == (DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE as u16) {
@@ -265,6 +268,7 @@ impl SlideInfoV2 {
                 loop {
                     // for each entry in the list...
                     loop {
+                        println!("offset={:x} offset_in_page={:x}", offset, offset_in_page);
                         if offset_in_page > page_size - pointer_size {
                             errln!("SlideInfoV2::save_rebase_list: offset-in-page past page size");
                             break;
@@ -274,7 +278,8 @@ impl SlideInfoV2 {
                             break;
                         });
                         let number = eb.ptr_from_slice(slice);
-                        let delta = (number & self.delta_mask) >> self.delta_shift;
+                        println!("number={:x} delta_shift={} delta_mask={:x}", number, self.delta_shift, self.delta_mask);
+                        let delta = 4 * ((number & self.delta_mask) >> self.delta_shift);
                         let value = number & !self.delta_mask;
                         if value != 0 {
                             rebase_list.push(addr + offset.ext());
@@ -282,11 +287,11 @@ impl SlideInfoV2 {
                         if delta == 0 {
                             break;
                         }
-                        if delta > (page_size - offset).ext() {
+                        if delta > (page_size - offset_in_page).ext() {
                             errln!("SlideInfoV2::save_rebase_list: offset-in-page out of range");
                             break;
                         }
-                        offset += page_size as usize;
+                        offset_in_page += delta as usize;
                     }
 
                     let next = some_or!(rest_extras.next(), { break });

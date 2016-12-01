@@ -575,7 +575,7 @@ impl MachODscExtraction for MachO {
         for segment in &self.eb.segments {
             let content = segment.data.as_ref().unwrap().get();
             let pointer_size = self.eb.pointer_size;
-            sli.iter(&self.eb, Some((segment.vmaddr, segment.vmsize)), |ptr| {
+            sli.iter(&dc.eb, Some((segment.vmaddr, segment.vmsize)), |ptr| {
                 let offset = (ptr - segment.vmaddr) as usize;
                 let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
                 if val == 0 { return; }
@@ -974,7 +974,7 @@ fn decode_stub(stub: &[u8], stub_addr: VMA, end: Endian, arch: Arch) -> Option<V
 
 pub fn extract_as_necessary(mo: &mut MachO, dc: Option<&DyldCache>, image_cache: Option<&ImageCache>, minimal_processing: bool) -> exec::ExecResult<()> {
     let _sw = stopwatch("extract_as_necessary");
-    if mo.hdr_offset != 0 && !minimal_processing {
+    if mo.text_fileoff() != 0 && !minimal_processing {
         let x: Option<DyldCache>;
         let dc = if let Some(dc) = dc { dc } else {
             let inner_sections = true; // xxx

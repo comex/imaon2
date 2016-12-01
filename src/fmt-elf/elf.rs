@@ -19,7 +19,7 @@ use vec_map::VecMap;
 use util::SmallVector;
 
 use exec::arch::Arch;
-use util::{Mem, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMath, Ext, Lazy, Narrow};
+use util::{Mem, SliceExt, ByteStr, ByteString, copy_memory, Swap, CheckMul, CheckAdd, CheckSub, Ext, Lazy, Narrow};
 use exec::{ExecResult, ErrorKind, Segment, VMA, Prot, Symbol, SymbolValue, SymbolSource, SourceLib, DepLib, read_cstr, ReadVMA};
 use elf_bind::*;
 

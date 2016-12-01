@@ -76,7 +76,7 @@ impl Drop for LLVMDisassembler {
 impl dis::Disassembler for LLVMDisassembler {
     fn arch(&self) -> &arch::ArchAndOptions { &self.arch }
     fn can_disassemble_to_str(&self) -> bool { true }
-    fn disassemble_insn_to_str(&self, input: dis::DisassemblerInput) -> Option<(Option<String>, u32)> {
+    fn disassemble_insn_to_str(&self, input: &dis::DisassemblerInput) -> Option<(Option<String>, u32)> {
         let mut tmp: [u8; 256] = unsafe { std::mem::uninitialized() };
         let res = unsafe { LLVMDisasmInstruction(self.dcr, input.data.as_ptr() as *mut u8, input.data.len() as u64, input.pc.0, &mut tmp[0] as *mut u8 as *mut c_char, 256) };
         if res == 0 {

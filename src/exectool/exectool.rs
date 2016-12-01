@@ -234,7 +234,7 @@ fn do_stuff(ex: &Box<exec::Exec>, m: &getopts::Matches) {
         let dis = dis::create(dis_all::ALL_FAMILIES, arch_opts, &dis_opts).unwrap();
         let dump_data = get_dump_from_spec(ex, dump_spec).unwrap();
         let base_pc = VMA(0);
-        let results = dis.disassemble_multiple_to_str(dis::DisassemblerInput {
+        let results = dis.disassemble_multiple_to_str(&dis::DisassemblerInput {
             data: &dump_data[..],
             pc: base_pc,
             mode: CodeMode::new(&arch_opts, &[]).unwrap(), // XXX
@@ -313,7 +313,7 @@ fn main() {
     }
     args.remove(0);
     let filename = args.remove(0);
-    let mut fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
+    let fp = fs::File::open(&Path::new(&filename)).unwrap_or_else(|e| {
         errln!("open {} failed: {}", filename, e);
         util::exit();
     });
