@@ -169,7 +169,7 @@ pub trait Cast<Other>: Sized {
     fn cast_to_u8(self) -> Other where Self::OtherBase: Is<T=u8> {
         unsafe { self.raw_cast() }
     }
-    fn cast(self) -> (Other, usize /*slack*/ ) where Self::OtherBase: Swap {
+    fn cast<U>(self) -> (Other, usize /*slack*/) where U: Swap, Self::OtherBase: Is<T=Unswapped<U>> {
         let len = self._len();
         (unsafe { self.raw_cast() },
          len * size_of::<Self::SelfBase>() % size_of::<Self::OtherBase>())

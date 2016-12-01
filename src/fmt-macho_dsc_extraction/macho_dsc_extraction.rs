@@ -575,7 +575,7 @@ impl MachODscExtraction for MachO {
         for segment in &self.eb.segments {
             let content = segment.data.as_ref().unwrap().get();
             let pointer_size = self.eb.pointer_size;
-            sli.iter(Some((segment.vmaddr, segment.vmsize)), self.eb.whole_buf.as_ref().unwrap().get(), |ptr| {
+            sli.iter(&self.eb, Some((segment.vmaddr, segment.vmsize)), |ptr| {
                 let offset = (ptr - segment.vmaddr) as usize;
                 let mut val: u64 = self.eb.ptr_from_slice(&content[offset..offset+pointer_size]);
                 if val == 0 { return; }

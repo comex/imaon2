@@ -1,19 +1,18 @@
 extern crate util;
 extern crate exec;
 use macho_bind;
-use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast};
+use util::{Mem, ByteString, Ext, SliceExt, ByteStr, Narrow, Lazy, Fnv, CheckMul, Cast, Unswapped, CheckAdd};
 use exec::ErrorKind::BadData;
 use exec::arch;
-use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind, intersect_start_size};
+use exec::{Reloc, RelocKind, RelocTarget, ExecResult, err, ExecBase, VMA, Exec, ExecProber, ProbeResult, Segment, ErrorKind};
 use std::mem::{size_of};
 use std::cmp::{min, Ordering};
 use std::ops::Range;
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::Entry;
 use std::any::Any;
-use std::cmp::max;
 use std;
-pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info, dyld_cache_slide_info2};
+pub use macho_bind::{dyld_cache_header, dyld_cache_mapping_info, dyld_cache_image_info, dyld_cache_local_symbols_info, dyld_cache_local_symbols_entry, dyld_cache_slide_info, dyld_cache_slide_info2, DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE, DYLD_CACHE_SLIDE_PAGE_ATTR_EXTRA, DYLD_CACHE_SLIDE_PAGE_ATTR_END};
 use ::{MachO, GuessBrokenCacheSlideResult, MachODCInfo};
 
 pub struct ImageInfo {
@@ -58,13 +57,12 @@ pub struct SlideInfoV1 {
 }
 pub struct SlideInfoV2 {
     pub page_size: u64,
-    pub page_starts: Mem<u16>,
-    pub page_extras: Mem<u16>,
+    pub page_starts: Mem<Unswapped<u16>>,
+    pub page_extras: Mem<Unswapped<u16>>,
     pub delta_mask: u64,
     pub delta_shift: u32,
     pub value_add: u64,
-    data_addr: VMA,
-    endian: util::Endian,
+    rebase_list: Lazy<Vec<VMA>>,
 }
 pub enum SlideInfo {
     V1(SlideInfoV1),
@@ -82,14 +80,26 @@ impl SlideInfo {
         };
         match slide_info_version {
             1 => Ok(SlideInfo::V1(try!(SlideInfoV1::new(blob, end, data_addr, data_size)))),
-            2 => Ok(SlideInfo::V2(try!(SlideInfoV2::new(blob, end, is64, data_addr)))),
+            2 => Ok(SlideInfo::V2(try!(SlideInfoV2::new(blob, end, is64)))),
             _ => err(BadData, format!("unknown dyld slide info version {}", slide_info_version)),
         }
     }
-    pub fn iter<F>(&self, range: Option<(VMA, u64)>, whole_buf: &[u8], func: F) where F: FnMut(VMA) {
+    pub fn iter<F>(&self, eb: &ExecBase, range: Option<(VMA, u64)>, mut func: F) where F: FnMut(VMA) {
         match self {
             &SlideInfo::V1(ref v1) => v1.iter(range, func),
-            &SlideInfo::V2(ref v2) => v2.iter(range, whole_buf, func),
+            &SlideInfo::V2(ref v2) => {
+                let mut list = v2.save_rebase_list(eb);
+                if let Some((start_addr, size)) = range {
+                    let start_idx = list.binary_search(&start_addr).unwrap_or_else(|idx| idx);
+                    let end_idx = if let Some(end_addr) = start_addr.check_add(size) {
+                        list.binary_search(&end_addr).unwrap_or_else(|idx| idx)
+                    } else {
+                        list.len()
+                    };
+                    list = &list[start_idx..end_idx];
+                }
+                for &addr in list { func(addr); }
+            },
         }
     }
 }
@@ -169,7 +179,7 @@ impl SlideInfoV1 {
 }
 
 impl SlideInfoV2 {
-    pub fn new(blob: Mem<u8>, end: util::Endian, is64: bool, data_addr: VMA) -> ExecResult<Self> {
+    pub fn new(blob: Mem<u8>, end: util::Endian, is64: bool) -> ExecResult<Self> {
         let size = size_of::<dyld_cache_slide_info2>();
         if blob.len() < size {
             return err(BadData, "slide info blob too small for header");
@@ -206,27 +216,88 @@ impl SlideInfoV2 {
             delta_mask: slide_info.delta_mask,
             delta_shift: delta_shift,
             value_add: slide_info.value_add,
-            data_addr: data_addr,
-            endian: end,
+            rebase_list: Lazy::new(),
         })
     }
-    pub fn iter<F>(&self, range: Option<(VMA, u64)>, whole_buf: &[u8], mut func: F) where F: FnMut(VMA) {
-        unimplemented!()
-        /*
-        let page_starts = self.page_starts.get()
-        let page_size = self.page_size;
-        let end = self.endian;
-        let mut real_range = (self.data_addr, self.page_starts.len() * page_size);
-        if let Some(x) = range { real_range = intersect_start_size(real_range, x); }
-        let mut addr = real_range.0 & !page_size;
-        let mut end = real_range.0.wrapping_add(real_range.1).wrapping_align_to(page_size);
-        let mut ps_off = 0;
-        while addr != end {
-            let util::copy_from_slice(&page_starts[ps_off..ps_off+2], end);
-            ps_off += 2;
-            addr = addr.wrapping_add(page_size);
-        }
-        */
+    pub fn save_rebase_list(&self, eb: &ExecBase) -> &[VMA] {
+        self.rebase_list.get(|| {
+            let mut rebase_list: Vec<VMA> = Vec::new();
+            let page_extras = self.page_extras.get();
+            let page_size = self.page_size as usize;
+            let pointer_size = eb.pointer_size;
+            let data_seg = some_or!(eb.segments.get(1), {
+                errln!("SlideInfoV2::save_rebase_list: no data segment");
+                return rebase_list;
+            });
+            let data_data: &[u8] = data_seg.data.as_ref().unwrap().get();
+            let endian = eb.endian;
+            let mut addr: VMA = data_seg.vmaddr;
+            let mut offset: usize = 0;
+            // for each page...
+            for ps in self.page_starts.get() {
+                let ps = ps.copy(endian);
+                let start: u16;
+                let rest_extras: &[Unswapped<u16>];
+                if ps == (DYLD_CACHE_SLIDE_PAGE_ATTR_NO_REBASE as u16) {
+                    continue;
+                } else if ps & (DYLD_CACHE_SLIDE_PAGE_ATTR_EXTRA as u16) == 0 {
+                    start = ps * 4;
+                    rest_extras = &[];
+                } else {
+                    let extras_start_idx = (ps & 0x3fff) as usize;
+                    let mut extras_idx = extras_start_idx;
+                    loop {
+                        let pe = some_or!(page_extras.get(extras_idx), {
+                            errln!("SlideInfoV2::save_rebase_list: page_extras index out of range");
+                            break;
+                        });
+                        let pe = pe.copy(endian);
+                        if pe & (DYLD_CACHE_SLIDE_PAGE_ATTR_END as u16) != 0 { break; }
+                        extras_idx += 1;
+                    }
+                    if extras_start_idx == extras_idx { continue; }
+                    start = page_extras[extras_start_idx].copy(endian);
+                    rest_extras = &page_extras[extras_start_idx+1..extras_idx];
+                }
+                let mut rest_extras = rest_extras.into_iter();
+                let mut offset_in_page = start as usize;
+                // for each linked list...
+                loop {
+                    // for each entry in the list...
+                    loop {
+                        if offset_in_page > page_size - pointer_size {
+                            errln!("SlideInfoV2::save_rebase_list: offset-in-page past page size");
+                            break;
+                        }
+                        let slice = some_or!(data_data.slice_opt(offset + offset_in_page, offset + offset_in_page + pointer_size), {
+                            errln!("SlideInfoV2::save_rebase_list: out of range of data segment");
+                            break;
+                        });
+                        let number = eb.ptr_from_slice(slice);
+                        let delta = (number & self.delta_mask) >> self.delta_shift;
+                        let value = number & !self.delta_mask;
+                        if value != 0 {
+                            rebase_list.push(addr + offset.ext());
+                        }
+                        if delta == 0 {
+                            break;
+                        }
+                        if delta > (page_size - offset).ext() {
+                            errln!("SlideInfoV2::save_rebase_list: offset-in-page out of range");
+                            break;
+                        }
+                        offset += page_size as usize;
+                    }
+
+                    let next = some_or!(rest_extras.next(), { break });
+                    offset_in_page = (next.copy(endian) & !(DYLD_CACHE_SLIDE_PAGE_ATTR_END as u16)).ext();
+                }
+
+                addr = addr.wrapping_add(page_size as u64);
+                offset += page_size;
+            }
+            rebase_list
+        })
     }
 }
 
@@ -238,6 +309,11 @@ impl RangeCast for Range<u32> {
 }
 impl RangeCast for Range<u64> {
     fn range_cast(self) -> Range<usize> { (self.start as usize..self.end as usize) }
+}
+
+pub enum SlideMode {
+    SlidToPristine,
+    PristineToSlid,
 }
 
 impl DyldCache {
@@ -441,7 +517,7 @@ impl DyldCache {
             let slide = match self.load_single_image(ii) {
                 Ok(mo) => mo.guess_broken_cache_slide(self),
                 Err(e) => {
-                    errln!("auto_unslide: couldn't load libsystem_c.dylib: {}", e);
+                    errln!("auto_unslide: couldn't load libsystem_malloc.dylib: {}", e);
                     return
                 }
             };
@@ -467,43 +543,81 @@ impl DyldCache {
                 return
             });
             errln!("auto_unslide: will unslide your broken preslid shared cache (thanks xnu)");
-            if let Err(e) = self.slide_by(slide, /*backwards*/ true) {
+            if let Err(e) = self.unslide_v1(slide) {
                 errln!("auto_unslide: ...but failed: {}", e);
             }
         }
     }
-    // this could be done generically but what's needed for this is very simple...
-    #[inline(never)]
-    pub fn slide_by(&mut self, amount: u32, backwards: bool) -> ExecResult<()> {
-        let sli = match self.slide_info {
-            Some(SlideInfo::V1(ref v1)) => v1,
-            _ => panic!("tried to slide a cache without v1 slide info"),
-        };
-        let end = self.eb.endian;
-        let check_overflow = self.eb.pointer_size > 4;
-        let mut overflow = false;
-        let amount = if backwards { 0u32.wrapping_sub(amount) } else { amount };
-        let mut whole = self.eb.whole_buf.take().unwrap().into_vec();
-        for segment in &self.eb.segments {
-            sli.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
-                let off = (ptr - segment.vmaddr + segment.fileoff) as usize;
-                let slice = &mut whole[off..off+4];
-                let old: u32 = util::copy_from_slice(slice, end);
-                let new = old.wrapping_add(amount);
-                overflow = overflow || if backwards { new > old } else { new < old };
-                util::copy_to_slice(slice, &new, end);
-            });
+    pub fn fix_data_v2(&mut self) -> ExecResult<()> {
+        if self.eb.endian != util::LittleEndian {
+            return err(ErrorKind::Other, "fix_data_v2: not little endian");
         }
+        if self.eb.segments.len() < 2 { return Ok(()); } // no data?
+        let v2 = match self.slide_info {
+            Some(SlideInfo::V2(ref mut v2)) => v2,
+            _ => panic!("fix_data_v2: not v2"),
+        };
+        let rebases = v2.save_rebase_list(&self.eb);
+        branch! { if (self.eb.pointer_size == 8) {
+            type Ptr = u64;
+        } else {
+            type Ptr = u32;
+        } then {
+            let value_mask = v2.delta_mask as Ptr;
+            let value_add = v2.value_add as Ptr;
+            Self::transform_whole(&mut self.eb, &mut |eb: &mut ExecBase, mut whole: Vec<u8>| {
+                let data = &eb.segments[1];
+                for &addr in rebases {
+                    let off = (addr - data.vmaddr + data.fileoff) as usize;
+                    let slice = &mut whole[off..off+size_of::<Ptr>()];
+                    let old: Ptr = util::copy_from_slice(slice, util::LittleEndian);
+                    let new = (old & value_mask).wrapping_add(value_add);
+                    util::copy_to_slice(slice, &new, util::LittleEndian);
+                }
+                Ok(whole)
+            })
+        } }
+    }
+
+    pub fn unslide_v1(&mut self, slide: u32) -> ExecResult<()> {
+        let v1 = match self.slide_info {
+            Some(SlideInfo::V1(ref v1)) => v1,
+            _ => panic!("unslide_v1: not v1"),
+        };
+        if self.eb.endian != util::LittleEndian {
+            return err(ErrorKind::Other, "unslide_v1: not little endian");
+        }
+        let mut overflow = false;
+        try!(Self::transform_whole(&mut self.eb, &mut |eb, mut whole| {
+            for segment in &eb.segments {
+                v1.iter(Some((segment.vmaddr, segment.vmsize)), |ptr| {
+                    let off = (ptr - segment.vmaddr + segment.fileoff) as usize;
+                    let slice = &mut whole[off..off+4];
+                    let old: u32 = util::copy_from_slice(slice, util::LittleEndian);
+                    let new = old.wrapping_sub(slide);
+                    overflow = overflow || new > old;
+                    util::copy_to_slice(slice, &new, util::LittleEndian);
+                });
+            }
+            Ok(whole)
+        }));
+        let check_overflow = self.eb.pointer_size > 4;
         if check_overflow && overflow {
             return err(ErrorKind::Other, "slide_by: slide failed due to overflow");
         }
+        Ok(())
+    }
+
+    fn transform_whole(eb: &mut ExecBase, func: &mut FnMut(&mut ExecBase, Vec<u8>) -> ExecResult<Vec<u8>>) -> ExecResult<()> {
+        let whole = eb.whole_buf.take().unwrap().into_vec();
+        let whole = try!(func(eb, whole));
         let mc = Mem::<u8>::with_vec(whole);
-        for segment in &mut self.eb.segments {
+        for segment in &mut eb.segments {
             segment.data = Some(mc.slice(segment.fileoff as usize,
                                          (segment.fileoff as usize) + (segment.filesize as usize))
                                 .unwrap());
         }
-        self.eb.whole_buf = Some(mc);
+        eb.whole_buf = Some(mc);
         Ok(())
     }
 
@@ -543,12 +657,17 @@ impl Exec for DyldCache {
     fn get_reloc_list<'a>(&'a self, specific: Option<&'a Any>) -> Vec<Reloc<'a>> {
         assert!(specific.is_none());
         match self.slide_info {
-            Some(ref sli) => {
+            Some(SlideInfo::V1(ref v1)) => {
                 let mut ret = Vec::new();
-                sli.iter(None, self.eb.whole_buf.as_ref().unwrap().get(), |addr| {
+                v1.iter(None, |addr| {
                     ret.push(Reloc { address: addr, kind: RelocKind::_32Bit, base: None, target: RelocTarget::ThisImageSlide });
                 });
                 ret
+            },
+            Some(SlideInfo::V2(ref v2)) => {
+                v2.save_rebase_list(&self.eb).iter().map(|&addr| {
+                    Reloc { address: addr, kind: RelocKind::Pointer, base: None, target: RelocTarget::ThisImageSlide }
+                }).collect()
             },
             None => Vec::new(),
         }
