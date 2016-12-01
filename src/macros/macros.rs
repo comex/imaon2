@@ -17,6 +17,7 @@ macro_rules! branch {
 macro_rules! delegate_arith{($stru:ident, $traitname:ident, $methname:ident, $oty:ty) => (
     impl std::ops::$traitname<$oty> for $stru {
         type Output = $stru;
+        #[inline(always)]
         fn $methname(self, rhs: $oty) -> $stru {
             let $stru(a) = self;
             $stru(a.$methname(rhs))
@@ -24,6 +25,7 @@ macro_rules! delegate_arith{($stru:ident, $traitname:ident, $methname:ident, $ot
     }
     impl std::ops::$traitname<$stru> for $oty {
         type Output = $stru;
+        #[inline(always)]
         fn $methname(self, $stru(rhs): $stru) -> $stru {
             $stru(self.$methname(rhs))
         }

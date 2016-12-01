@@ -405,14 +405,17 @@ pub trait Narrow<Smaller> {
 
 macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
     impl Ext<$la> for $sm {
+        #[inline(always)]
         fn ext(self) -> $la {
             self as $la
         }
     }
     impl Narrow<$sm> for $la {
+        #[inline(always)]
         fn trunc(self) -> $sm {
             self as $sm
         }
+        #[inline(always)]
         fn narrow(self) -> Option<$sm> {
             let res = self as $sm;
             if res as $la == self { Some(res) } else { None }
