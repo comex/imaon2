@@ -27,7 +27,7 @@ extern crate num_cpus;
 
 fn extract_one(dc: &DyldCache, ii: &ImageInfo, outpath: &Path, image_cache: Option<&ImageCache>,
                minimal_processing: bool) {
-    let mut macho = match dc.load_single_image(ii) {
+    let mut macho = match dc.load_single_image(ii, /*fix_data*/ true) {
         Ok(m) => m,
         Err(e) => { errln!("for '{}', parse Mach-O fail: {}", ii.path, e); return },
     };
@@ -103,15 +103,10 @@ fn main() {
     });
 
     let dc_buf = util::memmap(&fp).unwrap();
-    let mut dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
+    let dc = DyldCache::new(dc_buf, false, true).unwrap_or_else(|e| {
         errln!("parse dyld cache format fail: {}", e);
         util::exit();
     });
-    // TODO should this be parallelized?
-    if let Err(e) = dc.fix_data_v2() {
-        errln!("fix_data_v2 -> {}", e);
-        util::exit();
-    }
     let image_cache = Arc::new(if dc.eb.arch == arch::AArch64 {
         Some(ImageCache::new(&dc))
     } else { None });

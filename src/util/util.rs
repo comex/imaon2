@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::default::Default;
 use std::num::ParseIntError;
+use std::cmp;
 use std::cmp::max;
 use std::slice;
 use std::fmt::{Debug, Display, Formatter};
@@ -332,7 +333,7 @@ macro_rules! impl_int {($ty:ident) => {
         fn from_str_radix(src: &str, radix: u32) -> Result<$ty, ParseIntError> {
             $ty::from_str_radix(src, radix)
         }
-        fn align_to(self, size: $ty) -> $ty {
+        fn align_up_to(self, size: $ty) -> $ty {
             let mask = size - 1;
             (self + mask) & !mask
         }
@@ -967,7 +968,7 @@ pub trait IntStuffSU : Sized {
 
 pub trait IntStuff : IntStuffSU {
     fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError>;
-    fn align_to(self, size: Self) -> Self;
+    fn align_up_to(self, size: Self) -> Self;
 }
 
 pub trait SignExtend : Sized {
@@ -1102,21 +1103,23 @@ impl<T> LazyBox<T> {
         unsafe { transmute(self.val.load(Ordering::Acquire)) }
     }
     pub fn store(&self, val: Box<T>) -> Option<Box<T>> {
-        let val = val.into_raw();
+        let val = Box::into_raw(val);
         let ret = self.val.compare_and_swap(0 as *mut T,
                                             val,
                                             Ordering::Release);
         if ret.is_null() {
             None
         } else {
-            Some(Box::from_raw(val))
+            unsafe { Some(Box::from_raw(val)) }
         }
     }
 }
 impl<T> Drop for LazyBox<T> {
-    let ptr = self.val.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        let _ = Box::from_raw(ptr);
+    fn drop(&mut self) {
+        let ptr = self.val.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            unsafe { let _ = Box::from_raw(ptr); }
+        }
     }
 }
 
@@ -1232,4 +1235,21 @@ pub fn vec_extend_from_slice<T: Copy, S: ?Sized + ROSlicePtr<T>>(this: &mut Vec<
         this.set_len(sl + ol);
         copy(other.as_ptr(), this.as_mut_ptr().offset(sl as isize), ol);
     }
+}
+
+pub fn subset_sorted_list<T, F, G>(list: &[T], mut ge_start: F, mut le_end: G) -> &[T]
+    where F: FnMut(&T) -> bool, G: FnMut(&T) -> bool {
+    // fast case
+    if list.len() == 0 ||
+       (ge_start(&list[0]) && le_end(&list[list.len() - 1])) {
+       return list;
+    }
+    let start = list.binary_search_by(|p| {
+        if ge_start(p) { cmp::Ordering::Greater } else { cmp::Ordering::Less }
+    }).unwrap_err();
+    let list = &list[start..];
+    let end = list.binary_search_by(|p| {
+        if le_end(p) { cmp::Ordering::Less } else { cmp::Ordering::Greater }
+    }).unwrap_err();
+    &list[..end]
 }

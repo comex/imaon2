@@ -9,10 +9,9 @@ use arch::Arch;
 use std::borrow::Cow;
 use std::vec::Vec;
 use std::fmt;
-use std::mem::replace;
-use std::mem::transmute;
+use std::mem::{replace, transmute, swap};
 use std::str::FromStr;
-use std::cmp::{min, max};
+use std::cmp::min;
 use std::any::Any;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
@@ -648,11 +647,15 @@ impl Drop for SegmentWriter {
     }
 }
 
-pub fn intersect_start_size(a: (VMA, u64), b: (VMA, u64)) -> (VMA, u64) {
-    let start = max(a.0, b.0);
-    let size = min(a.0.wrapping_add(a.1).wrapping_sub(start),
-                   b.0.wrapping_add(b.1).wrapping_sub(start));
-    (start, size)
+pub fn intersect_start_size(mut a: (VMA, u64), mut b: (VMA, u64)) -> (VMA, u64) {
+    if a.0 > b.0 {
+        swap(&mut a, &mut b);
+    }
+    if let Some(diff) = b.0.check_sub(a.0) {
+        a.1 = a.1.saturating_sub(diff);
+        //a.0 = b.0;
+    }
+    (b.0, min(a.1, b.1))
 }
 /*
 pub fn align_start_size(a: (VMA, u64), align: u64) -> (VMA, u64) {
