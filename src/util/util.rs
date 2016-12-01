@@ -10,7 +10,7 @@ use std::mem::{size_of, uninitialized, transmute, replace, forget};
 use std::ptr;
 use std::ptr::copy;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::default::Default;
 use std::num::ParseIntError;
 use std::cmp::max;
@@ -1106,41 +1106,40 @@ pub fn new_fnv_hashset<T: Eq + Hash>() -> HashSet<T, Fnv> {
     HashSet::with_hasher(Fnv::default())
 }
 
-#[cfg(stopwatch)]
 thread_local!(static STOPWATCH_INDENT: Cell<usize> = Cell::new(0));
-#[cfg(stopwatch)]
+static mut ENABLE_STOPWATCH: bool = true;
 use std::time::Instant;
 
-#[cfg(not(stopwatch))]
-pub struct Stopwatch<'a>(PhantomData<&'a str>);
-#[cfg(stopwatch)]
 pub struct Stopwatch<'a> {
     desc: &'a str,
-    start_time: Instant,
+    start_time: Option<Instant>,
     indent: usize,
 }
-#[cfg(stopwatch)]
+
 pub fn stopwatch(desc: &str) -> Stopwatch {
-    let indent = STOPWATCH_INDENT.with(|cell| {
-        let indent = cell.get();
-        cell.set(indent + 4);
-        indent
-    });
-    Stopwatch { desc: desc, start_time: Instant::now(), indent: indent }
+    if unsafe { ENABLE_STOPWATCH } {
+        let indent = STOPWATCH_INDENT.with(|cell| {
+            let indent = cell.get();
+            cell.set(indent + 4);
+            indent
+        });
+        Stopwatch { desc: desc, start_time: Some(Instant::now()), indent: indent }
+    } else {
+        Stopwatch { desc: desc, start_time: None, indent: 0 }
+    }
 }
-#[cfg(not(stopwatch))]
-pub fn stopwatch(_desc: &str) -> Stopwatch { Stopwatch(PhantomData) }
 
 impl<'a> Stopwatch<'a> {
     pub fn stop(self) {}
 }
-#[cfg(stopwatch)]
 impl<'a> Drop for Stopwatch<'a> {
     fn drop(&mut self) {
-        let duration = Instant::now() - self.start_time;
-        println!("{blank:spaces$}{desc}: {duration:?}", blank="", spaces=self.indent,
-                 desc=self.desc, duration=duration);
-        STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
+        if unsafe { ENABLE_STOPWATCH } {
+            let duration = Instant::now() - self.start_time.unwrap();
+            println!("{blank:spaces$}{desc}: {duration:?}", blank="", spaces=self.indent,
+                     desc=self.desc, duration=duration);
+            STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
+        }
     }
 }
 
