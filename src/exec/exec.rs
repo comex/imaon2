@@ -480,6 +480,27 @@ pub fn read_leb128_inner_noisy<It: Iterator<Item=u8>>(it: &mut It, signed: bool,
     }
 }
 
+pub struct UlebWriter<'a> {
+    pub out: &'a mut Vec<u8>
+}
+
+impl<'a> UlebWriter<'a> {
+    pub fn new(out: &'a mut Vec<u8>) -> Self { UlebWriter { out: out } }
+    #[inline]
+    pub fn write_u8(&mut self, byte: u8) {
+        self.out.push(byte);
+    }
+    pub fn write_uleb(&mut self, mut val: u64) {
+        loop {
+            let cont = val >= 0x80;
+            self.write_u8((val & 0x7f) as u8 | if cont { 0x80 } else { 0 });
+            if !cont { break; }
+            val >>= 7;
+        }
+    }
+    // add sleb if necessary
+}
+
 pub struct ByteSliceIterator<'a, 'b: 'a>(pub &'a mut &'b [ReadCell<u8>]);
 impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
     type Item = u8;

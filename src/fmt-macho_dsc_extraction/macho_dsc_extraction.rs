@@ -11,7 +11,7 @@ use std::vec::Vec;
 use std::mem::{replace, size_of, transmute};
 use util::{Mem, SliceExt, OptionExt, Endian, LittleEndian, Lazy, Fnv};
 use macho_bind::*;
-use exec::{arch, VMA, SymbolValue, SourceLib, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol};
+use exec::{arch, VMA, SymbolValue, SourceLib, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol, UlebWriter};
 use exec::arch::Arch;
 use std::collections::{HashSet, HashMap};
 use std::cell::Cell;
@@ -50,6 +50,7 @@ trait MachODscExtraction {
     fn stub_name_list(&self) -> Vec<(&ByteStr, VMA)>;
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache);
     fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv>;
+    fn reconstruct_rebase(&self, dc: &DyldCache) -> Vec<u8>;
 }
 impl MachODscExtraction for MachO {
     fn update_indirectsym(&mut self, sym_name_to_idx: &HashMap<ByteString, (usize, u8), Fnv>) {
@@ -875,6 +876,44 @@ impl MachODscExtraction for MachO {
         res
     }
 
+    fn reconstruct_rebase(&self, dc: &DyldCache) -> Vec<u8> {
+        let mut output: Vec<u8> = Vec::new();
+        // not optimally compressed but whatever
+        if let Some(ref slide_info) = dc.slide_info {
+            let mut w = UlebWriter::new(&mut output);
+            let mut cur_seg_idx: Option<u8> = None;
+            let mut cur_offset: u64 = 0; // dontcare initializer
+            for (seg_idx, segment) in self.eb.segments.iter().enumerate() {
+                if seg_idx > 15 {
+                    errln!("reconstruct_rebase: seg_idx > 15? o.0 format doesn't support...");
+                    break;
+                }
+                let seg_idx = seg_idx as u8;
+                slide_info.iter(&dc.eb, Some((segment.vmaddr, segment.vmsize)), &mut |vma| {
+                    let offset = vma - segment.vmaddr;
+                    if cur_seg_idx != Some(seg_idx) {
+                        if cur_seg_idx.is_some() {
+                            w.write_u8(REBASE_OPCODE_DO_REBASE_IMM_TIMES as u8 | 1);
+                        } else {
+                            w.write_u8(REBASE_OPCODE_SET_TYPE_IMM as u8 | 1);
+                        }
+                        w.write_u8(REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB as u8 | seg_idx);
+                        w.write_uleb(offset);
+                        cur_seg_idx = Some(seg_idx);
+                    } else {
+                        // this is actually the /previous/ rebase
+                        w.write_u8(REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB as u8);
+                        w.write_uleb(offset - cur_offset);
+                    }
+                    cur_offset = offset;
+                });
+            }
+            if cur_seg_idx.is_some() {
+                w.write_u8(REBASE_OPCODE_DO_REBASE_IMM_TIMES as u8 | 1);
+            }
+        }
+        output
+    }
 }
 
 fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<(VMA, &'a SegMapEntry)> {
@@ -984,6 +1023,7 @@ pub fn extract_as_necessary(mo: &mut MachO, dc: Option<&DyldCache>, image_cache:
             x.as_ref().unwrap()
         };
         // we're in a cache...
+        mo.dyld_rebase = Mem::with_vec(mo.reconstruct_rebase(dc));
         let res = mo.reaggregate_nlist_syms_from_cache();
         mo.localsym = Mem::<u8>::with_data(&res.localsym[..]);
         mo.extdefsym = Mem::<u8>::with_data(&res.extdefsym[..]);
