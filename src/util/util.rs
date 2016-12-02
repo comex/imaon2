@@ -1045,8 +1045,8 @@ unsafe fn strnlen(s: *const u8, maxlen: usize) -> usize {
     res
 }
 #[inline]
-pub fn copy_memory<'a, T, Src, Dst>(src: &Src, dst: Dst)
-    where T: Copy, Src: ?Sized + ROSlicePtr<T>, Dst: RWSlicePtr<'a, T> {
+pub fn copy_memory<'a, T, Src: ?Sized, Dst>(src: &Src, dst: Dst)
+    where T: Copy, Src: ROSlicePtr<T>, Dst: RWSlicePtr<'a, T> {
     let len = dst.len();
     assert_eq!(len, src.len());
     unsafe { memmove(dst.as_mut_ptr() as *mut u8,
