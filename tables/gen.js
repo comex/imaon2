@@ -433,22 +433,34 @@ function uniqueTableNodes(node) {
     let byId = [];
     function rec(node) {
         let minNode = {isBinary: node.isBinary,
-                       insn: node.insn !== undefined ? node.insn.name : null,
+                       insn: node.insn !== undefined ? (node.insn.groupAndBitsName || node.insn.name) : null,
                        buckets: node.buckets !== undefined ?
                         node.buckets.map(rec)
-                        : null
+                        : undefined,
+                       start: node.start,
                       };
+        if(minNode.buckets !== undefined) {
+            let first = minNode.buckets[0];
+            if(minNode.buckets.every(b => b === first))
+                return first;
+        }
         let cacheKey = JSON.stringify(minNode);
-        let node2;
-        if(node2 = cache[cacheKey])
-            return node2.id;
+        let node2id;
+        if(node2id = cache[cacheKey])
+            return node2id;
         node.id = byId.length;
+        cache[cacheKey] = node.id;
         byId.push(node);
         if(minNode.buckets)
             node.buckets = minNode.buckets.map(idx => byId[idx]);
         return node.id;
     }
     rec(node);
+    /*
+    console.log('@');
+    for(let cacheKey in cache)
+        console.log(cache[cacheKey], cacheKey);
+    */
 }
 
 function addConflictGroups(insns) {
@@ -530,22 +542,26 @@ function printHeads(insns) {
 function ppTable(node, indent, depth) {
     indent = (indent || '') + '  ';
     depth = (depth || 0) + 1;
+    let s;
     if(node.fail)
-        return 'fail';
-    if(node.insn)
-        return '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name;
-    let s = '{' + depth + '} ';
-    if(!node.isBinary) {
-        s += 'test ' + node.start + '..' + (node.start + node.length - 1);
-    } else {
-        s += 'test for first insn';
+        s = 'fail';
+    else if(node.insn)
+        s = '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name + ' >>' + JSON.stringify(node.insn.inst);
+    else {
+        s = '{' + depth + '} ';
+        if(!node.isBinary) {
+            s += 'test ' + node.start + '..' + (node.start + node.length - 1);
+        } else {
+            s += 'test for first insn';
+        }
+        s += ' (' + node.possibilities.length + ' total insns - ';
+        s += node.possibilities.map(i => i.name);
+        s += '):\n';
+        for(let i = 0; i < node.buckets.length; i++) {
+            s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
+        }
     }
-    s += ' (' + node.possibilities.length + ' total insns - ';
-    s += node.possibilities.map(i => i.name);
-    s += '):\n';
-    for(let i = 0; i < node.buckets.length; i++) {
-        s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
-    }
+    s = `[${node.id}] ${s}`;
     return s;
 }
 
@@ -703,7 +719,10 @@ function gotoOrGen(data, label, comment, gen) {
             ];
         } else {
             data.seen[label] = 1;
-            return [lang.label(label)].concat(gen());
+            return [
+                lang.comment(comment, /*hangingOnFollowing*/ true),
+                lang.label(label)
+            ].concat(gen());
         }
     }
 }
@@ -861,7 +880,7 @@ class CLang extends SuperLang {
             let lastHangingComment = hangingComment;
             hangingComment = null;
             stmt = this.stmt(stmt);
-            if(stmt.label !== undefined && !neededLabels[stmt.label])
+            if(stmt.label !== undefined && !neededLabels[stmt.label] && false)
                 continue;
             let linesLength = lines.length;
             if(stmt.hangingBlockChain) {
@@ -1169,8 +1188,7 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
     let patternifyForCall = lang.isRust ? (n => 'h.'+patternifyForDef(n)) : patternifyForDef;
 
     let opts = {};
-    opts.makeCall = (nobitsName, runsByOp) => {
-        let funcName = patternifyForCall(nobitsName);
+    opts.makeCall = (funcName, runsByOp) => {
         let out = [];
         let args = extraArgs ? [extraArgs] : [];
         for(let op in runsByOp) {
@@ -1180,15 +1198,15 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
                 out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runsByOp[op], 'op')));
             args.push(op);
         }
-        out.push(lang.return(lang.call(patternifyForCall(nobitsName), args)));
+        out.push(lang.return(lang.call(patternifyForCall(funcName), args)));
 
         // be helpful
         let prototype;
         if(lang.isRust)
-            prototype = '    fn ' + patternifyForDef(nobitsName) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
+            prototype = '    fn ' + patternifyForDef(funcName) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
 
         else
-            prototype = 'static INLINE tdis_ret ' + patternifyForDef(nobitsName) + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
+            prototype = 'static INLINE tdis_ret ' + patternifyForDef(funcName) + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
         prototypes[prototype] = null;
 
         return out;
@@ -1260,14 +1278,14 @@ function checkTableMissingInsns(node, insns) {
     let used = {};
     function collect(node) {
         if(node.insn)
-            used[node.insn.name] = 1;
+            used[node.insn.groupAndBitsName] = 1;
         else if(node.buckets)
             node.buckets.map(collect);
     }
     collect(node);
     for(let insn of insns) {
-        if(!used[insn.name]) {
-            console.log('** Table never decodes ' + insn.name);
+        if(!used[insn.groupAndBitsName]) {
+            console.log('** Table never decodes ' + insn.groupAndBitsName);
         }
     }
 }
@@ -1632,6 +1650,7 @@ function genHookishDisassembler(submode, outfile) {
             }
         }
 
+        let forceAllInteresting = false;
         // special insns that need to be recognized even if they don't have interesting ops
         {
             let fakeVarName = null;
@@ -1641,15 +1660,16 @@ function genHookishDisassembler(submode, outfile) {
                     fakeVarName = 'xTB';
                 break;
             case 'AArch64':
-                if(submode == 'jump' && insn.isBranchy && !insn.isCall)
-                    fakeVarName = insn.name.match(/^Bcc|TB/) ? 'condbranchy' : 'branchy';
+                if(submode == 'jump') {
+                    if(insn.isBranchy && !insn.isCall)
+                        fakeVarName = insn.name.match(/^Bcc|TB/) ? 'condbranchy' : 'branchy';
+                }
             }
             if(fakeVarName !== null)
                 varInfo[fakeVarName] = {out: false, type: 'fake', size: 0};
         }
 
 
-        let anyWritesGPR = false;
         let anyInteresting = false;
         for(let varr in varInfo) {
             let info = varInfo[varr];
@@ -1658,7 +1678,6 @@ function genHookishDisassembler(submode, outfile) {
                 writesGPR: false,
                 mayReadPC: false,
                 mayWritePC: false,
-                relevantToGPRWrite: false, // contains the actual identity of the register
                 codeAddrRef: false,
                 dataAddrRef: false,
                 otherImportant: false,
@@ -1680,8 +1699,7 @@ function genHookishDisassembler(submode, outfile) {
                         info.mayWritePC = mayBePC;
                     } else {
                         info.mayReadPC = mayBePC;
-                        if(varr == 'Rn' && varInfo['wb'])
-                            info.relevantToGPRWrite = true; // $wb (writeback) = $Rn
+                        info.writesGPR = varr == 'Rn' && varInfo['wb']; // $wb (writeback) = $Rn
                     }
                 } else if(type.match(/^(so_reg_(imm|reg)|t2_so_reg|shift_so_reg_reg|addr_offset_none)$/) ||
                           (type == '?' && insn.name.match(/^t2TB/))) {
@@ -1692,7 +1710,7 @@ function genHookishDisassembler(submode, outfile) {
                 else if(type.match(/^t_addrmode/))
                     ; // these can't writeback or be PC
                 else if(type.match(/addrmode|(am.*offset)|addr_offset|^postidx|^ldst_so_reg$/))
-                    info.relevantToGPRWrite = true;
+                    info.writesGPR = !!varInfo['Rn_wb'];
                 else if(type.match(/target$/)) {
                     info.mayWritePC = true;
                     info.codeAddrRef = true;
@@ -1728,6 +1746,9 @@ function genHookishDisassembler(submode, outfile) {
                     info.codeAddrRef = true;
                 else if(type.match(/^adrp?label|am_ldrlit$/))
                     info.dataAddrRef = true;
+                else if(type.match(/^GPR/)) {
+                    info.writesGPR = info.out || (varr == 'Rn' && varInfo['wb']);
+                }
                 if(submode == 'hook') {
                     if((insn.name.match(/^(LDR.*l|ADRP?)$/) &&
                        (type == 'Rt' || type == 'Xd')) || // hack
@@ -1741,23 +1762,17 @@ function genHookishDisassembler(submode, outfile) {
             } // switch
 
             info.interesting = info.codeAddrRef || info.dataAddrRef ||
-                               info.otherImportant || info.mayWritePC;
+                               info.otherImportant || info.mayWritePC ||
+                               info.writesGPR ||
+                               forceAllInteresting;
             if(info.interesting) {
                 anyInteresting = true;
-                if(info.writesGPR)
-                    anyWritesGPR = true;
             }
             varInfo[varr] = makeDefensive(varInfo[varr]);
         }
 
         if(!anyInteresting)
             return uninterestingReturn(insn);
-
-        if(submode == 'hook') {
-            for(let [varr, stats] of items(varInfo))
-                if(anyWritesGPR && stats.relevantToGPRWrite)
-                    stats.interesting = true;
-        }
 
         if(insn.namespace == 'ARM') {
             let eligible = Array.from(filter(varr => varInfo[varr].writesGPR && varInfo[varr].mayWritePC, keys(varInfo)));
@@ -1794,8 +1809,12 @@ function genHookishDisassembler(submode, outfile) {
         if(nbits < opBitLocs.length)
             console.log('not all bit locs accounted for: ' + insn.name + ' : ' + JSON.stringify(insn.inst));
         */
+        let stillUsed = {};
+        for(let bit of insn.inst)
+            if(Array.isArray(bit))
+                stillUsed[bit[0]] = true;
         let nameBits = [];
-        for(let varr in varInfo) {
+        for(let varr in stillUsed) {
             let info = varInfo[varr];
             if(info.interesting)
                 nameBits.push(varr + (info.out ? '_out' : ''));
@@ -1810,22 +1829,22 @@ function genHookishDisassembler(submode, outfile) {
     //console.log(insns2);
     let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: true});
     //console.log(ppTable(node));
-    console.log(genGeneratedWarning());
+    let source = genGeneratedWarning() + '\n';
     for(let [groupName, groupInsns] of items(groupBy(insn => insn.groupName, insns2))) {
         let comment = `/${''}* ${groupName}:`;
         let its = Array.from(items(groupBy(insn => insn.groupAndBitsName, groupInsns)));
         for(let [groupAndBitsName, groupAndBitsInsns] of its)
             comment += (its.length == 1 ? ' ' : ` [${groupAndBitsName}] `) +
                        groupAndBitsInsns.map(insn => insn.name).join(', ');
-        comment += ' */';
-        console.log(comment);
+        comment += ' */\n';
+        source += comment;
     }
     let useBitslice = submode == 'hook';
-    let out = tableToBitsliceOrValCaller(node,
+    source += tableToBitsliceOrValCaller(node,
         opt.options['dis-pattern'] || 'XXX',
         opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx'),
         useBitslice);
-    writeFile(outfile, out);
+    writeFile(outfile, source);
 }
 
 function genDebugDisassembler(outfile) {
