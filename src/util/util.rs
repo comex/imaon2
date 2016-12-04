@@ -76,7 +76,7 @@ pub unsafe trait RWSlicePtr<'a, T>: Sized {
     #[inline]
     fn set_memory(self, byte: u8) where T: Swap {
         let len = self.len();
-        unsafe { memset(self.as_mut_ptr() as *mut u8, byte as i32, len); }
+        unsafe { memset(self.as_mut_ptr() as *mut u8, byte as i32, len * size_of::<T>()); }
     }
 }
 macro_rules! impl_rosp { ($T:ident, $ty:ty) => {
@@ -1252,4 +1252,11 @@ pub fn subset_sorted_list<T, F, G>(list: &[T], mut ge_start: F, mut le_end: G) -
         if le_end(p) { cmp::Ordering::Less } else { cmp::Ordering::Greater }
     }).unwrap_err();
     &list[..end]
+}
+
+pub fn zero_vec<T: Swap>(size: usize) -> Vec<T> {
+    let mut vec = Vec::with_capacity(size);
+    unsafe { vec.set_len(size); }
+    vec.set_memory(0);
+    vec
 }
