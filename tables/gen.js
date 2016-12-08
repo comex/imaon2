@@ -82,15 +82,27 @@ function groupBy(cb, it) {
     }
     return byKey;
 }
+function* enumerate(it) {
+    let i = 0;
+    for(let val of it)
+        yield [i++, val];
+}
 
 function makeDefensive(obj) {
     return new Proxy(obj, {
         get: (target, name) => {
             if(!(name in target) && name !== 'inspect' && name.charCodeAt)
-                throw 'undefined property ' + name;
+                throw new Error('undefined property ') + name;
             return target[name];
         },
     });
+}
+
+function getCached(table, key, cb) {
+    let val;
+    if(val = table[key])
+        return val;
+    return table[key] = cb();
 }
 
 // tblgen already generates disassemblers, but:
@@ -310,7 +322,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
             };
         } else {
             return data.cache[cacheKey] = {
-                isBinary: 1,
+                isBinary: true,
                 buckets: [
                     genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
                     data.failNode
@@ -338,7 +350,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
     }
 
     if(best.max > insns.length) {
-        throw '!?';
+        throw new Error('!?');
     } else if(best.max == insns.length) {
         if(insns.length <= 4 && 1) {
             // Probably a case of one more specific, but too many
@@ -355,7 +367,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                 let newInsns = insns.slice(0);
                 newInsns.splice(i, 1);
                 return data.cache[cacheKey] = {
-                    isBinary: 1,
+                    isBinary: true,
                     buckets: [
                         genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
                         genDisassemblerRec(newInsns, knownMask, knownValue, false, depth + 1, data)
@@ -376,7 +388,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
         console.log('');
         console.log(pad('(known?)', 20), mask2bits(knownMask, data.bitLength).join(','));
         return data.cache[cacheKey] = data.failNode;
-        throw '?';
+        throw new Error('?');
     }
 
     let resultBuckets = [];
@@ -682,7 +694,8 @@ function genConstraintTest(insn, unknown) {
 }
 
 function gotoOrGen(data, label, comment, gen) {
-    if(data.opts.mode == 'subfn') {
+    switch (data.opts.mode)  {
+    case 'subfn':
         // xxx this doesn't really make sense in C (nested functions)
         let funcName = `sub_${label}`;
         if(1) {
@@ -710,7 +723,7 @@ function gotoOrGen(data, label, comment, gen) {
             data.seen[label] = newStmt;
             return newStmt;
         }
-    } else {
+    case 'goto':
         if(data.seen[label]) {
             //data.seen[label]++;
             return [
@@ -724,6 +737,11 @@ function gotoOrGen(data, label, comment, gen) {
                 lang.label(label)
             ].concat(gen());
         }
+    case 'exponential':
+    case 'data-based':
+        return [
+            lang.comment(comment, /*hangingOnFollowing*/ true),
+        ].concat(gen());
     }
 }
 
@@ -746,7 +764,7 @@ class SuperLang {
             expr = this.expr(prec, null, expr);
         }
         if(expr.precedence === undefined || expr.stmt)
-            throw 'not expr or string';
+            throw new Error('not expr or string');
         if(expr.precedence < precedence ||
            (expr.precedence == precedence &&
             nextTo !== null &&
@@ -757,11 +775,20 @@ class SuperLang {
     }
     // XXX check Rust precedence
     not(expr) { return this.unary('!', expr); }
+    neg(expr) { return this.unary('-', expr); }
     and(a, b) { return this.binary(13, '&&', a, b); }
     bitand(a, b) { return this.binary(10, '&', a, b); }
     bitor(a, b) { return this.binary(10, '|', a, b); } // actually 12 but Clang warns
     shl(a, b) { return this.binary(7, '<<', a, b); }
     shr(a, b) { return this.binary(7, '>>', a, b); }
+    le(a, b) { return this.binary(8, '<=', a, b); }
+    add(a, b) { return this.binary(4, '+', a, b); }
+    sub(a, b) { return this.binary(4, '-', a, b); }
+    set(a, b) { return this.binary(14, '=', a, b); }
+    index(a, b) {
+        return this.expr(1, null,
+            this.renderEx(1.1, null, a) + '[' + this.renderEx(5000, null, b) + ']');
+    }
 
     unary(prefix, expr) {
         return this.expr(3, null, prefix + this.renderEx(3, null, expr));
@@ -774,8 +801,8 @@ class SuperLang {
 
     call(func, args) {
         return this.expr(1, null,
-                         this.renderEx(1.1, null, func) + '(' + 
-                         args.map(arg => this.renderEx(15, null, arg))
+                         this.renderEx(1.1, null, func) + '(' +
+                         args.map(arg => this.renderEx(5000, null, arg))
                          .join(', ') + ')');
     }
     expr(precedence, infixChainEndingIn, text) {
@@ -797,23 +824,39 @@ class SuperLang {
     hangingBlockChain(chain) {
         return this.stmt({'hangingBlockChain': true, 'chain': chain});
     }
-    label(name) { throw 'no label'; }
-    goto(name, extra) { throw 'no goto'; }
+    label(name) { throw new Error('no label'); }
+    goto(name, extra) { throw new Error('no goto'); }
+    break() { return {'stmt': true, 'text': 'break;' }; }
     wrapStmtList(stmts) {
         return {wrapsStmts: this.stmtList(stmts)};
     }
     stringLit(s) {
         return this.expr(1, null, JSON.stringify(s)); // not quite right
     }
+    u32HexLit(n) { return this.hexLit(n, this.u32); }
+    u32DecLit(n) { return this.decLit(n, this.u32); }
+    i32HexLit(n) { return this.hexLit(n, this.i32); }
+    i32DecLit(n) { return this.decLit(n, this.i32); }
+
+    defineBigConstArray(name, ty, members) {
+        return this.stmt({
+            'justBlock': true,
+            'start': [this.defineBigConstArrayStart(name, ty, members.length)],
+            'substmts': members.map(([mem, comment]) => {
+                return {'stmt': true, 'text': mem + ',' + (comment ? (' // ' + comment) : '')};
+            }),
+            'end': [this.defineBigConstArrayEnd()],
+        });
+    }
 }
 
 class CLang extends SuperLang {
     return(expr) { return this.stmt('return ' + this.render(expr) + ';') }
-    switch(expr, cases) {
+    switch(expr, ty, cases) {
         let stmts = ['switch (' + this.render(expr) + ') {'];
         for(let [whens, what] of cases) {
             for(let when of whens)
-                stmts.push('case ' + when + ':');
+                stmts.push('case ' + this.decLit(when, ty) + ':');
             let i = stmts.length-1;
             what = this.stmtList(what);
             /*
@@ -826,10 +869,13 @@ class CLang extends SuperLang {
         return stmts;
     }
     if(cond, then, else_) {
-        let chain = [['if (' + this.render(cond) + ')', then]];
+        let chain = [['if (' + this.render(cond) + ')', this.stmtList(then)]];
         if(else_ !== undefined)
-            chain.push(['else', else_]);
+            chain.push(['else', this.stmtList(else_)]);
         return this.hangingBlockChain(chain);
+    }
+    loop(then) {
+        return this.hangingBlockChain([['while (1)', this.stmtList(then)]]);
     }
     label(name) {
         return {'stmt': true, 'label': name, 'text': name + ':;'};
@@ -838,13 +884,20 @@ class CLang extends SuperLang {
         return {'stmt': true, 'goto': name, 'text': 'goto ' + name + ';' + (extra||'')};
     }
     let(varName, ty, expr) {
-        return {'stmt': true,
-                'text': `${ty} ${varName} = ${this.render(expr)};`};
+        let rest = expr ? ` = ${this.render(expr)}` : '';
+        let text = `${ty} ${varName}${rest};`;
+        return {'stmt': true, 'text': text};
     }
+    letMut(varName, ty, expr) { return this.let(varName, ty, expr); }
     funcDecl(name, args, retTy, body, opts) {
         let decl = `${retTy || 'void'} ${name}(`;
-        decl += args.map(([name, ty]) => `${ty} ${name}`).join(', ');
-        decl += ') {';
+        decl += args.map(([name, ty]) =>
+            ty + (ty.match(/\*$/) ? '' : ' ') + name
+        ).join(', ');
+        decl += ')';
+        if(!body)
+            return this.stmt(decl + ';');
+        decl += ' {';
         return this.stmt({
             'justBlock': true,
             'start': [decl],
@@ -853,8 +906,9 @@ class CLang extends SuperLang {
         });
     }
 
-    u32HexLit(n) { return '0x' + hexnopad(n) ; }
-    u32DecLit(n) { return n + ''; }
+    hexLit(n, ty) { return '0x' + hexnopad(n) ; }
+    decLit(n, ty) { return n + ''; }
+    intWidenCast(a, ty) { return a; }
     finalRender(indent, stmtList) {
         let lines = [];
         let neededLabels = {};
@@ -922,21 +976,25 @@ class CLang extends SuperLang {
                 lines[lines.length-1] += ' ' + lastHangingComment;
         }
     }
+    defineBigConstArrayStart(name, ty) {
+        return `static const ${ty} ${name}[] = {`;
+    }
+    defineBigConstArrayEnd() { return '};'; }
 }
 class RustLang extends SuperLang {
     return(expr) {
         return {'stmt': 'true', 'isReturn': true,
                 'text': this.render(expr)};
     }
-    switch(expr, cases) {
+    switch(expr, ty, cases) {
         let stmts = ['match ' + expr + ' {'];
         for(let [whens, what] of cases) {
             let runs = pairsToRuns(whens.map(when => [when, when]));
             let pat = [];
             for(let [start, _, len] of runs)
                 pat.push(len == 1 ?
-                         this.u32DecLit(start) :
-                         (this.u32DecLit(start) + '...' + this.u32DecLit(start+len-1)));
+                         this.decLit(start, ty) :
+                         (this.decLit(start, ty) + '...' + this.decLit(start+len-1, ty)));
             let left = pat.join(' | ');
             what = this.stmtList(what);
             stmts.push({'stmt': 'true', 'matchCase': true,
@@ -955,16 +1013,27 @@ class RustLang extends SuperLang {
             chain.push(['else', else_, inheritsReturn]);
         return this.hangingBlockChain(chain);
     }
-    let(varName, ty, expr) {
-        return {'stmt': true,
-                'text': `let ${varName}: ${ty} = ${this.render(expr)};`};
+    loop(then) {
+        return this.hangingBlockChain([['loop', this.stmtList(then), false]]);
     }
+    let_(varName, ty, expr, isMut) {
+        let rest = expr ? ` = ${this.render(expr)}` : '';
+        let mut = isMut ? ' mut' : '';
+        return {'stmt': true,
+                'text': `let${mut} ${varName}: ${ty}${rest};`};
+    }
+    let(varName, ty, expr) { return this.let_(varName, ty, expr, false); }
+    letMut(varName, ty, expr) { return this.let_(varName, ty, expr, true); }
     funcDecl(name, args, retTy, body, opts) {
         let decl = `fn ${name}(`;
-        decl += args.map(([name, ty]) => `${name}: ${ty}`).join(', ');
+        decl += args.map(([name, ty]) => (name + (ty ? `: ${ty}` : ''))).join(', ');
         decl += ')';
         if(retTy)
             decl += ` -> ${retTy}`;
+        if(!body) {
+            decl += ';';
+            return this.stmt(decl);
+        }
         decl += ' {';
         let start = [decl];
         switch(opts.inline) {
@@ -977,7 +1046,7 @@ class RustLang extends SuperLang {
         case undefined:
             break;
         default:
-            throw '?inline';
+            throw new Error('?inline');
         }
         return this.stmt({
             'justBlock': true,
@@ -987,18 +1056,21 @@ class RustLang extends SuperLang {
             'isFunc': true,
         });
     }
-    u32HexLit(n) { return '0x' + hexnopad(n) + 'u32'; }
-    u32DecLit(n) { return n + 'u32'; }
+    hexLit(n, ty) { return '0x' + hexnopad(n) + ty; }
+    decLit(n, ty) { return n + ty; }
+    intWidenCast(a, ty) {
+        return this.binary(2, 'as', a, ty);
+    }
     finalRender(indent, stmtList, mayImplicitlyReturn) {
         let lines = [];
         this.finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn);
         return lines;
     }
     finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn, isSilentGroupOfLast) {
-        if(mayImplicitlyReturn === undefined) throw '!';
+        if(mayImplicitlyReturn === undefined) throw new Error('!');
         stmtList = this.stmtList(stmtList);
-        let hangingComment = null;
         stmtList = Array.from(flattenStmtList(stmtList));
+        let hangingComment = null;
         for(let i = 0; i < stmtList.length; i++) {
             let stmt = stmtList[i];
             stmt = this.stmt(stmt);
@@ -1008,7 +1080,7 @@ class RustLang extends SuperLang {
             if(stmt.hangingBlockChain) {
                 let lastWasCloseBrace = false;
                 for(let [intro, substmts, inheritsReturn] of stmt.chain) {
-                    if(inheritsReturn === undefined) throw '!';
+                    if(inheritsReturn === undefined) throw new Error('!');
                     if(!lastWasCloseBrace)
                         lines.push(indent);
                     else if(intro)
@@ -1060,19 +1132,103 @@ class RustLang extends SuperLang {
                 lines[lines.length-1] += ' ' + lastHangingComment;
         }
     }
+    defineBigConstArrayStart(name, ty, length) {
+        return `static ${name}: [${ty}; ${length}] = [`;
+    }
+    defineBigConstArrayEnd() { return '];'; }
 }
 
 RustLang.prototype.isRust = true;
 RustLang.prototype.canGoto = false;
 RustLang.prototype.u32 = 'u32';
+RustLang.prototype.i32 = 'i32';
+RustLang.prototype.usize = 'usize';
 CLang.prototype.isRust = false;
 CLang.prototype.canGoto = true;
 CLang.prototype.u32 = 'uint32_t';
+CLang.prototype.i32 = 'int32_t';
+CLang.prototype.usize = 'size_t';
 
 let lang = new CLang();
 
-let indentStep = '    ';
-function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
+function maxDepthOfNode(node) {
+    if(node.insn || node.fail)
+        return 0;
+    return Math.max.apply(null, node.buckets.map(bucket => maxDepthOfNode(bucket))) + 1;
+}
+
+function tableToDataBasedInfo(node) {
+    let words = []; // [word, comment]
+    let byId = {};
+    let finals = [];
+    let wordForNode = node => getCached(byId, node.id, () => {
+        if(node.insn || node.isBinary || node.fail) {
+            let idx = finals.length;
+            finals.push(node);
+            let comment = node.insn ? `group: ${node.insn.groupName}` :
+                          node.isBinary ? `binary: ${node.id}` :
+                          'unidentified';
+            return [lang.i32DecLit(-idx), comment];
+        }
+        let offset = words.length;
+        words.push([lang.i32HexLit(node.start | (node.length << 8)),
+                   `node ${node.id}: test ${node.start}..${node.start + node.length - 1}`]);
+        if(!node.buckets)
+            console.log(node);
+        for (let bucket of node.buckets)
+            words.push(null);
+        for (let [i, bucket] of enumerate(node.buckets)) {
+            let [word, comment] = wordForNode(bucket);
+            comment = `case ${i} => ${comment}`;
+            words[offset+1+i] = [word, comment];
+        }
+        return [lang.i32DecLit(offset), `node ${node.id}`];
+    });
+    let [_, initialComment] = wordForNode(node);
+    return {initialComment, words, finals}
+}
+
+function tableToDataBasedSwitcher(node, data) {
+    let {initialComment, words, finals} = tableToDataBasedInfo(node);
+    let maxDepth = maxDepthOfNode(node);
+    let code = [
+        lang.defineBigConstArray('TABLE', lang.i32, words),
+        lang.letMut('control', lang.i32, null),
+    ];
+    let steps = [
+        lang.comment(initialComment, /*hangingOnFollowing*/ true),
+        lang.letMut('cur_idx', lang.i32, lang.decLit(0, lang.usize)),
+        lang.letMut('start', lang.i32, null),
+        lang.letMut('size', lang.i32, null),
+    ];
+    for (let i = 0; i < maxDepth; i++) {
+        // this AST building is pretty pointless but whatever
+        let mask = lang.sub(lang.shl(lang.i32DecLit(1), 'size'), lang.i32DecLit(1));
+        let idx = lang.bitand('op', mask);
+        steps = steps.concat([
+            lang.set('control', lang.index('TABLE', 'cur_idx')),
+            lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
+            lang.set('start', lang.bitand('control', lang.i32HexLit(0xff))),
+            lang.set('size', lang.bitand(lang.shr('control', lang.u32DecLit(8)), lang.i32HexLit(0xff))),
+            lang.set('cur_idx', lang.add(lang.add('cur_idx', lang.i32DecLit(1)),
+                                         lang.intWidenCast(idx, lang.usize))),
+        ]);
+    }
+    steps = steps.concat(lang.break());
+    code = code.concat(lang.loop(steps));
+    code.push(lang.let('final_id', lang.i32, lang.neg('control')));
+    //code.push(lang.let('final_id', lang.u32, null)));
+    let cases = [];
+    for(let [i, final] of enumerate(finals)) {
+        let stmts = tableToSwitcherRec(final, data);
+        cases.push([[i], stmts]);
+    }
+    code = code.concat(lang.switch('final_id', lang.i32, cases));
+    return code;
+
+}
+
+function tableToSwitcherRec(node, data, skipConstraintTest) {
     if(node.fail) {
         return gotoOrGen(data, '_unidentified', '', () =>
             data.opts.makeCallUnidentified());
@@ -1107,8 +1263,8 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
                 if(unknown)
                     test = lang.and(test, genConstraintTest(insn, unknown));
                 r = lang.if(test,
-                    tableToSwitcherRec(node.buckets[0], data, indent + indentStep, true),
-                    tableToSwitcherRec(node.buckets[1], data, indent + indentStep));
+                    tableToSwitcherRec(node.buckets[0], data, true),
+                    tableToSwitcherRec(node.buckets[1], data));
             } else {
                 let switchOn = '(op >> ' + lang.u32DecLit(node.start) + ') & ' + lang.u32HexLit((1 << node.length) - 1);
                 let cases = [];
@@ -1127,11 +1283,11 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
                             buckets[j] = null;
                         }
                     }
-                    cases.push([thisCases, tableToSwitcherRec(subnode, data, indent + indentStep)]);
+                    cases.push([thisCases, tableToSwitcherRec(subnode, data)]);
                 }
                 if((1 << node.length) != ncases)
                     throw new Error('bad buckets length'); // just to be sure
-                r = lang.switch(switchOn, cases);
+                r = lang.switch(switchOn, lang.u32, cases);
             }
             return r;
         });
@@ -1139,10 +1295,9 @@ function tableToSwitcherRec(node, data, indent, skipConstraintTest) {
 }
 
 function tableToSwitcher(node, opts) {
-    opts.mode = opts.mode || (lang.isRust ? 'subfn' : 'goto');
+    opts.mode = opts.mode || 'data-based';
     let data = {
         seen: {},
-        seenNodeId: {},
         prefixLines: [],
         suffixLines: [],
         extraFuncDecls: [],
@@ -1151,38 +1306,39 @@ function tableToSwitcher(node, opts) {
     switch(opts.mode) {
         case 'goto':
             if(!lang.canGoto)
-                throw 'wrong mode';
+                throw new Error('wrong mode');
             break;
         case 'subfn':
             let passArgs = opts.passArgs;
             let passRetTy = opts.passRetTy;
             if(passRetTy === undefined || passArgs === undefined)
-                throw 'no args/retTy';
+                throw new Error('no args/retTy');
             data.passArgs = passArgs;
             data.passArgsPass = passArgs.map(([name, ty]) => name);
             data.passRetTy = passRetTy;
             break;
-
+        case 'exponential':
+        case 'data-based':
+            break;
         default:
-            throw '?';
+            throw new Error('?');
     }
-    let ret = tableToSwitcherRec(node, data, indentStep);
-    switch(opts.mode) {
-    case 'goto':
-    case 'subfn':
-        let extra = [];
-        for(let decl of data.extraFuncDecls) {
-            let action = lang.finalRender('    ', decl, /*mayImplicitlyReturn*/ false);
-            extra = extra.concat(action);
-        }
-        ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
-        ret = [...extra, ...data.prefixLines, ...ret, ...data.suffixLines];
-        break;
+    let ret;
+    if(opts.mode == 'data-based')
+        ret = tableToDataBasedSwitcher(node, data);
+    else
+        ret = tableToSwitcherRec(node, data);
+    let extra = [];
+    for(let decl of data.extraFuncDecls) {
+        let action = lang.finalRender('    ', decl, /*mayImplicitlyReturn*/ false);
+        extra = extra.concat(action);
     }
+    ret = lang.finalRender('    ', ret, /*mayImplicitlyReturn*/ true);
+    ret = [...extra, ...data.prefixLines, ...ret, ...data.suffixLines];
     return ret.join('\n');
 }
 
-function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
+function tableToBitsliceOrValCaller(node, pattern, extraArgs, returnTy, useBitslice) {
     let prototypes = {};
     let patternifyForDef = n => pattern.replace(/XXX/g, n);
     let patternifyForCall = lang.isRust ? (n => 'h.'+patternifyForDef(n)) : patternifyForDef;
@@ -1190,29 +1346,30 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
     let opts = {};
     opts.makeCall = (funcName, runsByOp) => {
         let out = [];
-        let args = extraArgs ? [extraArgs] : [];
+        let args = extraArgs.slice();
         for(let op in runsByOp) {
-            if(useBitslice)
+            let ty;
+            if(useBitslice) {
                 out.push(opRunsToBitsliceLiteral(op, runsByOp[op]));
-            else
+                ty = lang.isRust ? 'Bitslice' : 'struct bitslice';
+            } else {
                 out.push(lang.let(op, lang.u32, opRunsToExtractionFormula(runsByOp[op], 'op')));
-            args.push(op);
+                ty = lang.u32;
+            }
+            args.push([op, ty]);
         }
-        out.push(lang.return(lang.call(patternifyForCall(funcName), args)));
+        out.push(lang.return(lang.call(patternifyForCall(funcName), args.map(([name, ty]) => name))));
 
         // be helpful
-        let prototype;
         if(lang.isRust)
-            prototype = '    fn ' + patternifyForDef(funcName) + '(&mut self' + args.map(arg => `, ${arg}: Bitslice`).join('') + ') -> Res;';
-
-        else
-            prototype = 'static INLINE tdis_ret ' + patternifyForDef(funcName) + '(' + args.map(arg => 'struct bitslice ' + arg).join(', ') + ') {}';
+            args.unshift(['&mut self', null]);
+        let prototype = lang.finalRender('', lang.funcDecl(patternifyForDef(funcName), args, returnTy, null));
         prototypes[prototype] = null;
 
         return out;
     };
     opts.makeCallUnidentified = () =>
-        lang.return(lang.call(patternifyForCall('unidentified'), [extraArgs]));
+        lang.return(lang.call(patternifyForCall('unidentified'), extraArgs.map(([name, ty]) => name)));
 
     let ret = tableToSwitcher(node, opts);
 
@@ -1231,7 +1388,7 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, useBitslice) {
     let ps = '\n';
     if(protoNames || lang.isRust) {
         if(lang.isRust) {
-            ps += 'pub trait Handler<Res> {\n' + protoNames.join('\n') + '\n' +
+            ps += 'pub trait Handler<Res> {\n' + protoNames.map(a => '    '+a).join('\n') + '\n' +
                 '    fn unidentified(&mut self) -> Res;\n' +
                 '}\n';
 
@@ -1290,10 +1447,8 @@ function checkTableMissingInsns(node, insns) {
     }
 }
 
-// there are instructions that put, say, addr{12} in multiple locations in Inst to assert that the value is the same.
-
 function genSema(insns, ns) {
-    let s = 'trait Sema' + ns + ' {\n';
+    // ...
 
 }
 
@@ -1481,7 +1636,7 @@ function checkLengths(insns) {
         }
     }
     if(bad)
-        throw 'bad';
+        throw new Error('bad');
 }
 
 let getopt = require('node-getopt').create([
@@ -1498,7 +1653,7 @@ let getopt = require('node-getopt').create([
     ['',  'print-constrained-bits', 'Test constraints'],
     ['',  'print-op-positions=OP', 'Print all positions this op appears in'],
     ['',  'dis-pattern=PATTERN', 'Pattern for function names from generated disassemblers, where XXX is replaced with our name'],
-    ['',  'dis-extra-args=ARGS', 'More arguments to put in calls to user-implemented functions'],
+    ['',  'ctx-type=TYPE', 'type of ctx in declarations'],
     ['',  'print-insns', 'Just print them'],
     ['l', 'out-lang=LANG', 'Output language (C, Rust)'],
     ['h', 'help', 'help'],
@@ -1540,7 +1695,7 @@ if(opt.options['out-lang']) {
     switch(opt.options['out-lang']) {
         case 'c': lang = new CLang(); break;
         case 'rust': lang = new RustLang(); break;
-        default: throw 'invalid out-lang';
+        default: throw new Error('invalid out-lang');
     }
 }
 
@@ -1588,13 +1743,13 @@ if(opt.options['gen-jump-disassembler']) {
 if(opt.options['gen-debug-disassembler']) {
     genDebugDisassembler(opt.options['gen-debug-disassembler']);
 }
-function genHookishDisassembler(submode, outfile) {
+function hookishCoalesce(submode) {
     switch(submode) {
     case 'hook':
     case 'jump':
         break;
     default:
-        throw 'bad mode';
+        throw new Error('bad mode');
     }
     let separateUndefined = true;
     let uninterestingReturn = insn => {
@@ -1603,7 +1758,7 @@ function genHookishDisassembler(submode, outfile) {
         insn.inst = insn.inst.map((bit, i) => Array.isArray(bit) ? '?' : bit);
         return 'uninteresting';
     };
-    let insns2 = coalesceInsnsWithMap(insns, insn => {
+    return coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
         // functions that do MUL PC, PC or crap like that...  This takes care
         // of all load instructions (LLVM mashes both registers into one big
@@ -1617,7 +1772,7 @@ function genHookishDisassembler(submode, outfile) {
             insn.inst.forEach((bit, i) => {
                 if(Array.isArray(bit))
                     varInfo[bit[0]] = {
-                        'out': true, 'type': '?',
+                        'type': '?',
                         'size': Math.max(bit[1]+1, varInfo[bit[0]] ? varInfo[bit[0]].size : 0),
                     };
             });
@@ -1638,14 +1793,33 @@ function genHookishDisassembler(submode, outfile) {
             visitDag(insn.outOperandList, cb);
             for(let varr in varInfo) {
                 if(varInfo[varr].type == '?') {
-                    if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeThreeAddrSRegInstruction' && varr.match(/^(src|dst|shift)/))
-                        varInfo[varr].type = 'foo';
-                    else if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeAddSubERegInstruction' && varr.match(/^(R.|ext)$/))
-                        varInfo[varr].type = 'bar';
-                    else if(insn.name.match(/^t2TB[BH]$/))
+                    let type = '?';
+                    let out = false;
+                    if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeThreeAddrSRegInstruction') {
+                        if(varr.match(/^src/)) {
+                            type = 'GPR64';
+                            out = false;
+                        } else if(varr.match(/^dst/)) {
+                            type = 'GPR64';
+                            out = true;
+                        } else {
+                            type = '*three_addr_sreg_shift';
+                            out = false;
+                        }
+                    } else if(insn.namespace == 'AArch64' && insn.decoderMethod == 'DecodeAddSubERegInstruction') {
+                        if(varr[0] == 'R') {
+                            type = 'GPR64';
+                            out = varr == 'Rd';
+                        } else if(varr == 'ext') {
+                            type = '**ext';
+                            out = false;
+                        }
+                    } else if(insn.name.match(/^t2TB[BH]$/))
                         ;
                     else
                         throw `unknown type for ${insn.name} var ${varr}`;
+                    varInfo[varr].type = type;
+                    varInfo[varr].out = out;
                 }
             }
         }
@@ -1663,6 +1837,8 @@ function genHookishDisassembler(submode, outfile) {
                 if(submode == 'jump') {
                     if(insn.isBranchy && !insn.isCall)
                         fakeVarName = insn.name.match(/^Bcc|TB/) ? 'condbranchy' : 'branchy';
+                    else if(insn.name == 'ADRP')
+                        fakeVarName = 'adrp';
                 }
             }
             if(fakeVarName !== null)
@@ -1742,12 +1918,13 @@ function genHookishDisassembler(submode, outfile) {
             case 'AArch64': {
                 // yay, highly restricted use of PC
                 //console.log(insn.name, insn.isBranchy, type);
-                if(insn.isBranchy && (type == 'addr' || type.match(/b.*target$/)))
+                if(insn.isBranchy && (type == 'addr' || type == 'am_brcond' || type == 'am_tbrcond' || type.match(/b.*target$/)))
                     info.codeAddrRef = true;
                 else if(type.match(/^adrp?label|am_ldrlit$/))
                     info.dataAddrRef = true;
                 else if(type.match(/^GPR/)) {
-                    info.writesGPR = info.out || (varr == 'Rn' && varInfo['wb']);
+                    info.writesGPR = info.out || (varr == 'Rn' && varInfo['wback']) ||
+                                                 (varr == 'Rs' && insn.name.match(/^CAS/));
                 }
                 if(submode == 'hook') {
                     if((insn.name.match(/^(LDR.*l|ADRP?)$/) &&
@@ -1758,7 +1935,7 @@ function genHookishDisassembler(submode, outfile) {
                 break;
             }
             default:
-                throw '?';
+                throw new Error('?');
             } // switch
 
             info.interesting = info.codeAddrRef || info.dataAddrRef ||
@@ -1814,19 +1991,21 @@ function genHookishDisassembler(submode, outfile) {
             if(Array.isArray(bit))
                 stillUsed[bit[0]] = true;
         let nameBits = [];
-        for(let varr in stillUsed) {
+        for(let varr in varInfo) {
             let info = varInfo[varr];
-            if(info.interesting)
-                nameBits.push(varr + (info.out ? '_out' : ''));
+            if(info.interesting) {
+                nameBits.push(varr + (info.out ? '_out' : '') + (stillUsed[varr] ? '' : '_skipped'));
+            }
         }
         nameBits.sort();
-        let name = nameBits.join(',');
-        if(!name)
-            name = 'x';
-        //console.log('representing', insn.name, 'as', name);
+        let name = nameBits.join(',') || 'x';
+        //console.log('representing', insn.name, 'as', name, '<<', varInfo);
         return name;
     });
+}
+function genHookishDisassembler(submode, outfile) {
     //console.log(insns2);
+    let insns2 = hookishCoalesce(submode);
     let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: true});
     //console.log(ppTable(node));
     let source = genGeneratedWarning() + '\n';
@@ -1842,7 +2021,8 @@ function genHookishDisassembler(submode, outfile) {
     let useBitslice = submode == 'hook';
     source += tableToBitsliceOrValCaller(node,
         opt.options['dis-pattern'] || 'XXX',
-        opt.options['dis-extra-args'] || (lang.isRust ? '' : 'ctx'),
+        [['ctx', opt.options['ctx-type'] || 'struct ctx *']],
+        'void',
         useBitslice);
     writeFile(outfile, source);
 }

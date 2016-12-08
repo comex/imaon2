@@ -6,4 +6,4 @@ mkdir -p target/xxincr
 export RUSTFLAGS=-Zincremental=`pwd`/target/xxincr
 crate_name="$1"
 shift
-exec cargo build -v --manifest-path src/"$crate_name"/Cargo.toml --features use_llvm "$@"
+exec cargo build -vv --manifest-path src/"$crate_name"/Cargo.toml --features use_llvm "$@"

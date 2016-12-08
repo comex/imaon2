@@ -1255,7 +1255,7 @@ pub fn subset_sorted_list<T, F, G>(list: &[T], mut ge_start: F, mut le_end: G) -
 }
 
 pub fn zero_vec<T: Swap>(size: usize) -> Vec<T> {
-    let mut vec = Vec::with_capacity(size);
+    let mut vec: Vec<T> = Vec::with_capacity(size);
     unsafe { vec.set_len(size); }
     vec.set_memory(0);
     vec
