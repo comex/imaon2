@@ -19,6 +19,7 @@ use std::any::Any;
 use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr, ReadCell};
 
 mod simple_trawl;
+pub use simple_trawl::CodeMap; // xxx just to get rid of dead_code
 
 struct ReaggregatedSyms {
     localsym: Vec<u8>,

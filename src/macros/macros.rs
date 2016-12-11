@@ -58,6 +58,13 @@ macro_rules! some_or {($opt:expr, $els:stmt) => {
     if let Some(xxx) = $opt { xxx } else { $els }
 }}
 #[macro_export]
+macro_rules! ok_or {($res:expr, $evar:pat, $els:stmt) => {
+    match $res {
+        Ok(xxx) => xxx,
+        Err($evar) => { $els },
+    }
+}}
+#[macro_export]
 macro_rules! as_items { ($($i:item)*) => { $($i)* } }
 
 #[macro_export]

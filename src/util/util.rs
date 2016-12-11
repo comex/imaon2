@@ -33,7 +33,7 @@ use nodrop::NoDrop;
 
 //use std::ty::Unsafe;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signedness {
     Unsigned,
     Signed,

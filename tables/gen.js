@@ -1853,6 +1853,9 @@ function hookishCoalesce(submode) {
                     } else if(insn.name == 'BR') {
                         forceAllInteresting = true;
                         fakeVarName = 'br';
+                    } else if(insn.name == 'ADDXri') {
+                        forceAllInteresting = true;
+                        fakeVarName = 'addi';
                     } else if(insn.isBranchy && !insn.isCall)
                         fakeVarName = insn.name.match(/^[TC]BN?Z/) ? 'condbranchy' : 'branchy';
                     else if(insn.name == 'ADRP')
