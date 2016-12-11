@@ -7,8 +7,9 @@ use exec::VMA;
 
 use std::mem::transmute;
 
-include!(concat!(env!("OUT_DIR"), "/jump-dis-aarch64-istub.rs"));
-use jump_dis_AArch64 as aarch64;
+mod aarch64 {
+    include!(concat!(env!("OUT_DIR"), "/jump-dis-aarch64.rs"));
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Reg(pub i8);
