@@ -155,6 +155,22 @@ pub fn copydir(src: &Path, dst: &Path) {
     }
 }
 
+pub fn make_istubs_for_rs_from_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for ent in src.read_dir().unwrap() {
+        let ent = ent.unwrap();
+        let path = ent.path();
+        if path.extension() == Some(OsStr::new("rs")) {
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            let istub_rs = format!("{}-istub.rs", stem);
+            let content = format!("#[path=\"{}\"] mod {};\n",
+                                  path.to_str().unwrap(),
+                                  stem.replace('-', "_"));
+            write!(File::create(dst.join(istub_rs)).unwrap(), "{}", content).unwrap();
+        }
+    }
+}
+
 const VARIANTS: &'static [&'static str] =
     &["AArch64", "ARM", "Thumb", "Thumb2"];
 pub fn dis_llvm_x_generated(kind: &'static str) {

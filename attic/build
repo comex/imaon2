@@ -3,7 +3,7 @@ export LLVM_SRC=/usr/src/llvm
 export CARGO_TARGET_DIR=target
 export PATH="/usr/local/Cellar/llvm/3.9.0/bin/:$PATH"
 mkdir -p target/xxincr
-export RUSTFLAGS=-Zincremental=`pwd`/target/xxincr
+#export RUSTFLAGS=-Zincremental=`pwd`/target/xxincr
 crate_name="$1"
 shift
 exec cargo build -vv --manifest-path src/"$crate_name"/Cargo.toml --features use_llvm "$@"

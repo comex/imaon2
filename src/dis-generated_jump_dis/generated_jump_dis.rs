@@ -1,16 +1,14 @@
 #![allow(non_snake_case)]
 extern crate build_run_gen;
 extern crate util;
-use util::{Signedness, Signed, Unsigned, SignExtend};
+use util::{Signedness, Signed, Unsigned, SignExtend, ReadCell};
 extern crate exec;
 use exec::VMA;
 
-use std::cell::Cell;
 use std::mem::transmute;
 
-mod aarch64 {
-    include!(concat!(env!("OUT_DIR"), "/jump-dis-aarch64.rs"));
-}
+include!(concat!(env!("OUT_DIR"), "/jump-dis-aarch64-istub.rs"));
+use jump_dis_AArch64 as aarch64;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Reg(pub i8);
@@ -96,11 +94,11 @@ impl CC {
     }
 }
 pub trait GenericHandler {
-    fn decode<'a>(&'a mut self, addr: VMA, data: &[Cell<u8>]) -> (usize, &'a InsnInfo);
+    fn decode<'a>(&'a mut self, addr: VMA, data: &[ReadCell<u8>]) -> (usize, &'a InsnInfo);
 }
 
 impl GenericHandler for AArch64Handler {
-    fn decode<'a>(&'a mut self, addr: VMA, data: &[Cell<u8>]) -> (usize, &'a InsnInfo) {
+    fn decode<'a>(&'a mut self, addr: VMA, data: &[ReadCell<u8>]) -> (usize, &'a InsnInfo) {
         self.info = Default::default();
         let mut size = 0;
         if data.len() >= 4 {

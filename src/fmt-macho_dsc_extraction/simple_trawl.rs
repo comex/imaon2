@@ -4,9 +4,8 @@ extern crate exec;
 use self::dis_generated_jump_dis::{Reg, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
 use self::exec::VMA;
-use std::cell::Cell;
 use util;
-use util::{Narrow, Endian, Unsigned};
+use util::{Narrow, Endian, Unsigned, ReadCell};
 use std::mem::replace;
 
 type InsnIdx = usize;
@@ -33,7 +32,7 @@ pub struct CodeMap<'a> {
     region_start: VMA,
     region_size: u64,
     grain_shift: u8,
-    insn_data: &'a [Cell<u8>],
+    insn_data: &'a [ReadCell<u8>],
     // 0 => unseen
     // -x => distance to previous instruction, which flows to this one
     // +x => index into insn_state_other
@@ -76,7 +75,7 @@ pub enum GrokSwitchFail {
 }
 
 impl<'a> CodeMap<'a> {
-    pub fn new(region_start: VMA, grain_shift: u8, insn_data: &'a [Cell<u8>], endian: Endian) -> Self {
+    pub fn new(region_start: VMA, grain_shift: u8, insn_data: &'a [ReadCell<u8>], endian: Endian) -> Self {
         let region_size = (insn_data.len() >> grain_shift) as u64;
         let num_insns: usize = (region_size >> grain_shift).narrow().unwrap();
         CodeMap {
@@ -95,7 +94,7 @@ impl<'a> CodeMap<'a> {
             ls_result_kind: InsnKind::Other,
         }
     }
-    pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, usize) -> Option<&'x [Cell<u8>]>) {
+    pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
         while !self.todo.is_empty() {
             self.go_round(handler);
             let idxs = replace(&mut self.switchlike_br_idxs, Vec::new());
@@ -104,7 +103,7 @@ impl<'a> CodeMap<'a> {
             }
         }
     }
-    fn addr_to_idx(&self, addr: VMA) -> Option<InsnIdx> {
+    pub fn addr_to_idx(&self, addr: VMA) -> Option<InsnIdx> {
         let offset = addr.wrapping_sub(self.region_start);
         if offset < self.region_size &&
            offset & ((1 << self.grain_shift) - 1) == 0 {
@@ -213,7 +212,7 @@ impl<'a> CodeMap<'a> {
         (size, *info)
     }
 
-    fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_idx: InsnIdx, read: &'x mut FnMut(VMA, usize) -> Option<&'x [Cell<u8>]>) -> Result<(), GrokSwitchFail> {
+    fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_idx: InsnIdx, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
         let br_reg = match self.decode(handler, br_idx).1.kind {
             InsnKind::Br(r) => r, _ => panic!(),
         };
@@ -290,7 +289,7 @@ impl<'a> CodeMap<'a> {
 
         let bytes = table_item_size.bytes() as usize;
         let table_bytes = (table_len as usize) * bytes;
-        let table = some_or!(read(table_addr, table_bytes), {
+        let table: &[ReadCell<u8>] = some_or!(read(table_addr, table_bytes as u64), {
             return Err(GrokSwitchFail::TableReadError);
         });
         for (i, chunk) in table.chunks(bytes).enumerate() {

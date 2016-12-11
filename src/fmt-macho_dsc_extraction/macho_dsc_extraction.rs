@@ -18,6 +18,8 @@ use std::cell::Cell;
 use std::any::Any;
 use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr, ReadCell};
 
+extern crate dis_generated_jump_dis;
+use dis_generated_jump_dis::AArch64Handler;
 mod simple_trawl;
 pub use simple_trawl::CodeMap; // xxx just to get rid of dead_code
 
@@ -47,8 +49,6 @@ trait MachODscExtraction {
     fn sect_bounds_named(&self, sectname: &str) -> (VMA, u64);
     fn fix_objc_from_cache<'dc>(&mut self, dc: &'dc DyldCache);
     fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache);
-    fn subtract_dic_from_addr_range<'a, F>(&'a self, outer_start: VMA, outer_size: u64, cb: F)
-        where F: FnMut(VMA, u64);
     fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)>;
     fn stub_name_list(&self) -> Vec<(&ByteStr, VMA)>;
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache);
@@ -597,40 +597,9 @@ impl MachODscExtraction for MachO {
             });
         }
     }
-    fn subtract_dic_from_addr_range<'a, F>(&'a self, outer_start: VMA, outer_size: u64, mut cb: F)
-        where F: FnMut(VMA, u64) {
-        // simple enough
-        let dic = self.data_in_code.get();
-        let endian = self.eb.endian;
-        let text_addr = some_or!(self.dyld_base, {
-            errln!("warning: can't get data_in_code because no reasonable-looking text segment");
-            return;
-        });
-        let outer_end = outer_start + outer_size;
-        let mut prev_dice_end = outer_start;
-        for chunk in dic.chunks(size_of::<data_in_code_entry>()) {
-            let dice: data_in_code_entry = util::copy_from_slice(chunk, endian);
-            if dice.length == 0 { continue; }
-            let end_offset = (dice.offset as u64) + ((dice.length - 1) as u64);
-            let dice_end_addr = some_or!(text_addr.check_add(end_offset), {
-                errln!("warning: bad data_in_code end offset {:x}", end_offset);
-                continue;
-            });
-            let dice_start_addr = text_addr + (dice.offset as u64);
-            if dice_start_addr >= outer_end {
-                break;
-            }
-            if prev_dice_end < dice_start_addr {
-                cb(prev_dice_end, dice_start_addr - prev_dice_end);
-            }
-            prev_dice_end = dice_end_addr;
-        }
-        if prev_dice_end < outer_end {
-            cb(prev_dice_end, outer_end - prev_dice_end);
-        }
-    }
     // currently for cache extraction on arm64 only
     fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)> {
+        let _sw = stopwatch("guess_text_relocs");
         let mut relocs = Vec::new();
         if self.eb.arch != arch::AArch64 {
             return relocs;
@@ -646,6 +615,20 @@ impl MachODscExtraction for MachO {
             if (sectdata.len() as u64) < sect.filesize {
                 errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
             }
+            let grain_shift = 2;
+            let mut codemap = CodeMap::new(sect.vmaddr, grain_shift, sectdata, end);
+            {
+                // todo sort?
+                for chunk in self.localsym.get().chunks(self.nlist_size) { 
+                    let nl = copy_nlist_from_slice(chunk, end);
+                    let vma = VMA(nl.n_value as u64);
+                    if let Some(idx) = codemap.addr_to_idx(vma) {
+                        codemap.mark_root(idx);
+                    }
+                }
+            }
+            codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.read_sane(addr, size));
+            /*
             self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
                 let mut data =
                     &sectdata[(start - sect.vmaddr) as usize ..
@@ -678,6 +661,7 @@ impl MachODscExtraction for MachO {
                     addr = addr + 4;
                 }
             });
+            */
         }
         relocs
     }
@@ -722,6 +706,7 @@ impl MachODscExtraction for MachO {
         res
     }
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache) {
+        let _sw = stopwatch("fix_text_relocs_from_cache");
         let pointer_size = self.eb.pointer_size.ext();
         let end = self.eb.endian;
         let guess = self.guess_text_relocs();
