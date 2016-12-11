@@ -2,6 +2,10 @@
 [build-dependencies]
 
 [dependencies]
+[dependencies.dis_generated_jump_dis]
+path = "../dis-generated_jump_dis"
+version = "=0.0.0"
+
 [dependencies.exec]
 path = "../exec"
 version = "=0.0.0"
@@ -23,7 +27,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-use_llvm = ["exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "macros/use_llvm", "util/use_llvm"]
+use_llvm = ["dis_generated_jump_dis/use_llvm", "exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]
 path = "macho_dsc_extraction.rs"

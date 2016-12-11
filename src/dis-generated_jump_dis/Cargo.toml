@@ -9,8 +9,19 @@ version = "=0.0.0"
 path = "../build-run_gen"
 version = "=0.0.0"
 
+[dependencies.exec]
+path = "../exec"
+version = "=0.0.0"
+
+[dependencies.stack]
+version = "0.2.0"
+
+[dependencies.util]
+path = "../util"
+version = "=0.0.0"
+
 [features]
-use_llvm = ["build_run_gen/use_llvm", "build_help/use_llvm"]
+use_llvm = ["build_run_gen/use_llvm", "exec/use_llvm", "util/use_llvm", "build_help/use_llvm"]
 
 [lib]
 path = "lib.rs"

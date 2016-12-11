@@ -158,7 +158,7 @@ pub fn copydir(src: &Path, dst: &Path) {
 const VARIANTS: &'static [&'static str] =
     &["AArch64", "ARM", "Thumb", "Thumb2"];
 pub fn dis_llvm_x_generated(kind: &'static str) {
-    let ddpath = std::path::PathBuf::from(std::env::var_os("DEP_FAKE_BUILD_RUN_GEN_DDPATH").unwrap());
+    let ddpath = PathBuf::from(std::env::var_os("DEP_FAKE_BUILD_RUN_GEN_DDPATH").unwrap());
     let mut handles = Vec::new();
     for variant_name in VARIANTS {
         let ddpath = ddpath.clone();

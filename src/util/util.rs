@@ -31,8 +31,20 @@ use fnv::FnvHasher;
 extern crate nodrop;
 use nodrop::NoDrop;
 
-pub use Endian::*;
 //use std::ty::Unsafe;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Signedness {
+    Unsigned,
+    Signed,
+}
+pub use Signedness::*;
+display_as_debug!(Signedness);
+impl Signedness {
+    pub fn with_bool(is_signed: bool) -> Self {
+        if is_signed { Signed } else { Unsigned }
+    }
+}
 
 mod trivial_hasher;
 pub use trivial_hasher::*;
@@ -288,6 +300,7 @@ pub enum Endian {
     BigEndian,
     LittleEndian,
 }
+pub use Endian::*;
 
 impl Default for Endian {
     fn default() -> Endian { BigEndian }
@@ -364,44 +377,22 @@ macro_rules! impl_int {($ty:ident) => {
     impl_check_x_option!(CheckMul, check_mul, $ty, $ty);
 }}
 
+pub trait TryExt<Larger> {
+    fn try_ext(self) -> Option<Larger>;
+}
 
-macro_rules! impl_signed {($ty:ident) => {
-    impl_int!($ty);
-    impl IntStuffSU for $ty {
-        fn neg_if_possible(self) -> Option<Self> { Some(-self) }
-    }
-}}
-macro_rules! impl_unsigned {($ty:ident) => {
-    impl_int!($ty);
-    impl IntStuffSU for $ty {
-        fn neg_if_possible(self) -> Option<Self> { None }
-    }
-    impl SignExtend for $ty {
-        fn sign_extend(self, bits: u8) -> Self {
-            self | ((0 as $ty).wrapping_sub((self >> (bits - 1)) & 1) << bits)
-        }
-        fn un_sign_extend(self, bits: u8) -> Option<Self> {
-            let masked = self & ((1 << bits) - 1);
-            if masked.sign_extend(bits) == self { Some(masked) } else { None }
-        }
-    }
-}}
-
-impl_unsigned!(usize);
-impl_signed!(isize);
-impl_unsigned!(u64);
-impl_signed!(i64);
-impl_unsigned!(u32);
-impl_signed!(i32);
-impl_unsigned!(u16);
-impl_signed!(i16);
-
-pub trait Ext<Larger> {
+pub trait Ext<Larger>: SignExtend<Larger> {
     fn ext(self) -> Larger;
+}
+pub trait SignExtend<Larger> {
+    fn sign_extend(self, bits: u8) -> Larger;
 }
 pub trait Narrow<Smaller> {
     fn trunc(self) -> Smaller;
     fn narrow(self) -> Option<Smaller>;
+}
+pub trait UnSignExtend<Smaller> {
+    fn un_sign_extend(self, bits: u8) -> Option<Smaller> where Self: Unsigned, Smaller: Unsigned;
 }
 
 macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
@@ -422,7 +413,47 @@ macro_rules! impl_unsigned_unsigned {($sm:ident, $la:ident) => {
             if res as $la == self { Some(res) } else { None }
         }
     }
+    impl_unsigned_unsigned_orself!($sm, $la);
 }}
+
+macro_rules! impl_unsigned_unsigned_orself {($sm:ident, $la:ident) => {
+    impl SignExtend<$la> for $sm {
+        #[inline(always)]
+        fn sign_extend(self, bits: u8) -> $la where Self: Unsigned, $la: Unsigned {
+            let x = self as $la;
+            x | ((0 as $la).wrapping_sub((x >> (bits - 1)) & 1) << bits)
+        }
+    }
+    impl UnSignExtend<$sm> for $la {
+        #[inline(always)]
+        fn un_sign_extend(self, bits: u8) -> Option<$sm> where Self: Unsigned, $sm: Unsigned {
+            let masked = (self as $sm) & ((1 << bits) - 1);
+            let x: $la = masked.sign_extend(bits);
+            if x == self { Some(masked) } else { None }
+        }
+    }
+}}
+
+macro_rules! impl_signed_unsigned {($sm:ident, $la:ident) => {
+    impl TryExt<$la> for $sm {
+        #[inline(always)]
+        fn try_ext(self) -> Option<$la> {
+            if self >= 0 { Some(self as $la) } else { None }
+        }
+    }
+    impl Narrow<$sm> for $la {
+        #[inline(always)]
+        fn trunc(self) -> $sm {
+            self as $sm
+        }
+        #[inline(always)]
+        fn narrow(self) -> Option<$sm> {
+            let res = self as $sm;
+            if res < 0 || res as $la == self { Some(res) } else { None }
+        }
+    }
+}}
+
 
 impl_unsigned_unsigned!(usize, u64);
 impl_unsigned_unsigned!(u32, u64);
@@ -434,18 +465,40 @@ impl_unsigned_unsigned!(u8, usize);
 impl_unsigned_unsigned!(u16, u32);
 impl_unsigned_unsigned!(u8, u32);
 impl_unsigned_unsigned!(u8, u16);
+impl_signed_unsigned!(i32, usize);
+
+macro_rules! impl_signed {($ty:ident) => {
+    impl_int!($ty);
+    impl Signed for $ty {}
+    impl IntStuffSU for $ty {
+        fn neg_if_possible(self) -> Option<Self> { Some(-self) }
+    }
+}}
+macro_rules! impl_unsigned {($ty:ident) => {
+    impl_int!($ty);
+    impl Unsigned for $ty {}
+    impl IntStuffSU for $ty {
+        fn neg_if_possible(self) -> Option<Self> { None }
+    }
+    impl_unsigned_unsigned_orself!($ty, $ty);
+}}
+
+impl_unsigned!(usize);
+impl_signed!(isize);
+impl_unsigned!(u64);
+impl_signed!(i64);
+impl_unsigned!(u32);
+impl_signed!(i32);
+impl_unsigned!(u16);
+impl_signed!(i16);
+impl_unsigned!(u8);
+impl_signed!(i8);
 
 pub trait X8 : Swap {}
 impl X8 for u8 {}
 impl X8 for i8 {}
 
 
-impl Swap for u8 {
-    fn bswap(&mut self) {}
-}
-impl Swap for i8 {
-    fn bswap(&mut self) {}
-}
 impl<T> Swap for *mut T {
     fn bswap(&mut self) {
         let xself: &mut usize = unsafe { transmute(self) };
@@ -962,6 +1015,8 @@ impl<T: std::string::ToString> VecStrExt for Vec<T> {
     fn strings(&self) -> Vec<String> { self.iter().map(|x| x.to_string()).collect() }
 }
 
+pub trait Unsigned: Sized {}
+pub trait Signed: Sized {}
 pub trait IntStuffSU : Sized {
     fn neg_if_possible(self) -> Option<Self>;
 }
@@ -969,11 +1024,6 @@ pub trait IntStuffSU : Sized {
 pub trait IntStuff : IntStuffSU {
     fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError>;
     fn align_up_to(self, size: Self) -> Self;
-}
-
-pub trait SignExtend : Sized {
-    fn sign_extend(self, bits: u8) -> Self;
-    fn un_sign_extend(self, bits: u8) -> Option<Self>;
 }
 
 pub fn stoi<T: IntStuff>(mut s: &str) -> Option<T> {
@@ -1260,3 +1310,4 @@ pub fn zero_vec<T: Swap>(size: usize) -> Vec<T> {
     vec.set_memory(0);
     vec
 }
+

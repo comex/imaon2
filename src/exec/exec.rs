@@ -159,6 +159,18 @@ impl Hash for VMA {
     }
 }
 
+pub fn dynsized_integer_from_slice<S: ?Sized + util::ROSlicePtr<u8>>(&self, slice: &S, signedness: Signedness, endian: Endian) -> u64 {
+    let unextended = match slice.len() {
+        1 => { let q: u8 = util::copy_from_slice(slice, endian); q as u64 },
+        2 => { let q: u16 = util::copy_from_slice(slice, endian); q as u64 },
+        4 => { let q: u32 = util::copy_from_slice(slice, endian); q as u64 },
+        8 => { let q: u64 = util::copy_from_slice(slice, endian); q as u64 },
+        _ => panic!("dynsized_integer_from_slice: bad slice len"),
+    };
+    unextended.sign_extend((slice.len() * 8) as u8)
+}
+
+
 #[derive(Default, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Prot {
     pub r: bool,

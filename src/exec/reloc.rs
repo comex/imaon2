@@ -1,5 +1,5 @@
 use VMA;
-use ::util::SignExtend;
+use ::util::{SignExtend, UnSignExtend};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum RelocKind {
@@ -58,14 +58,14 @@ impl RelocContext {
             _32Bit => if addr <= 0xffffffff { Some(addr) } else { None },
             Arm64Adrp => {
                 let base = old_word & !0x600fffe0;
-                let x = try_opt!(rel.un_sign_extend(33));
+                let x: u64 = try_opt!(rel.un_sign_extend(33));
                 if x & 0xfff != 0 { return None; }
                 Some((x & 0x3000) << 17 | (x & 0x1ffffc000) >> 9 | base)
             },
             Arm64Br26 => {
                 let base = old_word & !0x3ffffff;
                 if rel & 3 != 0 { return None; }
-                let x = try_opt!(rel.un_sign_extend(28));
+                let x: u64 = try_opt!(rel.un_sign_extend(28));
                 Some(x >> 2 | base)
             },
             Arm64Off12 => {

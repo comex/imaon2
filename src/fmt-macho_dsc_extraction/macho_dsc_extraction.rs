@@ -18,6 +18,8 @@ use std::cell::Cell;
 use std::any::Any;
 use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr, ReadCell};
 
+mod simple_trawl;
+
 struct ReaggregatedSyms {
     localsym: Vec<u8>,
     extdefsym: Vec<u8>,

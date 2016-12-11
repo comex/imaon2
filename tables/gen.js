@@ -1063,15 +1063,18 @@ class RustLang extends SuperLang {
     }
     finalRender(indent, stmtList, mayImplicitlyReturn) {
         let lines = [];
-        this.finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn);
+        let comments = [];
+        this.finalRenderEx(stmtList, indent, lines, comments, mayImplicitlyReturn);
+        for(let [i, comment] of comments)
+            lines[i] += ' // ' + comment;
         return lines;
     }
-    finalRenderEx(stmtList, indent, lines, mayImplicitlyReturn, isSilentGroupOfLast) {
+    finalRenderEx(stmtList, indent, lines, comments, mayImplicitlyReturn, isSilentGroupOfLast) {
         if(mayImplicitlyReturn === undefined) throw new Error('!');
         stmtList = this.stmtList(stmtList);
         stmtList = Array.from(flattenStmtList(stmtList));
         let hangingComment = null;
-        for(let i = 0; i < stmtList.length; i++) {
+        for(let [i, stmt] of enumerate(stmtList)) {
             let stmt = stmtList[i];
             stmt = this.stmt(stmt);
             let lastHangingComment = hangingComment;
@@ -1088,7 +1091,7 @@ class RustLang extends SuperLang {
                     let introIdx = lines.length - 1;
                     lines[introIdx] += intro + ' {';
                     let subMIR = mayImplicitlyReturn && inheritsReturn && isLast;
-                    this.finalRenderEx(substmts, indent + '    ', lines, subMIR, false);
+                    this.finalRenderEx(substmts, indent + '    ', lines, comments, subMIR, false);
                     lines.push(indent + '}');
                     lastWasCloseBrace = true;
                 }
@@ -1097,39 +1100,43 @@ class RustLang extends SuperLang {
                 lines.push(indent + '    ' + stmt.left + ' =>');
                 let subMIR = mayImplicitlyReturn && isLast;
                 let xindent = indent + '        ';
-                this.finalRenderEx(stmt.right, xindent, lines, subMIR, false);
+                this.finalRenderEx(stmt.right, xindent, lines, comments, subMIR, false);
                 if(lines.length > introIdx + 2) {
                     lines[introIdx] += ' {';
                     lines.push(indent + '    }');
                 } else if(lines.length == introIdx + 2) {
                     lines[introIdx] += ' ' + lines[introIdx+1].substr(xindent.length);
                     lines.splice(introIdx+1);
+                    // stupid
+                    if(comments.length && comments[comments.length-1][0] == lines.length)
+                        comments[comments.length-1][0]--;
                 }
                 lines[lines.length - 1] += ',';
             } else if(stmt.justBlock) {
                 for(let start of stmt.start)
                     lines.push(indent + start);
-                this.finalRenderEx(stmt.substmts, indent + '    ', lines, mayImplicitlyReturn || !!stmt.isFunc, true);
+                this.finalRenderEx(stmt.substmts, indent + '    ', lines, comments, mayImplicitlyReturn || !!stmt.isFunc, true);
                 for(let end of stmt.end)
                     lines.push(indent + end);
             } else if(stmt.silentGroup) {
-                this.finalRenderEx(stmt.stmts, indent, lines, mayImplicitlyReturn, isLast);
+                this.finalRenderEx(stmt.stmts, indent, lines, comments, mayImplicitlyReturn, isLast);
             } else if(stmt.isReturn) {
                 if(mayImplicitlyReturn && isLast)
                     lines.push(indent + stmt.text);
                 else
                     lines.push(indent + 'return ' + stmt.text + ';');
             } else if(stmt.comment) {
-                let text = '// ' + stmt.text;
-                if(stmt.hangingOnFollowing)
-                    hangingComment = text;
-                else
-                    lines.push(indent + text);
+                if(stmt.text) {
+                    if(stmt.hangingOnFollowing)
+                        hangingComment = stmt.text;
+                    else
+                        lines.push(indent + '// ' + stmt.text);
+                }
             } else {
                 lines.push(indent + stmt.text);
             }
             if(lastHangingComment !== null)
-                lines[lines.length-1] += ' ' + lastHangingComment;
+                comments.push([lines.length-1, lastHangingComment]);
         }
     }
     defineBigConstArrayStart(name, ty, length) {
@@ -1197,24 +1204,27 @@ function tableToDataBasedSwitcher(node, data) {
     ];
     let steps = [
         lang.comment(initialComment, /*hangingOnFollowing*/ true),
-        lang.letMut('cur_idx', lang.i32, lang.decLit(0, lang.usize)),
-        lang.letMut('start', lang.i32, null),
-        lang.letMut('size', lang.i32, null),
+        lang.letMut('cur_idx', lang.usize, lang.decLit(0, lang.usize)),
+        lang.letMut('start', lang.u32, null),
+        lang.letMut('size', lang.u32, null),
     ];
     for (let i = 0; i < maxDepth; i++) {
         // this AST building is pretty pointless but whatever
-        let mask = lang.sub(lang.shl(lang.i32DecLit(1), 'size'), lang.i32DecLit(1));
-        let idx = lang.bitand('op', mask);
+        let mask = lang.sub(lang.shl(lang.u32DecLit(1), 'size'), lang.u32DecLit(1));
+        let idx = lang.bitand(lang.shr('op', 'start'), mask);
+        steps.push(lang.set('control', lang.index('TABLE', 'cur_idx')));
+        if(i == maxDepth - 1) {
+            steps.push(lang.break());
+            break;
+        }
         steps = steps.concat([
-            lang.set('control', lang.index('TABLE', 'cur_idx')),
             lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
-            lang.set('start', lang.bitand('control', lang.i32HexLit(0xff))),
-            lang.set('size', lang.bitand(lang.shr('control', lang.u32DecLit(8)), lang.i32HexLit(0xff))),
-            lang.set('cur_idx', lang.add(lang.add('cur_idx', lang.i32DecLit(1)),
+            lang.set('start', lang.intWidenCast(lang.bitand('control', lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('size', lang.intWidenCast(lang.bitand(lang.shr('control', lang.u32DecLit(8)), lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('cur_idx', lang.add(lang.add('cur_idx', lang.decLit(1, lang.usize)),
                                          lang.intWidenCast(idx, lang.usize))),
         ]);
     }
-    steps = steps.concat(lang.break());
     code = code.concat(lang.loop(steps));
     code.push(lang.let('final_id', lang.i32, lang.neg('control')));
     //code.push(lang.let('final_id', lang.u32, null)));
@@ -1363,7 +1373,7 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, returnTy, useBitsl
         // be helpful
         if(lang.isRust)
             args.unshift(['&mut self', null]);
-        let prototype = lang.finalRender('', lang.funcDecl(patternifyForDef(funcName), args, returnTy, null));
+        let prototype = lang.finalRender('', lang.funcDecl(patternifyForDef(funcName), args, returnTy, null), false);
         prototypes[prototype] = null;
 
         return out;
@@ -1374,9 +1384,9 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, returnTy, useBitsl
     let ret = tableToSwitcher(node, opts);
 
     if(lang.isRust) {
-        ret = 'use ::{Bitslice, Run};\n' +
+        ret = (useBitslice ? 'use ::{Bitslice, Run};\n' : '') +
               'fn unreachable() -> ! { unreachable!() }\n' +
-              'pub fn decode<Res, H: Handler<Res>>(op: u32, h: &mut H) -> Res {\n' +
+              '#[inline] pub fn decode<Res, H: Handler<Res=Res>>(op: u32, h: &mut H) -> Res {\n' +
               ret +
               '\n}';
 
@@ -1388,8 +1398,10 @@ function tableToBitsliceOrValCaller(node, pattern, extraArgs, returnTy, useBitsl
     let ps = '\n';
     if(protoNames || lang.isRust) {
         if(lang.isRust) {
-            ps += 'pub trait Handler<Res> {\n' + protoNames.map(a => '    '+a).join('\n') + '\n' +
-                '    fn unidentified(&mut self) -> Res;\n' +
+            ps += 'pub trait Handler {\n' +
+                  '    type Res;\n' +
+                  protoNames.map(a => '    '+a).join('\n') + '\n' +
+                '    fn unidentified(&mut self) -> Self::Res;\n' +
                 '}\n';
 
         } else {
@@ -1423,7 +1435,7 @@ function tableToDebugCaller(node, cbName, extraArgs) {
     if(lang.isRust) {
         ret = 'use ::{Callback, Operand};\n' +
               'fn unreachable() -> ! { unreachable!() }\n' +
-              `pub fn decode(op: u32, ${cbName}: Callback) {\n` +
+              `#[inline] pub fn decode(op: u32, ${cbName}: Callback) {\n` +
               ret +
               '\n}';
     }
@@ -1835,10 +1847,26 @@ function hookishCoalesce(submode) {
                 break;
             case 'AArch64':
                 if(submode == 'jump') {
-                    if(insn.isBranchy && !insn.isCall)
-                        fakeVarName = insn.name.match(/^Bcc|TB/) ? 'condbranchy' : 'branchy';
+                    if(insn.name == 'Bcc') {
+                        forceAllInteresting = true;
+                        fakeVarName = 'bcc';
+                    } else if(insn.name == 'BR') {
+                        forceAllInteresting = true;
+                        fakeVarName = 'br';
+                    } else if(insn.isBranchy && !insn.isCall)
+                        fakeVarName = insn.name.match(/^[TC]BN?Z/) ? 'condbranchy' : 'branchy';
                     else if(insn.name == 'ADRP')
                         fakeVarName = 'adrp';
+                    else if(insn.name.match(/^SUBS.ri/)) {
+                        // CMP
+                        forceAllInteresting = true;
+                        varInfo['Rd'].forcedVal = 31;
+                        fakeVarName = 'cmp';
+                    } else if(insn.name.match(/^LDR.*ro/)) {
+                        forceAllInteresting = true;
+                        fakeVarName = 'ldr_shifted';
+                    }
+
                 }
             }
             if(fakeVarName !== null)
@@ -1857,7 +1885,7 @@ function hookishCoalesce(submode) {
                 codeAddrRef: false,
                 dataAddrRef: false,
                 otherImportant: false,
-                forcedVal: null,
+                forcedVal: info.forcedVal !== undefined ? info.forcedVal : null,
             });
             if(type == 'fake')
                 info.otherImportant = true;
@@ -2021,8 +2049,8 @@ function genHookishDisassembler(submode, outfile) {
     let useBitslice = submode == 'hook';
     source += tableToBitsliceOrValCaller(node,
         opt.options['dis-pattern'] || 'XXX',
-        [['ctx', opt.options['ctx-type'] || 'struct ctx *']],
-        'void',
+        lang.isRust ? [] : [['ctx', opt.options['ctx-type'] || 'struct ctx *']], // for Rust the self argument is context
+        lang.isRust ? 'Self::Res' : null, // return type - for Rust this is a trait
         useBitslice);
     writeFile(outfile, source);
 }

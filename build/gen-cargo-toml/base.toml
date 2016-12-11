@@ -24,3 +24,5 @@ version = "0.4.0"
 version = "0.3.38"
 [dependencies.memmap]
 version = "0.5.0"
+[dependencies.stack]
+version = "0.2.0"
