@@ -119,7 +119,7 @@ impl<'a> CodeMap<'a> {
     }
     // returns whether we should proceed
     fn mark_flow(&mut self, from: InsnIdx, to: InsnIdx, is_flow: bool) -> bool {
-        println!("mark_flow from {} to {}", from, to);
+        println!("mark_flow from {}/{} to {}/{}", from, self.idx_to_addr(from), to, self.idx_to_addr(to));
         let state = &mut self.insn_state[to];
         let old = *state;
         if old > 0 {
@@ -164,7 +164,7 @@ impl<'a> CodeMap<'a> {
         assert!(self.insn_state[idx] == 0);
         self.get_or_make_insn_state_other(idx).is_root = true;
         self.todo.push_back(idx);
-        println!("mark_root {}", idx);
+        println!("mark_root {}/{}", idx, self.idx_to_addr(idx));
     }
     fn go_round(&mut self, handler: &mut GenericHandler) {
         let grain_shift = self.grain_shift;
@@ -173,6 +173,7 @@ impl<'a> CodeMap<'a> {
             let mut idx = start_idx;
             loop {
                 let (size, info) = self.decode(handler, idx);
+                println!("go_round: {}/{} => {:?} size={}", idx, self.idx_to_addr(idx), info, size);
                 let next_idx = idx + (size >> grain_shift);
                 if let TargetAddr::Code(addr) = info.target_addr {
                     if let Some(target_idx) = self.addr_to_idx(addr) {

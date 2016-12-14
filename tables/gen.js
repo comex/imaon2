@@ -4,8 +4,75 @@ let path = require('path');
 
 // this isn't a very efficient module,
 //    (but ES6 Map is *less* efficient!?)
-let HashMap = require('hashmap').HashMap;
 let child_process = require('child_process');
+
+function assert(x) {
+    if(!x)
+        throw new Error('assertion failure');
+}
+
+class DumbMap {
+    constructor() {
+        this._backing = {};
+        this._count = 0;
+    }
+    set(key, val) {
+        let hash = this.hash(key), x = this._backing[hash];
+        if(x) {
+            if(!this.equals(x[0], key))
+                throw new Error('hash collision lol');
+            x[1] = val;
+        } else {
+            this._backing[hash] = [key, val];
+            this._count++;
+        }
+    }
+    get(key) {
+        let hash = this.hash(key), x = this._backing[hash];
+        if(!x || !this.equals(x[0], key))
+            return undefined;
+        return x[1];
+    }
+    remove(key) {
+        let hash = this.hash(key), x = this._backing[hash];
+        if(!x || !this.equals(x[0], key))
+            return;
+        delete this._backing[hash];
+        this._count--;
+        return x[1];
+    }
+    [Symbol.iterator]() {
+        let backing = this._backing;
+        return (function*() {
+            for(let hash in backing) {
+                let x = backing[hash];
+                if(!x)
+                    throw new Error('phantom element?');
+                yield x;
+            }
+        })();
+    }
+    count() { return this._count; }
+
+    hash(key) {
+        return String(key);
+    }
+    equals(k1, k2) {
+        if(Array.isArray(k1)) {
+            let len;
+            if(!Array.isArray(k2) || (len = k1.length) !== k2.length)
+                return false;
+            for (let i = 0; i < len; i++)
+                if(!this.equals(k1[i], k2[i]))
+                    return false;
+            return true;
+        } else {
+            if(Array.isArray(k2))
+                return false;
+            return k1 == k2;
+        }
+    }
+}
 
 function writeFile(filename, data) {
     if(filename == '-' || filename == '/dev/stdout')
@@ -1205,6 +1272,8 @@ function tableToDataBasedSwitcher(node, data) {
     let steps = [
         lang.comment(initialComment, /*hangingOnFollowing*/ true),
         lang.letMut('cur_idx', lang.usize, lang.decLit(0, lang.usize)),
+        lang.letMut('case_idx', lang.usize, null),
+        lang.letMut('switch_control', lang.i32, null),
         lang.letMut('start', lang.u32, null),
         lang.letMut('size', lang.u32, null),
     ];
@@ -1212,18 +1281,23 @@ function tableToDataBasedSwitcher(node, data) {
         // this AST building is pretty pointless but whatever
         let mask = lang.sub(lang.shl(lang.u32DecLit(1), 'size'), lang.u32DecLit(1));
         let idx = lang.bitand(lang.shr('op', 'start'), mask);
-        steps.push(lang.set('control', lang.index('TABLE', 'cur_idx')));
+        steps = steps.concat([
+            lang.set('switch_control', lang.index('TABLE', 'cur_idx')),
+            lang.set('start', lang.intWidenCast(lang.bitand('switch_control', lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('size', lang.intWidenCast(lang.bitand(lang.shr('switch_control', lang.u32DecLit(8)), lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('case_idx', lang.add(lang.add('cur_idx', lang.decLit(1, lang.usize)),
+                                          lang.intWidenCast(idx, lang.usize))),
+            lang.set('control', lang.index('TABLE', 'case_idx')),
+        ]);
         if(i == maxDepth - 1) {
             steps.push(lang.break());
-            break;
+        } else {
+            steps = steps.concat([
+                lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
+                lang.set('cur_idx', lang.intWidenCast('control', lang.usize)),
+            ]);
         }
-        steps = steps.concat([
-            lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
-            lang.set('start', lang.intWidenCast(lang.bitand('control', lang.i32HexLit(0xff)), lang.u32)),
-            lang.set('size', lang.intWidenCast(lang.bitand(lang.shr('control', lang.u32DecLit(8)), lang.i32HexLit(0xff)), lang.u32)),
-            lang.set('cur_idx', lang.add(lang.add('cur_idx', lang.decLit(1, lang.usize)),
-                                         lang.intWidenCast(idx, lang.usize))),
-        ]);
+
     }
     code = code.concat(lang.loop(steps));
     code.push(lang.let('final_id', lang.i32, lang.neg('control')));
@@ -1465,7 +1539,7 @@ function genSema(insns, ns) {
 }
 
 function printOpPositions(insns, name) {
-    let set = new HashMap();
+    let set = new DumbMap();
     for(let insn of insns) {
         let i = 0;
         let pos = insn.inst.map(op => [i++, op]).filter(eop => Array.isArray(eop[1]) && eop[1][0] == name).map(eop => eop[0]+':'+eop[1][1]);
@@ -1478,10 +1552,11 @@ function printOpPositions(insns, name) {
 }
 
 function coalesceInsnsWithMap(insns, func) {
-    let byGroupAndBits = new HashMap();
-    let byGroup = new HashMap();
+    let byGroupAndBits = new DumbMap();
+    let byGroup = new DumbMap();
     for(let insn of insns) {
         let key = func(insn);
+        //console.log(`${insn.name} -> ${key}`);
         if(key === null)
             continue;
         let locs = '' + insn.inst.map(bit => Array.isArray(bit) ? bit : '');
@@ -1495,31 +1570,43 @@ function coalesceInsnsWithMap(insns, func) {
     // actually, not enough insns to be slow
     let out = [];
     let coalid = 0;
-    byGroupAndBits.forEach((gbinsns, keyAndBits) => {
+    for(let [keyAndBits, gbinsns] of byGroupAndBits) {
         // inst -> [insns]
-        let byPat = new HashMap();
+        let byPat = new DumbMap();
         for(let insn of gbinsns) {
-            let instMinusVars = insn.inst.map(b => Array.isArray(b) ? '?' : b);
+            let instMinusVars = insn.inst.map(b => {
+                if(Array.isArray(b))
+                    return '?';
+                if(b != '1' && b != '0' && b != '?')
+                    throw new Error('not supposed to happen - ' + b + ' - ' + JSON.stringify(insn));
+                return b;
+            });
             //console.log('**>', instMinusVars+'');
             setdefault_hashmap(byPat, instMinusVars, []).push(insn);
         }
-        let didSomething;
+        let didSomething = true;
         do {
             didSomething = false;
             //console.log('pass');
             // merge combinations that together take up the whole space
             // this ignores constraints; we can do that manually if necessary
-            byPat.forEach((insns, inst) => {
+            for(let [inst, insns] of byPat) {
                 for(let i = 0; i < inst.length; i++) {
                     let old = inst[i];
                     if(old == '?')
                         continue;
+                    /*
+                    if(old != '1' && old != '0')
+                        throw new Error('not supposed to happen');
+                    */
+                    //assert(byPat.get(inst));
                     inst[i] = old == '1' ? '0' : '1';
                     let insns2;
                     if(insns2 = byPat.get(inst)) {
-                        byPat.remove(inst);
+                        assert(byPat.remove(inst));
                         inst[i] = old;
-                        byPat.remove(inst);
+                        //assert(byPat.get(inst));
+                        assert(byPat.remove(inst));
                         inst[i] = '?';
                         byPat.set(inst, insns.concat(insns2));
                         didSomething = true;
@@ -1527,24 +1614,27 @@ function coalesceInsnsWithMap(insns, func) {
                     }
                     inst[i] = old;
                 }
-            });
+            }
 
             //console.log('MD');
             // merge dominators; could be optimized
-            byPat.forEach((insns, inst) => {
-                byPat.forEach((insns2, inst2) => {
+            for(let [inst, insns] of byPat) {
+                il:
+                for(let [inst2, insns2] of byPat) {
                     if(inst2 === inst)
-                        return;
+                        continue il;
                     for(let i = 0; i < inst.length; i++) {
                         let b1 = inst[i], b2 = inst2[i];
-                        if(!(b1 == b2 || b1 == '?'))
-                            return;
+                        if(!(b1 === b2 || b1 === '?'))
+                            continue il;
                     }
+                    //console.log('merging', insns.map(i => i.name), insns2.map(i => i.name));
                     // ok, inst dominates inst2; we do not need to distinguish
                     insns.push.apply(insns, insns2);
                     byPat.remove(inst2);
-                });
-            });
+                    didSomething = true;
+                }
+            }
             //console.log('MD+');
         } while(didSomething);
 
@@ -1557,7 +1647,7 @@ function coalesceInsnsWithMap(insns, func) {
         let groupName = mangledKey + '_' + + ginsns.length + '_' + ginsns[0].name;
         let groupAndBitsName = 'gb_' + mangledKey + '_' + gbinsns.length + '_' + gbinsns[0].name;
         //console.log('collapsed', origLength, '-->', newLength);
-        byPat.forEach((insns, inst) => {
+        for(let [inst, insns] of byPat) {
             insns.sort(); // get a consistent representative for the name
             // make a fake insn
             let oinst = insns[0].inst.slice(0);
@@ -1576,8 +1666,8 @@ function coalesceInsnsWithMap(insns, func) {
             };
             fixInstruction(insn, /*noFlip*/ true);
             out.push(insn);
-        });
-    });
+        }
+    }
     return out;
 }
 
@@ -1595,7 +1685,12 @@ function fixInstruction(insn, noFlip) {
     let bitEqualityConstraints = {};
     for(let i = 0; i < insn.inst.length; i++) {
         let bit = insn.inst[i];
-        if(Array.isArray(bit))
+        let isVar = Array.isArray(bit);
+        if(!isVar && !(bit === '0' || bit === '1' || bit === '?')) {
+            isVar = true;
+            insn.inst[i] = bit = [bit];
+        }
+        if(isVar)
             setdefault(bitEqualityConstraints, bit, []).push(i);
         let res = bit === '0' ? 0 : bit === '1' ? 1 : 2;
 
@@ -1863,7 +1958,7 @@ function hookishCoalesce(submode) {
                     else if(insn.name.match(/^SUBS.ri/)) {
                         // CMP
                         forceAllInteresting = true;
-                        varInfo['Rd'].forcedVal = 31;
+                        varInfo['Rd'].forcedVal = ['1','1','1','1','1'];
                         fakeVarName = 'cmp';
                     } else if(insn.name.match(/^LDR.*ro/)) {
                         forceAllInteresting = true;
@@ -2004,9 +2099,11 @@ function hookishCoalesce(submode) {
             if(!Array.isArray(bit))
                 return bit;
             let stats = varInfo[bit[0]];
-            if(stats.forcedVal)
-                return stats.forcedVal[bit[1]];
-            else if(!stats.interesting)
+            if(stats.forcedVal) {
+                let v = stats.forcedVal[bit[1]];
+                if (!v) throw '!';
+                return v;
+            } else if(!stats.interesting)
                 return '?'; // redact
             else
                 return bit;
@@ -2035,7 +2132,6 @@ function hookishCoalesce(submode) {
     });
 }
 function genHookishDisassembler(submode, outfile) {
-    //console.log(insns2);
     let insns2 = hookishCoalesce(submode);
     let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: true});
     //console.log(ppTable(node));

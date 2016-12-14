@@ -1,7 +1,7 @@
 extern crate dis_generated_debug_dis;
 use dis_generated_debug_dis::{Operand, MAX_OPS, DebugDisFn};
-extern crate dis_generated_jump_dis;
-use dis_generated_jump_dis::{JumpDisCtx, JumpDisFn};
+//extern crate dis_generated_jump_dis;
+//use dis_generated_jump_dis::{JumpDisCtx, JumpDisFn};
 
 #[macro_use]
 extern crate macros;
@@ -30,6 +30,7 @@ impl Disassembler for GenDisassembler {
         }
     }
 
+/*
     fn can_trawl(&self) -> bool { true }
     fn trawl(&self, input: &DisassemblerInput, leads: &mut Vec<TrawlLead>) -> Option<()> {
         match (self.arch, input.mode) {
@@ -37,6 +38,7 @@ impl Disassembler for GenDisassembler {
             _ => panic!("unsupported arch"),
         }
     }
+    */
 }
 
 impl DisassemblerStatics for GenDisassembler {
@@ -91,6 +93,7 @@ fn debug_common(input: &DisassemblerInput, endian: Endian, size: usize, debug_di
     Some((Some(out), size as u32))
 }
 
+/*
 fn trawl_common(input: &DisassemblerInput, leads: &mut Vec<TrawlLead>, endian: Endian, size: usize, jump_dis: JumpDisFn) -> Option<()> {
     let val = some_or!(get_word_common(input, endian, size), { return None; });
     let mut ctx = JumpDisCtx::default();
@@ -111,3 +114,4 @@ fn trawl_common(input: &DisassemblerInput, leads: &mut Vec<TrawlLead>, endian: E
     }
     Some(())
 }
+*/

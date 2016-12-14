@@ -30,7 +30,7 @@ pub struct AArch64Handler {
     info: InsnInfo,
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 pub struct InsnInfo {
     pub kills_reg: [Reg; 3],
     pub target_addr: TargetAddr,
@@ -61,7 +61,7 @@ pub enum InsnKind {
     Br(Reg),
 }
 
-impl Default for InsnKind { fn default() -> Self { InsnKind::Unidentified } }
+impl Default for InsnKind { fn default() -> Self { InsnKind::Other } }
 
 #[derive(Copy, Clone, Debug)]
 pub enum Addrish {
@@ -107,6 +107,7 @@ impl GenericHandler for AArch64Handler {
             let op: u32 = util::copy_from_slice(&data[..4], util::LittleEndian);
             self.op = op;
             self.addr = addr;
+            println!("op={:x}", op);
             aarch64::decode(op, self);
         }
         (size, &self.info)
@@ -250,9 +251,12 @@ impl aarch64::Handler for AArch64Handler {
         self.info.target_addr = TargetAddr::Data(self.addr.wrapping_add((label << 2).sign_extend(21)));
     }
     #[inline]
-    fn uninteresting_2023_ABSv16i8(&mut self) -> Self::Res {}
+    fn uninteresting_2023_ABSv16i8(&mut self) -> Self::Res {
+        println!(">uninteresting");
+    }
     #[inline]
     fn unidentified(&mut self) -> Self::Res {
+        println!(">unidentified");
         self.info.kind = InsnKind::Unidentified;
     }
 }
