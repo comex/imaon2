@@ -575,7 +575,7 @@ function uniqueTableNodes(node) {
                 continue;
                 // otherwise, there are insufficient bits; could our bits work for their instruction?
             } else if((node.binaryTestMask & node2.passKnownValue) == node.binaryTestValue &&
-                      (node.binaryTestMask & ~node2.passKnownMask)) {
+                     !(node.binaryTestMask & ~node2.passKnownMask)) {
                 node2.binaryTestMask = node.binaryTestMask;
                 node2.binaryTestValue = node.binaryTestValue;
                 //console.log('ok!');
@@ -934,6 +934,7 @@ class SuperLang {
     le(a, b) { return this.binary(8, '<=', a, b); }
     ge(a, b) { return this.binary(8, '>=', a, b); }
     eq(a, b) { return this.binary(9, '==', a, b); }
+    ne(a, b) { return this.binary(9, '!=', a, b); }
     add(a, b) { return this.binary(4, '+', a, b); }
     sub(a, b) { return this.binary(4, '-', a, b); }
     set(a, b) { return this.binary(14, '=', a, b); }
@@ -1334,7 +1335,7 @@ function tableToDataBasedInfo(node) {
             finals.push(node);
             let comment = node.insn ? `group: ${node.insn.groupName}` :
                           'unidentified';
-            return [lang.i32DecLit(idx), comment];
+            return [lang.i32DecLit(-idx), comment];
         }
         if(node.isBinary) {
             let comment = `binary: ${node.id}`;
@@ -1415,8 +1416,8 @@ function tableToDataBasedSwitcher(node, data) {
         lang.let('xidx', lang.usize, lang.maybeImplicitCast(lang.bitand(lang.neg('control'), lang.i32HexLit(0x3fffffff)), lang.usize)),
         lang.let('mask', lang.u32, lang.maybeImplicitCast(lang.index('TABLE', 'xidx'), lang.u32)),
         lang.let('value', lang.u32, lang.maybeImplicitCast(lang.index('TABLE', lang.add('xidx', lang.decLit(1, lang.usize))), lang.u32)),
-        lang.let('case_idx', lang.usize, lang.add('xidx', lang.decLit(2, lang.usize))),
-        lang.if(lang.eq(lang.bitand('op', 'mask'), 'value'),
+        lang.letMut('case_idx', lang.usize, lang.add('xidx', lang.decLit(2, lang.usize))),
+        lang.if(lang.ne(lang.bitand('op', 'mask'), 'value'),
             lang.set('case_idx', lang.add('case_idx', lang.decLit(1, lang.usize)))),
         lang.set('control', lang.index('TABLE', 'case_idx')),
     ]));
