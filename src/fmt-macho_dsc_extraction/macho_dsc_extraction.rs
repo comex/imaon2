@@ -616,10 +616,10 @@ impl MachODscExtraction for MachO {
                 errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
             }
             let grain_shift = 2;
-            let mut codemap = CodeMap::new(sect.vmaddr, grain_shift, sectdata, end);
+            let mut codemap = CodeMap::new(sect.vmaddr, grain_shift, sectdata, end, &self.eb.segments);
             {
-                // todo sort?
-                for chunk in self.localsym.get().chunks(self.nlist_size) { 
+                // TODO sort? only useful if there are many sections like this
+                for chunk in self.localsym.get().chunks(self.nlist_size) {
                     let nl = copy_nlist_from_slice(chunk, end);
                     let vma = VMA(nl.n_value as u64);
                     if let Some(idx) = codemap.addr_to_idx(vma) {
@@ -628,6 +628,9 @@ impl MachODscExtraction for MachO {
                 }
             }
             codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.read_sane(addr, size));
+            for &idx in &codemap.out_of_range_idxs {
+                println!("{}", codemap.idx_to_addr(idx));
+            }
             /*
             self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
                 let mut data =

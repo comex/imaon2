@@ -1985,7 +1985,7 @@ function hookishCoalesce(submode) {
     default:
         throw new Error('bad mode');
     }
-    let separateUndefined = true;
+    let separateUndefined = submode != 'jump';
     let uninterestingReturn = insn => {
         if(!separateUndefined)
             return null;
@@ -2069,15 +2069,9 @@ function hookishCoalesce(submode) {
                 break;
             case 'AArch64':
                 if(submode == 'jump') {
-                    if(insn.name == 'Bcc') {
+                    if(insn.name.match(/^(Bcc|BR|ADDXri|ADDXrs)$/)) {
                         forceAllInteresting = true;
-                        fakeVarName = 'bcc';
-                    } else if(insn.name == 'BR') {
-                        forceAllInteresting = true;
-                        fakeVarName = 'br';
-                    } else if(insn.name == 'ADDXri') {
-                        forceAllInteresting = true;
-                        fakeVarName = 'addi';
+                        fakeVarName = insn.name;
                     } else if(insn.isBranchy && !insn.isCall)
                         fakeVarName = insn.name.match(/^[TC]BN?Z/) ? 'condbranchy' : 'branchy';
                     else if(insn.name == 'ADRP')

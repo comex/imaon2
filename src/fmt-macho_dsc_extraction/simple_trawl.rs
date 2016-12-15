@@ -3,7 +3,7 @@ extern crate exec;
 
 use self::dis_generated_jump_dis::{Reg, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
-use self::exec::VMA;
+use self::exec::{VMA, Segment};
 use util;
 use util::{Narrow, Endian, Unsigned, ReadCell};
 use std::mem::replace;
@@ -42,6 +42,9 @@ pub struct CodeMap<'a> {
     switchlike_br_idxs: Vec<InsnIdx>,
     endian: Endian,
 
+    segs: &'a [Segment],
+    pub out_of_range_idxs: Vec<InsnIdx>,
+
     // last_setter state
     ls_generation: usize,
     ls_result_idx: Option<InsnIdx>,
@@ -75,7 +78,7 @@ pub enum GrokSwitchFail {
 }
 
 impl<'a> CodeMap<'a> {
-    pub fn new(region_start: VMA, grain_shift: u8, insn_data: &'a [ReadCell<u8>], endian: Endian) -> Self {
+    pub fn new(region_start: VMA, grain_shift: u8, insn_data: &'a [ReadCell<u8>], endian: Endian, segs: &'a [Segment]) -> Self {
         let region_size = (insn_data.len() >> grain_shift) as u64;
         let num_insns: usize = (region_size >> grain_shift).narrow().unwrap();
         CodeMap {
@@ -89,6 +92,8 @@ impl<'a> CodeMap<'a> {
             todo: VecDeque::new(),
             switchlike_br_idxs: Vec::new(),
             endian: endian,
+            segs: segs,
+            out_of_range_idxs: Vec::new(),
             ls_generation: 0,
             ls_result_idx: None,
             ls_result_kind: InsnKind::Other,
@@ -98,6 +103,7 @@ impl<'a> CodeMap<'a> {
         while !self.todo.is_empty() {
             self.go_round(handler);
             let idxs = replace(&mut self.switchlike_br_idxs, Vec::new());
+            //println!("switch idxs = {:?}", idxs);
             for idx in idxs {
                 self.grok_switch(handler, idx, read).unwrap(); // xxx
             }
@@ -114,14 +120,15 @@ impl<'a> CodeMap<'a> {
     }
     #[inline]
     #[allow(dead_code)]
-    fn idx_to_addr(&self, addr: InsnIdx) -> VMA {
+    pub fn idx_to_addr(&self, addr: InsnIdx) -> VMA {
         self.region_start + (addr << self.grain_shift) as u64
     }
     // returns whether we should proceed
     fn mark_flow(&mut self, from: InsnIdx, to: InsnIdx, is_flow: bool) -> bool {
-        println!("mark_flow from {}/{} to {}/{}", from, self.idx_to_addr(from), to, self.idx_to_addr(to));
+        //print!("mark_flow from {}/{} to {}/{} ", from, self.idx_to_addr(from), to, self.idx_to_addr(to));
         let state = &mut self.insn_state[to];
         let old = *state;
+        //println!("is_flow={} old={:x}", is_flow, old);
         if old > 0 {
             let ff = &mut self.insn_state_other[old as usize].flows_from;
             // quadratic yay
@@ -131,6 +138,7 @@ impl<'a> CodeMap<'a> {
             false
         } else if old == 0 && is_flow {
             *state = -((to - from) as i32);
+            //println!("now *state = {}", *state);
             true
         } else {
             *state = self.insn_state_other.len().narrow().unwrap();
@@ -149,13 +157,14 @@ impl<'a> CodeMap<'a> {
         let state = &mut self.insn_state[idx];
         let mut val = *state;
         if val <= 0 {
-            val = self.insn_state_other.len().narrow().unwrap();
-            *state = val;
+            let newval = self.insn_state_other.len().narrow().unwrap();
+            *state = newval;
             let vec = if val == 0 { Vec::new() } else {
                 let old_from = idx.wrapping_add(val as usize);
                 vec![old_from]
             };
             self.insn_state_other.push(InsnStateOther::new(vec));
+            val = newval;
         }
         &mut self.insn_state_other[val as usize]
     }
@@ -164,10 +173,11 @@ impl<'a> CodeMap<'a> {
         assert!(self.insn_state[idx] == 0);
         self.get_or_make_insn_state_other(idx).is_root = true;
         self.todo.push_back(idx);
-        println!("mark_root {}/{}", idx, self.idx_to_addr(idx));
+        //println!("mark_root {}/{}", idx, self.idx_to_addr(idx));
     }
     fn go_round(&mut self, handler: &mut GenericHandler) {
         let grain_shift = self.grain_shift;
+        let segs = self.segs;
         while let Some(start_idx) = self.todo.pop_front() {
             let mut last_add_target_reg = Reg::invalid();
             let mut idx = start_idx;
@@ -179,6 +189,14 @@ impl<'a> CodeMap<'a> {
                     if let Some(target_idx) = self.addr_to_idx(addr) {
                         self.mark_flow(idx, target_idx, false);
                     }
+                }
+                match info.target_addr {
+                    TargetAddr::Code(addr) | TargetAddr::Data(addr) => {
+                        if !segs.iter().any(|seg| addr.wrapping_sub(seg.vmaddr) < seg.vmsize) {
+                            self.out_of_range_idxs.push(idx);
+                        }
+                    },
+                    _ => ()
                 }
                 let should_cont = match info.kind {
                     InsnKind::Tail | InsnKind::Unidentified => false,
@@ -214,17 +232,19 @@ impl<'a> CodeMap<'a> {
     }
 
     fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_idx: InsnIdx, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
+        //println!("grok_switch: {}", self.idx_to_addr(br_idx));
         let br_reg = match self.decode(handler, br_idx).1.kind {
             InsnKind::Br(r) => r, _ => panic!(),
         };
-        let (addr_setter_idx, addr_setter_kind) = try!(self.last_setter(handler, br_idx, br_reg).map_err(GrokSwitchFail::GettingSetterOfBrAddr));
+        let (addr_setter_idx, addr_setter_kind) = try!(self.last_setter(handler, br_idx, false, br_reg).map_err(GrokSwitchFail::GettingSetterOfBrAddr));
         let (r1, r2) = match addr_setter_kind {
             InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2), _ => panic!(),
         };
         let ((r1idx, r1kind), (r2idx, r2kind)) = (
-            try!(self.last_setter(handler, addr_setter_idx, r1).map_err(GrokSwitchFail::GettingSetterOfAddR1)),
-            try!(self.last_setter(handler, addr_setter_idx, r2).map_err(GrokSwitchFail::GettingSetterOfAddR2)),
+            try!(self.last_setter(handler, addr_setter_idx, false, r1).map_err(GrokSwitchFail::GettingSetterOfAddR1)),
+            try!(self.last_setter(handler, addr_setter_idx, false, r2).map_err(GrokSwitchFail::GettingSetterOfAddR2)),
         );
+        //println!("addends: {}, {} [from {}]", self.idx_to_addr(r1idx), self.idx_to_addr(r2idx), self.idx_to_addr(addr_setter_idx));
         let rs = &[(r1, r1idx, r1kind), (r2, r2idx, r2kind)];
         // find the table - would be nice to use loop-break-val for this
         let mut which_is_load: usize = 2;
@@ -249,9 +269,9 @@ impl<'a> CodeMap<'a> {
         }
         // the other should just be a static offset from PC
         let (table_abase_reg, table_abase_idx, _) = rs[1 - which_is_load];
-        let table_abase = try!(self.value_for_reg(handler, table_abase_idx, table_abase_reg).map_err(GrokSwitchFail::GettingTableAbaseValue));
+        let table_abase = try!(self.value_for_reg(handler, table_abase_idx, true, table_abase_reg).map_err(GrokSwitchFail::GettingTableAbaseValue));
         let (_, load_idx, _) = rs[which_is_load];
-        let table_addr = try!(self.value_for_reg(handler, load_idx, table_addr_reg).map_err(GrokSwitchFail::GettingTableAddrValue));
+        let table_addr = try!(self.value_for_reg(handler, load_idx, false, table_addr_reg).map_err(GrokSwitchFail::GettingTableAddrValue));
 
         let table_addr = VMA(table_addr);
         let table_abase = VMA(table_abase);
@@ -286,7 +306,7 @@ impl<'a> CodeMap<'a> {
         }
 
         // ok!
-        println!("table_addr={} table_abase={} table_len={} item size={:?} sign={:?}", table_addr, table_abase, table_len, table_item_size, table_item_signedness);
+        //println!("table_addr={} table_abase={} table_len={} item size={:?} sign={:?}", table_addr, table_abase, table_len, table_item_size, table_item_signedness);
 
         let bytes = table_item_size.bytes() as usize;
         let table_bytes = (table_len as usize) * bytes;
@@ -305,11 +325,11 @@ impl<'a> CodeMap<'a> {
         Ok(())
     }
 
-    fn value_for_reg(&mut self, handler: &mut GenericHandler, mut before_idx: InsnIdx, mut reg: Reg) -> Result<u64, LastSetterFail> {
+    fn value_for_reg(&mut self, handler: &mut GenericHandler, mut before_idx: InsnIdx, mut can_be_at: bool, mut reg: Reg) -> Result<u64, LastSetterFail> {
         let mut i = 0;
         let mut addend: u64 = 0;
         loop {
-            let (setter_idx, setter_kind) = try!(self.last_setter(handler, before_idx, reg));
+            let (setter_idx, setter_kind) = try!(self.last_setter(handler, before_idx, can_be_at, reg));
             match setter_kind {
                 InsnKind::Set(_, Addrish::Imm(val)) =>
                     return Ok(val.wrapping_add(addend)),
@@ -317,6 +337,7 @@ impl<'a> CodeMap<'a> {
                     addend = addend.wrapping_add(xaddend);
                     reg = other_reg;
                     before_idx = setter_idx;
+                    can_be_at = false;
                 },
                 _ => return Err(LastSetterFail::VFRUnknownSetter),
             }
@@ -325,15 +346,16 @@ impl<'a> CodeMap<'a> {
         }
     }
 
-    fn last_setter(&mut self, handler: &mut GenericHandler, before_idx: InsnIdx, reg: Reg) -> Result<(InsnIdx, InsnKind), LastSetterFail> {
+    fn last_setter(&mut self, handler: &mut GenericHandler, before_idx: InsnIdx, can_be_at: bool, reg: Reg) -> Result<(InsnIdx, InsnKind), LastSetterFail> {
         self.ls_generation += 1;
         self.ls_result_idx = None;
-        try!(self.last_setter_inner(handler, before_idx, false, reg, 0));
+        try!(self.last_setter_inner(handler, before_idx, can_be_at, reg, 0));
         Ok((self.ls_result_idx.unwrap(), self.ls_result_kind))
     }
 
     #[inline]
     fn last_setter_rec(&mut self, handler: &mut GenericHandler, at_or_before_idx: InsnIdx, reg: Reg, depth: usize) -> Result<(), LastSetterFail> {
+        //println!("last_setter_rec: {:?} @ {}/{}", reg, at_or_before_idx, self.idx_to_addr(at_or_before_idx));
         if depth > 20 {
             return Err(LastSetterFail::StackOverflow);
         }
@@ -346,6 +368,7 @@ impl<'a> CodeMap<'a> {
             if iso.ls_generation == ls_generation {
                 if iso.ls_finished {
                     // cached result
+                    //println!("-> cached");
                     return Ok(());
                 } else {
                     return Err(LastSetterFail::Loop);
@@ -360,13 +383,14 @@ impl<'a> CodeMap<'a> {
             let iso = &mut self.insn_state_other[self.insn_state[at_or_before_idx] as usize];
             iso.ls_finished = true;
         }
+        //println!("-> got it");
         Ok(())
     }
 
     fn last_setter_inner(&mut self, handler: &mut GenericHandler, at_or_before_idx: InsnIdx, can_be_at: bool, reg: Reg, depth: usize) -> Result<(), LastSetterFail> {
         let mut idx = at_or_before_idx;
         loop {
-            if !can_be_at || idx != at_or_before_idx {
+            if can_be_at || idx != at_or_before_idx {
                 if self.ls_result_idx == Some(idx) {
                     return Ok(());
                 }
@@ -382,11 +406,13 @@ impl<'a> CodeMap<'a> {
                 }
             }
             let state_word = self.insn_state[idx];
+            //println!("idx={} state_word={}", idx, state_word);
             if state_word < 0 {
                 idx = idx.wrapping_add(state_word as usize);
             } else if state_word > 0 {
                 let mut ok = false;
                 let mut i = 0;
+                //println!("flows_from({})={:?}", self.idx_to_addr(idx), self.insn_state_other[state_word as usize].flows_from);
                 loop {
                     let from_idx = {
                         let flows_from = &self.insn_state_other[state_word as usize].flows_from;

@@ -107,7 +107,7 @@ impl GenericHandler for AArch64Handler {
             let op: u32 = util::copy_from_slice(&data[..4], util::LittleEndian);
             self.op = op;
             self.addr = addr;
-            println!("op={:x}", op);
+            //println!("op={:x}", op);
             aarch64::decode(op, self);
         }
         (size, &self.info)
@@ -131,16 +131,25 @@ impl aarch64::Handler for AArch64Handler {
         self.info.kills_reg[0] = reg(Rd);
     }
     #[inline]
-    fn Rd_out_Rn_addi_skipped_imm_1_ADDXri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
+    fn ADDXri_skipped_Rd_out_Rn_imm_1_ADDXri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
         self.info.kind = InsnKind::Set(reg(Rd), Addrish::AddImm(reg(Rn), imm as u64));
         self.info.kills_reg[0] = reg(Rd);
+    }
+    #[inline]
+    fn ADDXrs_skipped_Rd_out_skipped_Rm_skipped_Rn_skipped_dst_out_shift_src1_src2_1_ADDXrs(&mut self, dst: u32, src1: u32, xshift: u32, src2: u32) -> Self::Res {
+        self.info.kills_reg[0] = reg(dst);
+        let shift = xshift >> 6;
+        let imm6 = xshift & 0b111111;
+        if shift == 0b00 {
+            self.info.kind = InsnKind::Set(reg(dst), Addrish::AddReg(reg(src1), reg(src2), imm6 as u8));
+        }
     }
     #[inline]
     fn Rd_out_skipped_Rn_cmp_skipped_imm_2_SUBSWri(&mut self, Rn: u32, imm: u32) -> Self::Res {
         self.info.kind = InsnKind::CmpImm(reg(Rn), imm as u64);
     }
     #[inline]
-    fn Rd_out_skipped_dst_out_24_ADDSWrs(&mut self, dst: u32) -> Self::Res {
+    fn Rd_out_skipped_dst_out_23_ADDSWrs(&mut self, dst: u32) -> Self::Res {
         self.info.kills_reg[0] = reg(dst);
     }
     #[inline]
@@ -208,13 +217,13 @@ impl aarch64::Handler for AArch64Handler {
     #[inline]
     fn Xd_out_adrp_skipped_label_1_ADRP(&mut self, Xd: u32, label: u32) -> Self::Res {
         self.info.kills_reg[0] = reg(Xd);
-        let a = self.addr.wrapping_add((label << 12).sign_extend(33));
+        let a = (self.addr & !0xfff).wrapping_add((label << 12).sign_extend(33));
         self.info.target_addr = TargetAddr::Data(a);
         self.info.kind = InsnKind::Set(reg(Xd), Addrish::Imm(a.0));
     }
     #[inline]
     fn Xd_out_label_1_ADR(&mut self, Xd: u32, label: u32) -> Self::Res {
-        // same as previous but without the * 0x1000
+        // same as previous but without the * 0x1000 and the mask
         self.info.kills_reg[0] = reg(Xd);
         let a = self.addr.wrapping_add(label.sign_extend(21));
         self.info.target_addr = TargetAddr::Data(a);
@@ -230,7 +239,7 @@ impl aarch64::Handler for AArch64Handler {
         self.info.target_addr = TargetAddr::Code(self.addr.wrapping_add((addr << 2).sign_extend(28)));
     }
     #[inline]
-    fn bcc_skipped_cond_target_1_Bcc(&mut self, cond: u32, target: u32) -> Self::Res {
+    fn Bcc_skipped_cond_target_1_Bcc(&mut self, cond: u32, target: u32) -> Self::Res {
         self.info.kind = InsnKind::Bcc(CC::from_a64(cond));
         self.info.target_addr = TargetAddr::Code(self.addr.wrapping_add((target << 2).sign_extend(21)));
     }
@@ -239,7 +248,7 @@ impl aarch64::Handler for AArch64Handler {
         self.info.kind = InsnKind::Tail;
     }
     #[inline]
-    fn Rn_br_skipped_1_BR(&mut self, Rn: u32) -> Self::Res {
+    fn BR_skipped_Rn_1_BR(&mut self, Rn: u32) -> Self::Res {
         self.info.kind = InsnKind::Br(reg(Rn));
     }
     #[inline]
@@ -250,6 +259,7 @@ impl aarch64::Handler for AArch64Handler {
     fn label_3_LDRDl(&mut self, label: u32) -> Self::Res {
         self.info.target_addr = TargetAddr::Data(self.addr.wrapping_add((label << 2).sign_extend(21)));
     }
+    /*
     #[inline]
     fn uninteresting_2023_ABSv16i8(&mut self) -> Self::Res {
         println!(">uninteresting");
@@ -258,6 +268,10 @@ impl aarch64::Handler for AArch64Handler {
     fn unidentified(&mut self) -> Self::Res {
         println!(">unidentified");
         self.info.kind = InsnKind::Unidentified;
+    }
+    */
+    #[inline]
+    fn unidentified(&mut self) -> Self::Res {
     }
 }
 
