@@ -932,6 +932,8 @@ class SuperLang {
     shl(a, b) { return this.binary(7, '<<', a, b); }
     shr(a, b) { return this.binary(7, '>>', a, b); }
     le(a, b) { return this.binary(8, '<=', a, b); }
+    ge(a, b) { return this.binary(8, '>=', a, b); }
+    eq(a, b) { return this.binary(9, '==', a, b); }
     add(a, b) { return this.binary(4, '+', a, b); }
     sub(a, b) { return this.binary(4, '-', a, b); }
     set(a, b) { return this.binary(14, '=', a, b); }
@@ -983,10 +985,10 @@ class SuperLang {
     stringLit(s) {
         return this.expr(1, null, JSON.stringify(s)); // not quite right
     }
-    u32HexLit(n) { return this.hexLit(n, this.u32); }
-    u32DecLit(n) { return this.decLit(n, this.u32); }
-    i32HexLit(n) { return this.hexLit(n, this.i32); }
-    i32DecLit(n) { return this.decLit(n, this.i32); }
+    u32HexLit(n) { return this.hexLit(n >>> 0, this.u32); }
+    u32DecLit(n) { return this.decLit(n >>> 0, this.u32); }
+    i32HexLit(n) { return this.hexLit(n | 0, this.i32); }
+    i32DecLit(n) { return this.decLit(n | 0, this.i32); }
 
     defineBigConstArray(name, ty, members) {
         let i = 0;
@@ -1058,9 +1060,13 @@ class CLang extends SuperLang {
         });
     }
 
-    hexLit(n, ty) { return '0x' + hexnopad(n) ; }
+    hexLit(n, ty) {
+        let s = '';
+        if(n < 0) { s = '-'; n = -n; }
+        return s + '0x' + hexnopad(n);
+    }
     decLit(n, ty) { return n + ''; }
-    intWidenCast(a, ty) { return a; }
+    maybeImplicitCast(a, ty) { return a; }
     finalRender(indent, stmtList) {
         let lines = [];
         let neededLabels = {};
@@ -1209,9 +1215,9 @@ class RustLang extends SuperLang {
             'isFunc': true,
         });
     }
-    hexLit(n, ty) { return '0x' + hexnopad(n) + ty; }
+    hexLit(n, ty) { return CLang.prototype.hexLit(n, ty) + ty; }
     decLit(n, ty) { return n + ty; }
-    intWidenCast(a, ty) {
+    maybeImplicitCast(a, ty) {
         return this.binary(2, 'as', a, ty);
     }
     finalRender(indent, stmtList, mayImplicitlyReturn) {
@@ -1312,24 +1318,38 @@ CLang.prototype.usize = 'size_t';
 
 let lang = new CLang();
 
-function maxDepthOfNode(node) {
-    if(node.insn || node.fail)
+function maxDepthOfNodeExceptBinary(node) {
+    if(node.insn || node.fail || node.isBinary)
         return 0;
-    return Math.max.apply(null, node.buckets.map(bucket => maxDepthOfNode(bucket))) + 1;
+    return Math.max.apply(null, node.buckets.map(bucket => maxDepthOfNodeExceptBinary(bucket))) + 1;
 }
 
 function tableToDataBasedInfo(node) {
     let words = []; // [word, comment]
     let byId = {};
     let finals = [];
-    let wordForNode = node => getCached(byId, node.id, () => {
-        if(node.insn || node.isBinary || node.fail) {
+    let wordForNode = (node, forceFinal) => getCached(byId, node.id + ':' + forceFinal, () => {
+        if(node.insn || node.fail || forceFinal) {
             let idx = finals.length;
             finals.push(node);
             let comment = node.insn ? `group: ${node.insn.groupName}` :
-                          node.isBinary ? `binary: ${node.id}` :
                           'unidentified';
-            return [lang.i32DecLit(-idx), comment];
+            return [lang.i32DecLit(idx), comment];
+        }
+        if(node.isBinary) {
+            let comment = `binary: ${node.id}`;
+            let offset = words.length;
+            words.push([lang.i32HexLit(node.binaryTestMask | 0), `binary node ${node.id}: mask`]);
+            words.push([lang.i32HexLit(node.binaryTestValue | 0), 'value']);
+            words.push(null);
+            words.push(null);
+            for (let [i, bucket] of enumerate(node.buckets)) {
+                let forceFinal = !(bucket.insn || bucket.fail);
+                let [word, comment] = wordForNode(bucket, forceFinal);
+                comment = `-> ${comment}`;
+                words[offset+2+i] = [word, comment];
+            }
+            return [lang.i32HexLit(-(0x40000000 | offset)), comment];
         }
         let offset = words.length;
         words.push([lang.i32HexLit(node.start | (node.length << 8)),
@@ -1339,19 +1359,19 @@ function tableToDataBasedInfo(node) {
         for (let bucket of node.buckets)
             words.push(null);
         for (let [i, bucket] of enumerate(node.buckets)) {
-            let [word, comment] = wordForNode(bucket);
+            let [word, comment] = wordForNode(bucket, false);
             comment = `case ${i} => ${comment}`;
             words[offset+1+i] = [word, comment];
         }
         return [lang.i32DecLit(offset), `node ${node.id}`];
     });
-    let [_, initialComment] = wordForNode(node);
+    let [_, initialComment] = wordForNode(node, false);
     return {initialComment, words, finals}
 }
 
 function tableToDataBasedSwitcher(node, data) {
     let {initialComment, words, finals} = tableToDataBasedInfo(node);
-    let maxDepth = maxDepthOfNode(node);
+    let maxDepth = maxDepthOfNodeExceptBinary(node);
     let code = [
         lang.defineBigConstArray('TABLE', lang.i32, words),
         lang.letMut('control', lang.i32, null),
@@ -1371,10 +1391,10 @@ function tableToDataBasedSwitcher(node, data) {
         //steps.push(lang.call('println!', [lang.stringLit('{}'), 'cur_idx']));
         steps = steps.concat([
             lang.set('switch_control', lang.index('TABLE', 'cur_idx')),
-            lang.set('start', lang.intWidenCast(lang.bitand('switch_control', lang.i32HexLit(0xff)), lang.u32)),
-            lang.set('size', lang.intWidenCast(lang.bitand(lang.shr('switch_control', lang.u32DecLit(8)), lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('start', lang.maybeImplicitCast(lang.bitand('switch_control', lang.i32HexLit(0xff)), lang.u32)),
+            lang.set('size', lang.maybeImplicitCast(lang.bitand(lang.shr('switch_control', lang.u32DecLit(8)), lang.i32HexLit(0xff)), lang.u32)),
             lang.set('case_idx', lang.add(lang.add('cur_idx', lang.decLit(1, lang.usize)),
-                                          lang.intWidenCast(idx, lang.usize))),
+                                          lang.maybeImplicitCast(idx, lang.usize))),
             lang.set('control', lang.index('TABLE', 'case_idx')),
         ]);
         if(i == maxDepth - 1) {
@@ -1385,12 +1405,21 @@ function tableToDataBasedSwitcher(node, data) {
         } else {
             steps = steps.concat([
                 lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
-                lang.set('cur_idx', lang.intWidenCast('control', lang.usize)),
+                lang.set('cur_idx', lang.maybeImplicitCast('control', lang.usize)),
             ]);
         }
 
     }
     code = code.concat(lang.loop(steps));
+    code.push(lang.if(lang.le('control', lang.i32HexLit(-0x40000000)), [
+        lang.let('xidx', lang.usize, lang.maybeImplicitCast(lang.bitand(lang.neg('control'), lang.i32HexLit(0x3fffffff)), lang.usize)),
+        lang.let('mask', lang.u32, lang.maybeImplicitCast(lang.index('TABLE', 'xidx'), lang.u32)),
+        lang.let('value', lang.u32, lang.maybeImplicitCast(lang.index('TABLE', lang.add('xidx', lang.decLit(1, lang.usize))), lang.u32)),
+        lang.let('case_idx', lang.usize, lang.add('xidx', lang.decLit(2, lang.usize))),
+        lang.if(lang.eq(lang.bitand('op', 'mask'), 'value'),
+            lang.set('case_idx', lang.add('case_idx', lang.decLit(1, lang.usize)))),
+        lang.set('control', lang.index('TABLE', 'case_idx')),
+    ]));
     code.push(lang.let('final_id', lang.i32, lang.neg('control')));
     //code.push(lang.let('final_id', lang.u32, null)));
     let cases = [];
