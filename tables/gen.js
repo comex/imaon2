@@ -9,6 +9,7 @@ let child_process = require('child_process');
 function assert(x) {
     if(!x)
         throw new Error('assertion failure');
+    return x;
 }
 
 class DumbMap {
@@ -172,6 +173,12 @@ function getCached(table, key, cb) {
     return table[key] = cb();
 }
 
+function isEmpty(dict) {
+    for(let x in dict)
+        return false;
+    return true;
+}
+
 // tblgen already generates disassemblers, but:
 // - They seem to be very inefficient; the fixed-length version has giant
 // tables including *uleb128* run through an *interpreter* that branches one at
@@ -255,6 +262,21 @@ function knocksOut(insn, insn2, bucketKnownMask, bucketKnownValue) {
 let choiceOverrides = {
     'PPC/*:00000000': [26, 6],
 };
+
+function fixBinaryTest(node) {
+    let subnode0 = node.buckets[0];
+    node.binaryTestMask = subnode0.insn.instKnownMask & ~node.knownMask;
+    node.binaryTestValue = subnode0.insn.instKnownValue & ~node.knownMask;
+    node.passKnownMask = subnode0.insn.instKnownMask | node.knownMask;
+    if((subnode0.insn.instKnownValue ^ node.knownValue) & (subnode0.insn.instKnownMask & node.knownMask)) {
+        console.log('broken binary test!');
+        console.log(`insn0: & ${hex(subnode0.insn.instKnownMask, 32)} = ${hex(subnode0.insn.instKnownValue, 32)}`);
+        console.log(`node: & ${hex(node.knownMask, 32)} = ${hex(node.knownValue, 32)}`);
+        throw new Error('.');
+    }
+    node.passKnownValue = subnode0.insn.instKnownValue | node.knownValue;
+    return node;
+}
 
 function tryFilter(start, length, knownMask, knownValue, insns, best) {
     let mask = ((1 << length) - 1) << start;
@@ -357,6 +379,17 @@ function tryFilter(start, length, knownMask, knownValue, insns, best) {
 
 function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data) {
     //console.log(depth + ' ' + insns.length + ' $ ' + useCache);
+    /*
+    if(0) { // debug check
+        for(let insn of insns)
+            if((insn.instKnownValue ^ knownValue) & (insn.instKnownMask & knownMask)) {
+                console.log('inst:', JSON.stringify(insn.inst));
+                console.log('instKnown:', JSON.stringify(insn.instKnown));
+                throw new Error(`impossible insn ${insn.name} - insn.instKnownMask=${hex(insn.instKnownMask, 32)} insn.instKnownValue=${hex(insn.instKnownValue, 32)} knownMask=${hex(knownMask, 32)} knownValue=${hex(knownValue, 32)}`);
+            }
+    }
+    */
+
     if(insns.length == 0)
         return data.failNode;
 
@@ -388,7 +421,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                 knownValue: knownValue
             };
         } else {
-            return data.cache[cacheKey] = {
+            return data.cache[cacheKey] = fixBinaryTest({
                 isBinary: true,
                 buckets: [
                     genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
@@ -397,7 +430,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                 possibilities: insns,
                 knownMask: knownMask,
                 knownValue: knownValue
-            };
+            });
         }
     }
 
@@ -433,7 +466,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                 }
                 let newInsns = insns.slice(0);
                 newInsns.splice(i, 1);
-                return data.cache[cacheKey] = {
+                return data.cache[cacheKey] = fixBinaryTest({
                     isBinary: true,
                     buckets: [
                         genDisassemblerRec([insn], knownMask | insn.instKnownMask, knownValue | insn.instKnownValue, useCache, depth + 1, data),
@@ -442,7 +475,7 @@ function genDisassemblerRec(insns, knownMask, knownValue, useCache, depth, data)
                     possibilities: insns,
                     knownMask: knownMask,
                     knownValue: knownValue
-                };
+                });
 
             }
         }
@@ -491,7 +524,7 @@ function genDisassembler(insns, ns, options) {
     let data = options;
     data.uid = uid;
     data.cache = {};
-    data.failNode = {fail: true};
+    data.failNode = {fail: true, knownMask: 0, knownValue: 0};
     data.bitLength = insns[0].inst.length;
     //console.log('genDisassembler:', uid, bitLength);
     // find potential conflicts (by brute force)
@@ -517,6 +550,7 @@ function uniqueTableNodes(node) {
                         node.buckets.map(rec)
                         : undefined,
                        start: node.start,
+                       constrainedEqualBits: node.insn !== undefined ? node.insn.instConstrainedEqualBits : null,
                       };
         if(minNode.buckets !== undefined) {
             let first = minNode.buckets[0];
@@ -524,17 +558,46 @@ function uniqueTableNodes(node) {
                 return first;
         }
         let cacheKey = JSON.stringify(minNode);
-        let node2id;
-        if(node2id = cache[cacheKey])
-            return node2id;
+        let node2s = setdefault(cache, cacheKey, []);
+        for(let node2 of node2s) {
+            //console.log('->', node2.binaryTestMask, node2.binaryTestValue);
+            // This node may be compatible, but it depends on
+            // binaryTestMask/Value.
+            // It's ok to add extra bits to the test which we know will
+            // be true in the true case, i.e. match
+            // buckets[0].insn.instKnownMask/Value.
+            if(node.binaryTestMask === node2.binaryTestMask &&
+               node.binaryTestValue === node2.binaryTestValue) {
+                // pass - including the case where neither is binary
+            } else if((node2.binaryTestMask & node.passKnownValue) != node2.binaryTestValue ||
+                      (node2.binaryTestMask & ~node.passKnownMask)) {
+                // bits don't work for this instruction at all
+                continue;
+                // otherwise, there are insufficient bits; could our bits work for their instruction?
+            } else if((node.binaryTestMask & node2.passKnownValue) == node.binaryTestValue &&
+                      (node.binaryTestMask & ~node2.passKnownMask)) {
+                node2.binaryTestMask = node.binaryTestMask;
+                node2.binaryTestValue = node.binaryTestValue;
+                //console.log('ok!');
+            } else
+                continue;
+            // merge
+            node2.passKnownMask &= node.passKnownMask;
+            node2.passKnownValue &= node.passKnownMask;
+            assert(node.knownValue !== undefined);
+            node2.knownMask &= node.knownMask;
+            node2.knownValue &= node.knownValue;
+            return node2.id;
+        }
+        // no match
+        node2s.push(node);
         node.id = byId.length;
-        cache[cacheKey] = node.id;
         byId.push(node);
         if(minNode.buckets)
             node.buckets = minNode.buckets.map(idx => byId[idx]);
         return node.id;
     }
-    rec(node);
+    return byId[rec(node)];
     /*
     console.log('@');
     for(let cacheKey in cache)
@@ -618,6 +681,24 @@ function printHeads(insns) {
         console.log('head ' + l[0] + ' (' + l[1] + ')');
 }
 
+function testEvalWithTable(node, op) {
+    if(node.fail)
+        return null;
+    if(node.insn)
+        return node.insn;
+    if(node.isBinary) {
+        for(let bucket of node.buckets) {
+            let res = testEvalWithTable(bucket, op);
+            if(res !== null)
+                return res;
+        }
+        return null;
+    }
+    let x = (op >> node.start) & ((1 << node.length) - 1);
+    let bucket = assert(node.buckets[x]);
+    return testEvalWithTable(bucket, op);
+}
+
 function ppTable(node, indent, depth) {
     indent = (indent || '') + '  ';
     depth = (depth || 0) + 1;
@@ -625,13 +706,13 @@ function ppTable(node, indent, depth) {
     if(node.fail)
         s = 'fail';
     else if(node.insn)
-        s = '<' + hex(node.knownValue, node.insn.inst.length) + '> insn:' + node.insn.name + ' >>' + JSON.stringify(node.insn.inst);
+        s = 'insn:' + node.insn.name + ' >>' + JSON.stringify(node.insn.inst);
     else {
         s = '{' + depth + '} ';
         if(!node.isBinary) {
             s += 'test ' + node.start + '..' + (node.start + node.length - 1);
         } else {
-            s += 'test for first insn';
+            s += `test & 0x${hexnopad(node.binaryTestMask)} == 0x${hexnopad(node.binaryTestValue)}`;
         }
         s += ' (' + node.possibilities.length + ' total insns - ';
         s += node.possibilities.map(i => i.name);
@@ -640,6 +721,7 @@ function ppTable(node, indent, depth) {
             s += indent + pad(i, 4) + ': ' + ppTable(node.buckets[i], indent, depth) + '\n';
         }
     }
+    s = '<& ' + hex(node.knownMask, 32) + ' == ' + hex(node.knownValue, 32) + '> ' + s;
     s = `[${node.id}] ${s}`;
     return s;
 }
@@ -757,6 +839,7 @@ function genConstraintTest(insn, unknown) {
         else
             test = part;
     }
+    assert(test !== null);
     return test;
 }
 
@@ -827,7 +910,7 @@ class SuperLang {
     render(x) { return this.renderEx(99, null, x); }
     renderEx(precedence, nextTo, expr) {
         if(expr.charCodeAt) {
-            let prec = expr.match(/^[a-zA-Z0-9_\.]+$/) ? 1 : 98;
+            let prec = expr.match(/^[a-zA-Z0-9_\.]+!?$/) ? 1 : 98;
             expr = this.expr(prec, null, expr);
         }
         if(expr.precedence === undefined || expr.stmt)
@@ -906,11 +989,13 @@ class SuperLang {
     i32DecLit(n) { return this.decLit(n, this.i32); }
 
     defineBigConstArray(name, ty, members) {
+        let i = 0;
         return this.stmt({
             'justBlock': true,
             'start': [this.defineBigConstArrayStart(name, ty, members.length)],
             'substmts': members.map(([mem, comment]) => {
-                return {'stmt': true, 'text': mem + ',' + (comment ? (' // ' + comment) : '')};
+                comment = `[${i++}]` + (comment ? ' ' : '') + comment;
+                return {'stmt': true, 'text': mem + ', // ' + comment};
             }),
             'end': [this.defineBigConstArrayEnd()],
         });
@@ -1047,6 +1132,7 @@ class CLang extends SuperLang {
         return `static const ${ty} ${name}[] = {`;
     }
     defineBigConstArrayEnd() { return '};'; }
+    debugAssert(x) { return this.call('assert', [x]); }
 }
 class RustLang extends SuperLang {
     return(expr) {
@@ -1210,6 +1296,7 @@ class RustLang extends SuperLang {
         return `static ${name}: [${ty}; ${length}] = [`;
     }
     defineBigConstArrayEnd() { return '];'; }
+    debugAssert(x) { return this.call('debug_assert!', [x]); }
 }
 
 RustLang.prototype.isRust = true;
@@ -1281,6 +1368,7 @@ function tableToDataBasedSwitcher(node, data) {
         // this AST building is pretty pointless but whatever
         let mask = lang.sub(lang.shl(lang.u32DecLit(1), 'size'), lang.u32DecLit(1));
         let idx = lang.bitand(lang.shr('op', 'start'), mask);
+        //steps.push(lang.call('println!', [lang.stringLit('{}'), 'cur_idx']));
         steps = steps.concat([
             lang.set('switch_control', lang.index('TABLE', 'cur_idx')),
             lang.set('start', lang.intWidenCast(lang.bitand('switch_control', lang.i32HexLit(0xff)), lang.u32)),
@@ -1290,7 +1378,10 @@ function tableToDataBasedSwitcher(node, data) {
             lang.set('control', lang.index('TABLE', 'case_idx')),
         ]);
         if(i == maxDepth - 1) {
-            steps.push(lang.break());
+            steps = steps.concat([
+                lang.debugAssert(lang.le('control', lang.i32DecLit(0))),
+                lang.break(),
+            ]);
         } else {
             steps = steps.concat([
                 lang.if(lang.le('control', lang.i32DecLit(0)), lang.break()),
@@ -1320,7 +1411,7 @@ function tableToSwitcherRec(node, data, skipConstraintTest) {
         let insn = node.insn;
         let unknown = insn.instDependsMask & ~node.knownMask;
         let f = next => next;
-        if(unknown && !skipConstraintTest) {
+        if(unknown && !isEmpty(insn.instConstrainedEqualBits) && !skipConstraintTest) {
             f = next => [
                 lang.if(lang.not(genConstraintTest(insn, unknown)),
                         gotoOrGen(data, '_unidentified', '', () =>
@@ -1343,7 +1434,7 @@ function tableToSwitcherRec(node, data, skipConstraintTest) {
             if(node.isBinary) {
                 let insn = node.buckets[0].insn;
                 let unknown = insn.instConstrainedMask & ~node.knownMask;
-                let test = '(op & ' + lang.u32HexLit(insn.instKnownMask & ~node.knownMask) + ') == ' + lang.u32HexLit(insn.instKnownValue & ~node.knownMask);
+                let test = '(op & ' + lang.u32HexLit(node.binaryTestMask) + ') == ' + lang.u32HexLit(node.binaryTestValue);
                 if(unknown)
                     test = lang.and(test, genConstraintTest(insn, unknown));
                 r = lang.if(test,
@@ -1608,7 +1699,9 @@ function coalesceInsnsWithMap(insns, func) {
                         //assert(byPat.get(inst));
                         assert(byPat.remove(inst));
                         inst[i] = '?';
-                        byPat.set(inst, insns.concat(insns2));
+                        let insns3 = byPat.get(inst) || [];
+                        //console.log('combine-merging', insns.map(i => i.name), insns2.map(i => i.name), insns3.map(i => i.name));
+                        byPat.set(inst, insns.concat(insns2).concat(insns3));
                         didSomething = true;
                         break;
                     }
@@ -1628,7 +1721,11 @@ function coalesceInsnsWithMap(insns, func) {
                         if(!(b1 === b2 || b1 === '?'))
                             continue il;
                     }
-                    //console.log('merging', insns.map(i => i.name), insns2.map(i => i.name));
+                    /*
+                    console.log('dominator-merging', insns.map(i => i.name), insns2.map(i => i.name));
+                    console.log('super=', JSON.stringify(inst));
+                    console.log('sub  =', JSON.stringify(inst2));
+                    */
                     // ok, inst dominates inst2; we do not need to distinguish
                     insns.push.apply(insns, insns2);
                     byPat.remove(inst2);
@@ -2134,6 +2231,7 @@ function hookishCoalesce(submode) {
 function genHookishDisassembler(submode, outfile) {
     let insns2 = hookishCoalesce(submode);
     let node = genDisassembler(insns2, ns, {maxLength: 5, uniqueNodes: true});
+    //console.log(testEvalWithTable(node, 0xa9014ff4)); throw '.';
     //console.log(ppTable(node));
     let source = genGeneratedWarning() + '\n';
     for(let [groupName, groupInsns] of items(groupBy(insn => insn.groupName, insns2))) {
