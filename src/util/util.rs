@@ -25,6 +25,7 @@ use std::hash::{Hash, BuildHasherDefault};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
+use std::iter::FromIterator;
 
 extern crate fnv;
 use fnv::FnvHasher;
@@ -1309,5 +1310,145 @@ pub fn zero_vec<T: Swap>(size: usize) -> Vec<T> {
     unsafe { vec.set_len(size); }
     vec.set_memory(0);
     vec
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct BitSet32 { pub bits: u32 }
+impl BitSet32 {
+    #[inline]
+    pub fn empty() -> BitSet32 { BitSet32 { bits: 0 } }
+    #[inline]
+    pub fn with_range(range: Range<u8>) -> BitSet32 {
+        assert!(range.start <= range.end && range.end <= 32);
+        let x = range.end - range.start;
+        BitSet32 { bits: if x == 0 {
+            0
+        } else {
+            (!0u32) >> (32 - x as u32) << (range.start as u32)
+        } }
+    }
+    #[inline]
+    pub fn highest_set_bit(self) -> Option<u8> {
+        let lz = self.bits.leading_zeros() as u8;
+        if lz == 32 { None } else { Some(31 - lz) }
+    }
+    #[inline]
+    pub fn highest_set_bit_before(self, mut before: u8) -> Option<u8> {
+        if before > 31 { before = 31; }
+        let bits = self.bits << ((31 - before) as u32);
+        let lz = bits.leading_zeros() as u8;
+        if lz == 32 { None } else { Some(31 - lz) }
+    }
+    #[inline]
+    pub fn lowest_set_bit(self) -> Option<u8> {
+        let tz = self.bits.trailing_zeros() as u8;
+        if tz == 32 { None } else { Some(tz) }
+    }
+    #[inline]
+    pub fn lowest_set_bit_after(self, after: u8) -> Option<u8> {
+        if after >= 32 { return None; }
+        let bits = self.bits >> (after as u32);
+        let tz = bits.trailing_zeros() as u8;
+        if tz == 32 { None } else { Some(tz) }
+    }
+    #[inline]
+    pub fn set_bits(self) -> SetBits32 {
+        SetBits32(self)
+    }
+    #[inline]
+    pub fn has(self, bit: u8) -> bool {
+        assert!(bit < 32);
+        self.bits & (1u32 << bit) != 0
+    }
+    #[inline]
+    pub fn add(&mut self, bit: u8) {
+        assert!(bit < 32);
+        self.bits |= 1u32 << bit
+    }
+    #[inline]
+    pub fn adding(self, bit: u8) -> Self {
+        assert!(bit < 32);
+        BitSet32 { bits: self.bits | 1u32 << bit }
+    }
+    #[inline]
+    pub fn remove(&mut self, bit: u8) {
+        assert!(bit < 32);
+        self.bits &= !(1u32 << bit)
+    }
+    #[inline]
+    pub fn removing(self, bit: u8) -> Self {
+        assert!(bit < 32);
+        BitSet32 { bits: self.bits & !(1u32 << bit) }
+    }
+    #[inline]
+    pub fn assign(&mut self, bit: u8, val: bool) {
+        if val { self.add(bit) } else { self.remove(bit) }
+    }
+    #[inline]
+    pub fn assigning(self, bit: u8, val: bool) -> Self {
+        if val { self.adding(bit) } else { self.removing(bit) }
+    }
+    #[inline]
+    pub fn subset(self, range: Range<u8>) -> Self {
+        self & BitSet32::with_range(range)
+    }
+    #[inline]
+    pub fn count(self) -> u8 {
+        self.bits.count_ones() as u8
+    }
+}
+impl Debug for BitSet32 {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "BitSet32{:?}", self)
+    }
+}
+impl Display for BitSet32 {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        try!(write!(f, "{{"));
+        let mut first = true;
+        for bit in self.set_bits() {
+            try!(write!(f, "{}{}",
+                        if first { ", " } else { "" },
+                        bit));
+            first = false;
+        }
+        write!(f, "}}")
+    }
+}
+impl<T: Narrow<u8>> FromIterator<T> for BitSet32 {
+    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self {
+        let mut set = Self::empty();
+        for val in iter {
+            let val: u8 = val.narrow().expect("overflow in BitSet32::from_iter");
+            set.add(val);
+        }
+        set
+    }
+}
+
+impl std::ops::BitOr<BitSet32> for BitSet32 {
+    type Output = BitSet32;
+    fn bitor(self, rhs: BitSet32) -> BitSet32 { BitSet32 { bits: self.bits | rhs.bits } }
+}
+impl std::ops::BitAnd<BitSet32> for BitSet32 {
+    type Output = BitSet32;
+    fn bitand(self, rhs: BitSet32) -> BitSet32 { BitSet32 { bits: self.bits & rhs.bits } }
+}
+impl std::ops::Not for BitSet32 {
+    type Output = BitSet32;
+    fn not(self) -> BitSet32 { BitSet32 { bits: !self.bits } }
+}
+
+pub struct SetBits32(BitSet32);
+impl Iterator for SetBits32 {
+    type Item = u8;
+    #[inline]
+    fn next(&mut self) -> Option<u8> {
+        let res = self.0.lowest_set_bit();
+        if let Some(bit) = res {
+            self.0.bits &= !(1u32 << bit);
+        }
+        res
+    }
 }
 

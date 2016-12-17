@@ -2,6 +2,9 @@
 [build-dependencies]
 
 [dependencies]
+[dependencies.bitflags]
+version = "0.7.0"
+
 [dependencies.dis_generated_jump_dis]
 path = "../dis-generated_jump_dis"
 version = "=0.0.0"

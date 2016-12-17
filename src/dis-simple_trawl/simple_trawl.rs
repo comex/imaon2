@@ -1,12 +1,14 @@
+#[macro_use] extern crate bitflags;
 extern crate dis_generated_jump_dis;
 extern crate exec;
+extern crate util;
 
 use self::dis_generated_jump_dis::{Reg, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
 use self::exec::{VMA, Segment};
-use util;
-use util::{Narrow, Endian, Unsigned, ReadCell};
-use std::mem::replace;
+use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32};
+use std::mem::{replace, transmute};
+use std::ptr;
 
 type InsnIdx = usize;
 
@@ -28,6 +30,103 @@ impl InsnStateOther {
     }
 }
 
+bitflags! {
+    flags BBFlags: u8 {
+        const BBF_VALID = 1,
+        const BBF_OOL_REG_VALS = 2,
+    }
+}
+
+const BB_NUM_INLINE_REG_VALS: usize = 2;
+
+struct BabyBlock {
+    flags: BBFlags,
+    start_off: u8,
+    end_off: u8,
+    rwkv_count: u8, // lol popcount
+    regs_with_known_val: BitSet32,
+    reg_vals: [u64; BB_NUM_INLINE_REG_VALS], // either inline or actually a Box<[u64]>
+}
+
+impl BabyBlock {
+    #[inline]
+    unsafe fn ool_reg_vals(&mut self) -> *mut Box<[u64]> {
+        unsafe { transmute(&mut self.reg_vals) }
+    }
+    fn reg_vals<'a>(&'a self) -> &'a [u64] {
+        #[allow(mutable_transmutes)]
+        unsafe { transmute::<&'a BabyBlock, &'a mut BabyBlock>(self).reg_vals_mut() }
+    }
+    fn reg_vals_mut(&mut self) -> &mut [u64] {
+        if self.flags.contains(BBF_OOL_REG_VALS) {
+            unsafe { &mut (*self.ool_reg_vals())[..] }
+        } else {
+            &mut self.reg_vals[..]
+        }
+    }
+    fn reg_val(&self, reg: Reg) -> Option<u64> {
+        let reg = reg.0 as u8;
+        let rwkv = self.regs_with_known_val;
+        if rwkv.has(reg) {
+            let position = rwkv.subset(0..reg).count() as usize;
+            Some(self.reg_vals()[position])
+        } else { None }
+    }
+    fn add_reg_val(&mut self, reg: Reg, val: u64) {
+        let reg = reg.0 as u8;
+        let rwkv = self.regs_with_known_val;
+        let vals = self.reg_vals_mut() as *mut [u64];
+        if rwkv.has(reg) {
+            let position = rwkv.subset(0..reg).count() as usize;
+            unsafe { (*vals)[position] = val; }
+            return;
+        }
+        let new_count = (self.rwkv_count + 1) as usize;
+        let old_cap = unsafe { (*vals).len() };
+        if new_count > old_cap {
+            let new_cap = 4 * old_cap;
+            let mut new = util::zero_vec(new_cap).into_boxed_slice();
+            new[..old_cap].copy_from_slice(unsafe { &(*vals)[..] });
+            // XXX we'd like to drop here
+            if self.flags.contains(BBF_OOL_REG_VALS) {
+                let _ = unsafe { ptr::read(self.ool_reg_vals()) };
+            }
+            unsafe { ptr::write(self.ool_reg_vals(), new); }
+        }
+        let vals = self.reg_vals_mut();
+        let position = rwkv.subset(0..reg).count() as usize;
+        let move_count = rwkv.subset(reg..32).count() as usize;
+        let new_rwkv = rwkv.adding(reg);
+        for i in position..position+move_count {
+            vals[i+1] = vals[i];
+        }
+        vals[position] = val;
+    }
+    fn remove_reg_val(&mut self, reg: Reg) {
+        let reg = reg.0 as u8;
+        let rwkv = self.regs_with_known_val;
+        if rwkv.has(reg) {
+            let position = rwkv.subset(0..reg).count() as usize;
+            let move_count = rwkv.subset(reg+1..32).count() as usize;
+            let vals = self.reg_vals_mut();
+            for i in position..position+move_count {
+                vals[i] = vals[i+1];
+            }
+        }
+
+    }
+}
+
+impl Drop for BabyBlock {
+    fn drop(&mut self) {
+        if self.flags.contains(BBF_OOL_REG_VALS) {
+            let _ = unsafe { ptr::read(self.ool_reg_vals()) };
+        }
+    }
+}
+
+/*
+
 pub struct CodeMap<'a> {
     region_start: VMA,
     region_size: u64,
@@ -36,7 +135,7 @@ pub struct CodeMap<'a> {
     // 0 => unseen
     // -x => distance to previous instruction, which flows to this one
     // +x => index into insn_state_other
-    insn_state: Vec<i32>,
+    insn_state: Vec<InsnState>,
     insn_state_other: Vec<InsnStateOther>,
     todo: VecDeque<InsnIdx>,
     switchlike_br_idxs: Vec<InsnIdx>,
@@ -448,3 +547,4 @@ impl<'a> CodeMap<'a> {
         }
     }
 }
+*/

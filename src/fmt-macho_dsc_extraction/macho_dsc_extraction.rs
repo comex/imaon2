@@ -2,8 +2,8 @@ extern crate util;
 extern crate exec;
 extern crate fmt_macho as macho;
 extern crate fmt_macho_bind as macho_bind;
-#[macro_use]
-extern crate macros;
+#[macro_use] extern crate macros;
+#[macro_use] extern crate bitflags; // for simple_trawl
 use macho::{MachO, copy_nlist_to_vec, exec_sym_to_nlist_64, copy_nlist_from_slice, ParseDyldBindState, x_nlist_64, DscTabs, MachOLookupExportOptions};
 use macho::dyldcache::{ImageCache, ImageCacheEntry, SegMapEntry, DyldCache};
 use std::default::Default;
