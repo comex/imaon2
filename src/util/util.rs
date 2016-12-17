@@ -1305,10 +1305,23 @@ pub fn subset_sorted_list<T, F, G>(list: &[T], mut ge_start: F, mut le_end: G) -
     &list[..end]
 }
 
-pub fn zero_vec<T: Swap>(size: usize) -> Vec<T> {
+pub unsafe trait Zeroable: Sized {
+    fn zeroed() -> Self {
+        unsafe {
+            let mut buf: Self = uninitialized();
+            memset(&mut buf as *mut Self as *mut u8, 0, size_of::<Self>());
+            buf
+        }
+    }
+}
+unsafe impl<T: Swap> Zeroable for T {}
+
+pub fn zero_vec<T: Zeroable>(size: usize) -> Vec<T> {
     let mut vec: Vec<T> = Vec::with_capacity(size);
-    unsafe { vec.set_len(size); }
-    vec.set_memory(0);
+    unsafe {
+        vec.set_len(size);
+        memset(vec.as_mut_ptr() as *mut u8, 0, size * size_of::<T>());
+    }
     vec
 }
 

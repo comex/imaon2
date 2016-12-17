@@ -1,4 +1,5 @@
 #[macro_use] extern crate bitflags;
+#[macro_use] extern crate macros;
 extern crate dis_generated_jump_dis;
 extern crate exec;
 extern crate util;
@@ -6,7 +7,7 @@ extern crate util;
 use self::dis_generated_jump_dis::{Reg, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
 use self::exec::{VMA, Segment};
-use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32};
+use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32, Zeroable};
 use std::mem::{replace, transmute};
 use std::ptr;
 
@@ -34,19 +35,23 @@ bitflags! {
     flags BBFlags: u8 {
         const BBF_VALID = 1,
         const BBF_OOL_REG_VALS = 2,
+        const BBF_HAVE_NEXT = 4,
     }
 }
 
 const BB_NUM_INLINE_REG_VALS: usize = 2;
 
 struct BabyBlock {
+    next_block: u32,
     flags: BBFlags,
     start_off: u8,
-    end_off: u8,
+    end_off: u8, // inclusive
     rwkv_count: u8, // lol popcount
     regs_with_known_val: BitSet32,
+    // 4 bytes wasted here
     reg_vals: [u64; BB_NUM_INLINE_REG_VALS], // either inline or actually a Box<[u64]>
 }
+unsafe impl Zeroable for BabyBlock {}
 
 impl BabyBlock {
     #[inline]
@@ -125,18 +130,14 @@ impl Drop for BabyBlock {
     }
 }
 
-/*
+pub const CODEMAP_BB_GRAIN: usize = 32;
 
 pub struct CodeMap<'a> {
     region_start: VMA,
-    region_size: u64,
-    grain_shift: u8,
+    region_size: usize,
     insn_data: &'a [ReadCell<u8>],
-    // 0 => unseen
-    // -x => distance to previous instruction, which flows to this one
-    // +x => index into insn_state_other
-    insn_state: Vec<InsnState>,
-    insn_state_other: Vec<InsnStateOther>,
+    bbs: Vec<BabyBlock>,
+    extra_bbs: Vec<BabyBlock>,
     todo: VecDeque<InsnIdx>,
     switchlike_br_idxs: Vec<InsnIdx>,
     endian: Endian,
@@ -177,17 +178,16 @@ pub enum GrokSwitchFail {
 }
 
 impl<'a> CodeMap<'a> {
-    pub fn new(region_start: VMA, grain_shift: u8, insn_data: &'a [ReadCell<u8>], endian: Endian, segs: &'a [Segment]) -> Self {
-        let region_size = (insn_data.len() >> grain_shift) as u64;
-        let num_insns: usize = (region_size >> grain_shift).narrow().unwrap();
+    pub fn new(region_start: VMA, insn_data: &'a [ReadCell<u8>], endian: Endian, segs: &'a [Segment]) -> Self {
+        let region_size = insn_data.len();
+        let num_bbs = region_size / CODEMAP_BB_GRAIN;
         CodeMap {
             region_start: region_start,
             region_size: region_size,
-            grain_shift: grain_shift,
             insn_data: insn_data,
-            insn_state: util::zero_vec(num_insns),
+            bbs: util::zero_vec(num_bbs),
             // start with dummy 0 entry
-            insn_state_other: vec![InsnStateOther::new(Vec::new())],
+            extra_bbs: vec![BabyBlock::zeroed()],
             todo: VecDeque::new(),
             switchlike_br_idxs: Vec::new(),
             endian: endian,
@@ -199,6 +199,8 @@ impl<'a> CodeMap<'a> {
         }
     }
     pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
+        unimplemented!()
+        /*
         while !self.todo.is_empty() {
             self.go_round(handler);
             let idxs = replace(&mut self.switchlike_br_idxs, Vec::new());
@@ -207,21 +209,70 @@ impl<'a> CodeMap<'a> {
                 self.grok_switch(handler, idx, read).unwrap(); // xxx
             }
         }
+        */
     }
-    pub fn addr_to_idx(&self, addr: VMA) -> Option<InsnIdx> {
-        let offset = addr.wrapping_sub(self.region_start);
-        if offset < self.region_size &&
-           offset & ((1 << self.grain_shift) - 1) == 0 {
-            Some((offset >> self.grain_shift) as usize)
-        } else {
-            None
-        }
+    #[inline]
+    pub fn addr_to_off(&self, addr: VMA) -> Option<usize> {
+        let off = addr.wrapping_sub(self.region_start);
+        if off < (self.region_size as u64) { Some(off as usize) } else { None }
     }
     #[inline]
     #[allow(dead_code)]
-    pub fn idx_to_addr(&self, addr: InsnIdx) -> VMA {
-        self.region_start + (addr << self.grain_shift) as u64
+    pub fn off_to_addr(&self, off: usize) -> VMA {
+        self.region_start + (off as u64)
     }
+    fn bb_for_off(&mut self, off: usize) -> (&mut BabyBlock, bool /*is_new */) {
+        let slot = off / CODEMAP_BB_GRAIN;
+        let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
+        let mut x = &mut self.bbs[slot];
+        loop {
+            if !x.flags.contains(BBF_VALID) {
+                // initialize
+                x.flags |= BBF_VALID;
+                x.start_off = slot_off;
+                x.end_off = 255; // should update later
+                return (x, true);
+            }
+            let start_off = x.start_off;
+            if start_off > slot_off {
+                let idx: u32 = self.extra_bbs.len().narrow().unwrap();
+                let mut new = BabyBlock::zeroed();
+                new.flags |= BBF_VALID | BBF_HAVE_NEXT;
+                new.next_block = idx;
+                new.start_off = slot_off;
+                new.end_off = start_off - 1;
+                let old = replace(x, new);
+                drop(x);
+
+                self.extra_bbs.push(old);
+                let x = self.extra_bbs.last_mut().unwrap();
+                return (x, true);
+            }
+            if slot_off > x.end_off {
+                if x.flags.contains(BBF_HAVE_NEXT) {
+                    // XXX with nonlexical lifetimes this shouldn't be necessary
+                    // as self.extra_bbs should be definitely unborrowed after the drop() calls
+                    let hack_extra_bbs: &'static mut Vec<BabyBlock> = unsafe { transmute(&mut self.extra_bbs) };
+                    x = &mut hack_extra_bbs[x.next_block as usize];
+                    continue;
+                } else {
+                    let idx: u32 = self.extra_bbs.len().narrow().unwrap();
+                    x.next_block = idx;
+                    drop(x);
+                    let mut new = BabyBlock::zeroed();
+                    new.flags |= BBF_VALID;
+                    new.start_off = slot_off;
+                    new.end_off = 255;
+                    self.extra_bbs.push(new);
+                    let x = self.extra_bbs.last_mut().unwrap();
+                    return (x, true);
+                }
+            }
+            return (x, false);
+        }
+
+    }
+    /*
     // returns whether we should proceed
     fn mark_flow(&mut self, from: InsnIdx, to: InsnIdx, is_flow: bool) -> bool {
         //print!("mark_flow from {}/{} to {}/{} ", from, self.idx_to_addr(from), to, self.idx_to_addr(to));
@@ -546,5 +597,5 @@ impl<'a> CodeMap<'a> {
             None
         }
     }
+    */
 }
-*/
