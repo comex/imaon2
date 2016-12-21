@@ -16,6 +16,7 @@ path = "../dis-llvmdis"
 version = "=0.0.0"
 
 [features]
+nightly = ["dis/nightly", "dis_gendis/nightly", "dis_llvmdis/nightly"]
 use_llvm = ["dis/use_llvm", "dis_gendis/use_llvm", "dis_llvmdis/use_llvm", "dis_llvmdis"]
 
 [lib]

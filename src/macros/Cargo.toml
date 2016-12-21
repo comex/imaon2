@@ -6,6 +6,7 @@
 version = "0.2.2"
 
 [features]
+nightly = []
 use_llvm = []
 
 [lib]

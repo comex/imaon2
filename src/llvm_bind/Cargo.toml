@@ -4,6 +4,7 @@
 [dependencies]
 
 [features]
+nightly = []
 use_llvm = []
 
 [lib]

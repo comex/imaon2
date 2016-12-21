@@ -26,6 +26,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
+nightly = ["bsdlike_getopts/nightly", "dis/nightly", "exec/nightly", "util/nightly"]
 use_llvm = ["bsdlike_getopts/use_llvm", "dis/use_llvm", "exec/use_llvm", "llvm-sys", "util/use_llvm"]
 
 [lib]

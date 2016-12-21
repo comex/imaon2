@@ -19,6 +19,7 @@ path = "../fmt-raw_binary"
 version = "=0.0.0"
 
 [features]
+nightly = ["exec/nightly", "fmt_elf/nightly", "fmt_macho/nightly", "fmt_raw_binary/nightly"]
 use_llvm = ["exec/use_llvm", "fmt_elf/use_llvm", "fmt_macho/use_llvm", "fmt_raw_binary/use_llvm"]
 
 [lib]

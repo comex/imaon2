@@ -11,6 +11,7 @@ extern crate toml;
 
 static FEATURES: &'static [&'static str] = &[
     "use_llvm",
+    "nightly",
 ];
 
 #[macro_use] extern crate lazy_static;

@@ -7,7 +7,7 @@ extern crate util;
 use self::dis_generated_jump_dis::{Reg, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
 use self::exec::{VMA, Segment};
-use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32, Zeroable};
+use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32, Zeroable, unlikely};
 use std::mem::{replace, transmute};
 use std::ptr;
 
@@ -234,7 +234,7 @@ impl<'a> CodeMap<'a> {
                 return (x, true);
             }
             let start_off = x.start_off;
-            if start_off > slot_off {
+            if unlikely(start_off > slot_off) {
                 let idx: u32 = self.extra_bbs.len().narrow().unwrap();
                 let mut new = BabyBlock::zeroed();
                 new.flags |= BBF_VALID | BBF_HAVE_NEXT;
@@ -248,7 +248,7 @@ impl<'a> CodeMap<'a> {
                 let x = self.extra_bbs.last_mut().unwrap();
                 return (x, true);
             }
-            if slot_off > x.end_off {
+            if unlikely(slot_off > x.end_off) {
                 if x.flags.contains(BBF_HAVE_NEXT) {
                     // XXX with nonlexical lifetimes this shouldn't be necessary
                     // as self.extra_bbs should be definitely unborrowed after the drop() calls

@@ -18,6 +18,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
+nightly = ["build_run_gen/nightly", "exec/nightly", "util/nightly", "build_help/nightly"]
 use_llvm = ["build_run_gen/use_llvm", "exec/use_llvm", "util/use_llvm", "build_help/use_llvm"]
 
 [lib]

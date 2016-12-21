@@ -23,6 +23,7 @@ version = "0.5.0"
 version = "0.1.8"
 
 [features]
+nightly = ["bsdlike_getopts/nightly", "macros/nightly"]
 use_llvm = ["bsdlike_getopts/use_llvm", "macros/use_llvm"]
 
 [lib]

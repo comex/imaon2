@@ -10,6 +10,7 @@ path = "../build-run_gen"
 version = "=0.0.0"
 
 [features]
+nightly = ["build_run_gen/nightly", "build_help/nightly"]
 use_llvm = ["build_run_gen/use_llvm", "build_help/use_llvm"]
 
 [lib]

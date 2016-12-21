@@ -7,6 +7,7 @@ path = "../macros"
 version = "=0.0.0"
 
 [features]
+nightly = ["macros/nightly"]
 use_llvm = ["macros/use_llvm"]
 
 [lib]

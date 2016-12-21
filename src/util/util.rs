@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "nightly", feature(core_intrinsics))]
 extern crate libc;
 extern crate bsdlike_getopts as getopts;
 extern crate memmap;
@@ -1465,3 +1466,11 @@ impl Iterator for SetBits32 {
     }
 }
 
+#[cfg(feature = "nightly")] #[inline(always)]
+pub fn likely(b: bool) -> bool { unsafe { std::intrinsics::likely(b) } }
+#[cfg(feature = "nightly")] #[inline(always)]
+pub fn unlikely(b: bool) -> bool { unsafe { std::intrinsics::unlikely(b) } }
+#[cfg(not(feature = "nightly"))] #[inline(always)]
+pub fn likely(b: bool) -> bool { b }
+#[cfg(not(feature = "nightly"))] #[inline(always)]
+pub fn unlikely(b: bool) -> bool { b }

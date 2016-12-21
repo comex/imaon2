@@ -33,6 +33,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
+nightly = ["exec/nightly", "fmt_macho/nightly", "fmt_macho_dsc_extraction/nightly", "macros/nightly", "util/nightly"]
 use_llvm = ["exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_dsc_extraction/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [package]

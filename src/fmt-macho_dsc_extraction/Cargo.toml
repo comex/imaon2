@@ -30,6 +30,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
+nightly = ["dis_generated_jump_dis/nightly", "exec/nightly", "fmt_macho/nightly", "fmt_macho_bind/nightly", "macros/nightly", "util/nightly"]
 use_llvm = ["dis_generated_jump_dis/use_llvm", "exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]

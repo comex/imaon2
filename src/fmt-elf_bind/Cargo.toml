@@ -14,6 +14,7 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
+nightly = ["macros/nightly", "util/nightly", "build_help/nightly"]
 use_llvm = ["macros/use_llvm", "util/use_llvm", "build_help/use_llvm"]
 
 [lib]
