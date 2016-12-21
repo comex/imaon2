@@ -1,4 +1,3 @@
-#[macro_use] extern crate bitflags;
 #[macro_use] extern crate macros;
 extern crate dis_generated_jump_dis;
 extern crate exec;
@@ -31,102 +30,44 @@ impl InsnStateOther {
     }
 }
 
-bitflags! {
-    flags BBFlags: u8 {
-        const BBF_VALID = 1,
-        const BBF_OOL_REG_VALS = 2,
-        const BBF_HAVE_NEXT = 4,
-    }
-}
-
-const BB_NUM_INLINE_REG_VALS: usize = 2;
-
 struct BabyBlock {
     next_block: u32,
-    flags: BBFlags,
+    valid: bool,
+    have_next_block: bool,
     start_off: u8,
     end_off: u8, // inclusive
-    rwkv_count: u8, // lol popcount
-    regs_with_known_val: BitSet32,
-    // 4 bytes wasted here
-    reg_vals: [u64; BB_NUM_INLINE_REG_VALS], // either inline or actually a Box<[u64]>
+    regs_with_possible_val: BitSet32,
+    regs_with_conflict: BitSet32,
+    reg_vals_off: u32,
 }
 unsafe impl Zeroable for BabyBlock {}
 
 impl BabyBlock {
     #[inline]
-    unsafe fn ool_reg_vals(&mut self) -> *mut Box<[u64]> {
-        unsafe { transmute(&mut self.reg_vals) }
-    }
-    fn reg_vals<'a>(&'a self) -> &'a [u64] {
-        #[allow(mutable_transmutes)]
-        unsafe { transmute::<&'a BabyBlock, &'a mut BabyBlock>(self).reg_vals_mut() }
-    }
-    fn reg_vals_mut(&mut self) -> &mut [u64] {
-        if self.flags.contains(BBF_OOL_REG_VALS) {
-            unsafe { &mut (*self.ool_reg_vals())[..] }
-        } else {
-            &mut self.reg_vals[..]
-        }
-    }
-    fn reg_val(&self, reg: Reg) -> Option<u64> {
+    fn reg_val(&self, reg: Reg, reg_vals: &[u64]) -> Option<u64> {
         let reg = reg.0 as u8;
         let rwkv = self.regs_with_known_val;
         if rwkv.has(reg) {
-            let position = rwkv.subset(0..reg).count() as usize;
-            Some(self.reg_vals()[position])
+            let position = self.reg_vals_off + (rwkv.subset(0..reg).count() as usize);
+            Some(reg_vals[self.reg_vals_off + position])
         } else { None }
     }
-    fn add_reg_val(&mut self, reg: Reg, val: u64) {
+    fn add_reg_val(&mut self, reg: Reg, val: u64, reg_vals: &mut Vec<u64>) {
         let reg = reg.0 as u8;
-        let rwkv = self.regs_with_known_val;
-        let vals = self.reg_vals_mut() as *mut [u64];
-        if rwkv.has(reg) {
-            let position = rwkv.subset(0..reg).count() as usize;
-            unsafe { (*vals)[position] = val; }
-            return;
-        }
-        let new_count = (self.rwkv_count + 1) as usize;
-        let old_cap = unsafe { (*vals).len() };
-        if new_count > old_cap {
-            let new_cap = 4 * old_cap;
-            let mut new = util::zero_vec(new_cap).into_boxed_slice();
-            new[..old_cap].copy_from_slice(unsafe { &(*vals)[..] });
-            // XXX we'd like to drop here
-            if self.flags.contains(BBF_OOL_REG_VALS) {
-                let _ = unsafe { ptr::read(self.ool_reg_vals()) };
-            }
-            unsafe { ptr::write(self.ool_reg_vals(), new); }
-        }
-        let vals = self.reg_vals_mut();
-        let position = rwkv.subset(0..reg).count() as usize;
-        let move_count = rwkv.subset(reg..32).count() as usize;
-        let new_rwkv = rwkv.adding(reg);
-        for i in position..position+move_count {
-            vals[i+1] = vals[i];
-        }
-        vals[position] = val;
-    }
-    fn remove_reg_val(&mut self, reg: Reg) {
-        let reg = reg.0 as u8;
-        let rwkv = self.regs_with_known_val;
-        if rwkv.has(reg) {
-            let position = rwkv.subset(0..reg).count() as usize;
-            let move_count = rwkv.subset(reg+1..32).count() as usize;
-            let vals = self.reg_vals_mut();
-            for i in position..position+move_count {
-                vals[i] = vals[i+1];
+        let rwpv = self.regs_with_possible_val;
+        assert(!rwpv.has(reg));
+        self.regs_with_possible_val.set(reg);
+        let mut off = self.reg_vals_off;
+        let new_off = reg_vals.len();
+        for oreg in self.regs_with_possible_val {
+            if oreg == reg {
+                reg_vals.push(val);
+            } else {
+                reg_vals.push(reg_vals[off]);
+                off += 1;
             }
         }
-
-    }
-}
-
-impl Drop for BabyBlock {
-    fn drop(&mut self) {
-        if self.flags.contains(BBF_OOL_REG_VALS) {
-            let _ = unsafe { ptr::read(self.ool_reg_vals()) };
-        }
+        self.reg_vals_off = new_off;
     }
 }
 
@@ -138,6 +79,7 @@ pub struct CodeMap<'a> {
     insn_data: &'a [ReadCell<u8>],
     bbs: Vec<BabyBlock>,
     extra_bbs: Vec<BabyBlock>,
+    reg_vals: Vec<u64>,
     todo: VecDeque<InsnIdx>,
     switchlike_br_idxs: Vec<InsnIdx>,
     endian: Endian,
@@ -226,18 +168,21 @@ impl<'a> CodeMap<'a> {
         let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
         let mut x = &mut self.bbs[slot];
         loop {
-            if !x.flags.contains(BBF_VALID) {
+            if !x.valid {
                 // initialize
-                x.flags |= BBF_VALID;
+                x.valid = true;
                 x.start_off = slot_off;
-                x.end_off = 255; // should update later
+                x.end_off = CODEMAP_BB_GRAIN - 1;
                 return (x, true);
             }
             let start_off = x.start_off;
-            if unlikely(start_off > slot_off) {
+            if slot_off == start_off {
+                return (x, false);
+            } else if slot_off < start_off {
                 let idx: u32 = self.extra_bbs.len().narrow().unwrap();
                 let mut new = BabyBlock::zeroed();
-                new.flags |= BBF_VALID | BBF_HAVE_NEXT;
+                new.valid = true;
+                new.have_next_block = true;
                 new.next_block = idx;
                 new.start_off = slot_off;
                 new.end_off = start_off - 1;
@@ -247,9 +192,9 @@ impl<'a> CodeMap<'a> {
                 self.extra_bbs.push(old);
                 let x = self.extra_bbs.last_mut().unwrap();
                 return (x, true);
-            }
-            if unlikely(slot_off > x.end_off) {
-                if x.flags.contains(BBF_HAVE_NEXT) {
+            } else { // slot_off > start_off
+                let past_end = slot_off > end_off;
+                if past_end && x.have_next_block {
                     // XXX with nonlexical lifetimes this shouldn't be necessary
                     // as self.extra_bbs should be definitely unborrowed after the drop() calls
                     let hack_extra_bbs: &'static mut Vec<BabyBlock> = unsafe { transmute(&mut self.extra_bbs) };
@@ -258,18 +203,30 @@ impl<'a> CodeMap<'a> {
                 } else {
                     let idx: u32 = self.extra_bbs.len().narrow().unwrap();
                     x.next_block = idx;
+                    x.have_next_block = true;
+                    if !past_end { x.end_off = slot_off - 1; }
                     drop(x);
                     let mut new = BabyBlock::zeroed();
-                    new.flags |= BBF_VALID;
+                    new.valid = true;
                     new.start_off = slot_off;
-                    new.end_off = 255;
+                    new.end_off = CODEMAP_BB_GRAIN - 1;
                     self.extra_bbs.push(new);
                     let x = self.extra_bbs.last_mut().unwrap();
                     return (x, true);
                 }
             }
-            return (x, false);
         }
+
+    }
+    fn do_bb(&mut self, start_off: usize) {
+        let (bb, is_new) = self.bb_for_off(start_off);
+        let slot_off = start_off % CODEMAP_BB_GRAIN;
+        let end_off = bb.end_off;
+        while slot_off < end_off {
+
+        }
+
+        CODEMAP_BB_GRAIN
 
     }
     /*
