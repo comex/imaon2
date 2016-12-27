@@ -113,3 +113,50 @@ macro_rules! re { ($a:expr) => { {
     };
     &*RE
 } } }
+
+#[macro_export]
+macro_rules! simple_bitflags {
+    {$name:ident: $base:ty { $($a:ident/$b:ident:$c:ident<<$d:expr),* $(,)* }} => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+        struct $name { pub bits: $base }
+        impl $name { $(_simple_bitflags_field!($name, $base, ($a/$b:$c<<$d));)* }
+    };
+    {pub $name:ident: $base:ty { $($a:ident/$b:ident:$c:ident<<$d:expr),* $(,)* }} => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+        pub struct $name { pub bits: $base }
+        impl $name { $(_simple_bitflags_field!($name, $base, ($a/$b:$c<<$d));)* }
+    };
+}
+
+#[macro_export]
+macro_rules! _simple_bitflags_field {
+    ($name:ident, $base:ty, ($getter:ident / $setter:ident : bool << $shift:expr)) => {
+        #[inline]
+        fn $getter(self) -> bool {
+            let shift: u32 = $shift;
+            (self.bits >> shift) & 1 != 0
+        }
+        #[inline]
+        fn $setter(&mut self, val: bool) {
+            let shift: u32 = $shift;
+            self.bits = (self.bits & !(1 << shift)) | ((val as $base) << shift);
+        }
+    }
+}
+
+#[test]
+fn test_bitflags() {
+    simple_bitflags! {
+        Foo: u16 {
+            one/set_one: bool << 0,
+            two/set_two: bool << 1,
+        }
+    }
+    let mut foo = Foo { bits: 0b01 };
+    assert!(foo.one() == true);
+    assert!(foo.two() == false);
+    foo.set_one(false);
+    foo.set_two(true);
+    assert!(foo.bits == 0b10);
+
+}

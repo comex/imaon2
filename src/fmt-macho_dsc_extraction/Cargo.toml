@@ -2,11 +2,12 @@
 [build-dependencies]
 
 [dependencies]
-[dependencies.bitflags]
-version = "0.7.0"
-
 [dependencies.dis_generated_jump_dis]
 path = "../dis-generated_jump_dis"
+version = "=0.0.0"
+
+[dependencies.dis_simple_trawl]
+path = "../dis-simple_trawl"
 version = "=0.0.0"
 
 [dependencies.exec]
@@ -30,8 +31,8 @@ path = "../util"
 version = "=0.0.0"
 
 [features]
-nightly = ["dis_generated_jump_dis/nightly", "exec/nightly", "fmt_macho/nightly", "fmt_macho_bind/nightly", "macros/nightly", "util/nightly"]
-use_llvm = ["dis_generated_jump_dis/use_llvm", "exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "macros/use_llvm", "util/use_llvm"]
+nightly = ["dis_generated_jump_dis/nightly", "dis_simple_trawl/nightly", "exec/nightly", "fmt_macho/nightly", "fmt_macho_bind/nightly", "macros/nightly", "util/nightly"]
+use_llvm = ["dis_generated_jump_dis/use_llvm", "dis_simple_trawl/use_llvm", "exec/use_llvm", "fmt_macho/use_llvm", "fmt_macho_bind/use_llvm", "macros/use_llvm", "util/use_llvm"]
 
 [lib]
 path = "macho_dsc_extraction.rs"

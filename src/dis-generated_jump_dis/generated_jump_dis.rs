@@ -11,6 +11,7 @@ mod aarch64 {
     include!(concat!(env!("OUT_DIR"), "/jump-dis-aarch64.rs"));
 }
 
+pub const MAX_REGS: usize = 32;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Reg(pub i8);
 impl Default for Reg {
@@ -18,6 +19,7 @@ impl Default for Reg {
 }
 impl Reg {
     #[inline] pub fn invalid() -> Self { Reg(-1) }
+    #[inline] pub fn idx(self) -> usize { self.0 as usize }
 }
 fn reg(r: u32) -> Reg { Reg(r as i8) }
 

@@ -379,6 +379,12 @@ macro_rules! impl_int {($ty:ident) => {
     impl_check_x_option!(CheckMul, check_mul, $ty, $ty);
 }}
 
+pub trait ExtWrapper: Sized {
+    #[inline(always)]
+    fn ext_usize(self) -> usize where Self: Ext<usize> { self.ext() }
+}
+impl<T> ExtWrapper for T {}
+
 pub trait TryExt<Larger> {
     fn try_ext(self) -> Option<Larger>;
 }
@@ -1326,11 +1332,15 @@ pub fn zero_vec<T: Zeroable>(size: usize) -> Vec<T> {
     vec
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct BitSet32 { pub bits: u32 }
 impl BitSet32 {
     #[inline]
     pub fn empty() -> BitSet32 { BitSet32 { bits: 0 } }
+    #[inline]
+    pub fn is_empty(self) -> bool { self.bits == 0 }
+    #[inline]
+    pub fn is_nonempty(self) -> bool { self.bits == 0 }
     #[inline]
     pub fn with_range(range: Range<u8>) -> BitSet32 {
         assert!(range.start <= range.end && range.end <= 32);

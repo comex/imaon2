@@ -3,7 +3,6 @@ extern crate exec;
 extern crate fmt_macho as macho;
 extern crate fmt_macho_bind as macho_bind;
 #[macro_use] extern crate macros;
-#[macro_use] extern crate bitflags; // for simple_trawl
 use macho::{MachO, copy_nlist_to_vec, exec_sym_to_nlist_64, copy_nlist_from_slice, ParseDyldBindState, x_nlist_64, DscTabs, MachOLookupExportOptions};
 use macho::dyldcache::{ImageCache, ImageCacheEntry, SegMapEntry, DyldCache};
 use std::default::Default;
@@ -20,8 +19,8 @@ use util::{ByteString, ByteStr, Ext, Narrow, CheckAdd, stopwatch, RWSlicePtr, Re
 
 extern crate dis_generated_jump_dis;
 use dis_generated_jump_dis::AArch64Handler;
-mod simple_trawl;
-pub use simple_trawl::CodeMap; // xxx just to get rid of dead_code
+extern crate dis_simple_trawl;
+use dis_simple_trawl::CodeMap;
 
 struct ReaggregatedSyms {
     localsym: Vec<u8>,
@@ -615,22 +614,23 @@ impl MachODscExtraction for MachO {
             if (sectdata.len() as u64) < sect.filesize {
                 errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
             }
-            let grain_shift = 2;
-            let mut codemap = CodeMap::new(sect.vmaddr, grain_shift, sectdata, end, &self.eb.segments);
+            let mut codemap = CodeMap::new(sect.vmaddr, sectdata, end, &self.eb.segments);
             {
                 // TODO sort? only useful if there are many sections like this
                 for chunk in self.localsym.get().chunks(self.nlist_size) {
                     let nl = copy_nlist_from_slice(chunk, end);
                     let vma = VMA(nl.n_value as u64);
-                    if let Some(idx) = codemap.addr_to_idx(vma) {
-                        codemap.mark_root(idx);
+                    if let Some(off) = codemap.addr_to_off(vma) {
+                        codemap.mark_root(off);
                     }
                 }
             }
             codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.read_sane(addr, size));
+            /*
             for &idx in &codemap.out_of_range_idxs {
                 println!("{}", codemap.idx_to_addr(idx));
             }
+            */
             /*
             self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
                 let mut data =
