@@ -15,6 +15,7 @@ simple_bitflags! {
         have_next_block/set_have_next_block: bool << 1,
         queued/set_queued: bool << 2,
         once_completed/set_once_completed: bool << 3,
+        switch_queued/switch_queued: bool << 4,
     }
 }
 
@@ -44,6 +45,11 @@ struct RegVal {
     set_off: u32,
 }
 
+
+struct SwitchStuff {
+    prev_vals: [RegVal; CODEMAP_BB_GRAIN],
+
+}
 impl BabyBlock {
     #[inline]
     fn reg_val<'a>(&self, reg: Reg, reg_vals: &'a mut [RegVal]) -> Option<&'a mut RegVal> {
@@ -99,7 +105,7 @@ pub struct CodeMap<'a> {
     bb_data: CodeMapBBData,
     reg_vals: Vec<RegVal>,
     queue: VecDeque<usize>,
-    switchlike_br_offs: Vec<usize>,
+    switch_queue: Vec<usize>,
     endian: Endian,
 
     segs: &'a [Segment],
@@ -223,7 +229,6 @@ impl<'a> CodeMap<'a> {
             },
             reg_vals: Vec::new(),
             queue: VecDeque::new(),
-            switchlike_br_offs: Vec::new(),
             endian: endian,
             segs: segs,
             potentially_out_of_range_offs: Vec::new(),
@@ -256,12 +261,13 @@ impl<'a> CodeMap<'a> {
         assert!(!new);
         bb
     }
-    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], handler: &mut GenericHandler) {
+    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], prev_vals: &mut [RegVal; CODEMAP_BB_GRAIN], handler: &mut GenericHandler, switch_mode: bool) {
         'beginning: loop {
             let mut slot_off = (start_off % CODEMAP_BB_GRAIN) as u8;
             let base = start_off - slot_off.ext_usize();
             let mut regs_with_known_val: BitSet32;
             let mut end_off: u8;
+            let mut switch_queued: bool;
             let reg_vals_off: usize;
             let once_completed: bool;
             {
@@ -269,6 +275,7 @@ impl<'a> CodeMap<'a> {
                 regs_with_known_val = bb.regs_with_known_val;
                 end_off = bb.end_off;
                 once_completed = bb.flags.once_completed();
+                switch_queued = bb.flags.switch_queued();
                 reg_vals_off = bb.reg_vals_off.ext();
             }
             println!("do_bb: start_off=0x{:x}/{} rwkv=0x{:x}", start_off, self.off_to_addr(start_off), regs_with_known_val.bits);
@@ -307,7 +314,9 @@ impl<'a> CodeMap<'a> {
                 let this_off = base + slot_off.ext_usize();
                 if let Some((reg, set_kind, val)) = set {
                     regs_with_known_val.add(reg.0 as u8);
-                    reg_vals[reg.idx()] = RegVal { val: val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, };
+                    let rv = RegVal { val: val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, };
+                    reg_vals[reg.idx()] = rv;
+                    prev_vals[slot_off.ext_usize()] = rv;
                 }
 
                 let mut potentially_oor = false;
@@ -339,8 +348,10 @@ impl<'a> CodeMap<'a> {
 
                 if let InsnKind::Br(target) = info.kind {
                     if regs_with_known_val.has(target.0 as u8) &&
-                       reg_vals[target.idx()].set_kind == SetKind::AddReg {
-                        self.switchlike_br_offs.push(this_off);
+                       reg_vals[target.idx()].set_kind == SetKind::AddReg &&
+                       !switch_mode && !switch_queued {
+                        switch_queued = true;
+                        self.switch_queue.push(start_off);
                     }
                 }
 
@@ -364,6 +375,7 @@ impl<'a> CodeMap<'a> {
                 let bb = self.bb_for_off_existing(start_off);
                 bb.end_off = end_off;
                 bb.flags.set_queued(false);
+                bb.flags.set_switch_queued(switch_queued);
                 bb.flags.set_once_completed(true);
             }
             return;
@@ -413,117 +425,11 @@ impl<'a> CodeMap<'a> {
     }
     fn go_round(&mut self, handler: &mut GenericHandler) {
         let mut reg_vals = [RegVal::default(); MAX_REGS];
+        let mut prev_vals = [RegVal::default(); CODEMAP_BB_GRAIN]; // only useful for switch mode
         while let Some(off) = self.queue.pop_front() {
-            self.do_bb(off, &mut reg_vals, handler);
+            self.do_bb(off, &mut reg_vals, &mut prev_vals, handler);
         }
 
     }
 
-    /*
-    fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_idx: InsnIdx, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
-        //println!("grok_switch: {}", self.idx_to_addr(br_idx));
-        let br_reg = match self.decode(handler, br_idx).1.kind {
-            InsnKind::Br(r) => r, _ => panic!(),
-        };
-        let (addr_setter_idx, addr_setter_kind) = try!(self.last_setter(handler, br_idx, false, br_reg).map_err(GrokSwitchFail::GettingSetterOfBrAddr));
-        let (r1, r2) = match addr_setter_kind {
-            InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2), _ => panic!(),
-        };
-        let ((r1idx, r1kind), (r2idx, r2kind)) = (
-            try!(self.last_setter(handler, addr_setter_idx, false, r1).map_err(GrokSwitchFail::GettingSetterOfAddR1)),
-            try!(self.last_setter(handler, addr_setter_idx, false, r2).map_err(GrokSwitchFail::GettingSetterOfAddR2)),
-        );
-        //println!("addends: {}, {} [from {}]", self.idx_to_addr(r1idx), self.idx_to_addr(r2idx), self.idx_to_addr(addr_setter_idx));
-        let rs = &[(r1, r1idx, r1kind), (r2, r2idx, r2kind)];
-        // find the table - would be nice to use loop-break-val for this
-        let mut which_is_load: usize = 2;
-        let mut table_addr_reg = Reg::invalid(); let mut table_idx_reg = Reg::invalid();
-        let mut table_item_size = Size8; let mut table_item_signedness = Unsigned;
-        for (i, &(_, _, rnkind)) in rs.iter().enumerate() {
-            match rnkind {
-                InsnKind::Load(_, Addrish::AddReg(table_addr, table_idx, shift), size, signedness) => {
-                    if size.log2_bytes() != shift {
-                        return Err(GrokSwitchFail::ShiftMismatch);
-                    }
-                    table_addr_reg = table_addr; table_idx_reg = table_idx;
-                    table_item_size = size; table_item_signedness = signedness;
-                    which_is_load = i;
-                    break;
-                },
-                _ => (),
-            }
-        }
-        if which_is_load == 2 {
-            return Err(GrokSwitchFail::NeitherAddendLooksLikeTable);
-        }
-        // the other should just be a static offset from PC
-        let (table_abase_reg, table_abase_idx, _) = rs[1 - which_is_load];
-        let table_abase = try!(self.value_for_reg(handler, table_abase_idx, true, table_abase_reg).map_err(GrokSwitchFail::GettingTableAbaseValue));
-        let (_, load_idx, _) = rs[which_is_load];
-        let table_addr = try!(self.value_for_reg(handler, load_idx, false, table_addr_reg).map_err(GrokSwitchFail::GettingTableAddrValue));
-
-        let table_addr = VMA(table_addr);
-        let table_abase = VMA(table_abase);
-
-        // one more thing: find the cmp to establish table size
-        let table_len: u64;
-        {
-            let mut idx = load_idx;
-            let mut i = 0;
-            loop {
-                i += 1;
-                if i >= 20 {
-                    return Err(GrokSwitchFail::CmpTooFar);
-                }
-                idx = some_or!(self.sole_pred(idx), {
-                    return Err(GrokSwitchFail::CmpNoSolePred);
-                });
-                let (_, info) = self.decode(handler, idx);
-                match info.kind {
-                    InsnKind::CmpImm(r, u) if r == table_idx_reg => {
-                        table_len = u;
-                        break;
-                    },
-                    _ => if info.kills_reg(table_idx_reg) {
-                        return Err(GrokSwitchFail::CmpIdxRegKilled);
-                    },
-                }
-            }
-        }
-        if table_len > 100000 {
-            return Err(GrokSwitchFail::TableTooBig);
-        }
-
-        // ok!
-        //println!("table_addr={} table_abase={} table_len={} item size={:?} sign={:?}", table_addr, table_abase, table_len, table_item_size, table_item_signedness);
-
-        let bytes = table_item_size.bytes().ext_usize();
-        let table_bytes = (table_len.ext_usize()) * bytes;
-        let table: &[ReadCell<u8>] = some_or!(read(table_addr, table_bytes as u64), {
-            return Err(GrokSwitchFail::TableReadError);
-        });
-        for (i, chunk) in table.chunks(bytes).enumerate() {
-            let val = exec::dynsized_integer_from_slice(chunk, table_item_signedness, self.endian);
-            let addr = table_abase.wrapping_add(val);
-            if let Some(target_idx) = self.addr_to_idx(addr) {
-                self.mark_flow(br_idx, target_idx, false);
-            } else {
-                errln!("grok_switch: out-of-range(?) switch branch to {} from table {} element #{}", addr, table_addr, i);
-            }
-        }
-        Ok(())
-    }
-    fn sole_pred(&mut self, idx: InsnIdx) -> Option<InsnIdx> {
-        let state_word = self.insn_state[idx];
-        if state_word < 0 {
-            Some(idx.wrapping_add(state_word.ext_usize()))
-        } else if state_word > 0 {
-            let flows_from = &self.insn_state_other[state_word.ext_usize()].flows_from;
-            if flows_from.len() != 1 { return None; }
-            Some(flows_from[0])
-        } else {
-            None
-        }
-    }
-    */
 }
