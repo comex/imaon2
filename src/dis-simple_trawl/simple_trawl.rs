@@ -39,23 +39,14 @@ impl BabyBlock {
             Some(reg_vals[position])
         } else { None }
     }
-    fn add_reg_val(&mut self, reg: Reg, val: u64, reg_vals: &mut Vec<u64>) {
-        let reg = reg.0 as u8;
-        let rwpv = self.regs_with_known_val;
-        assert!(!rwpv.has(reg));
-        self.regs_with_known_val.add(reg);
-        let mut off = self.reg_vals_off;
-        let new_off: usize = reg_vals.len();
-        for oreg in self.regs_with_known_val.set_bits() {
-            if oreg == reg {
-                reg_vals.push(val);
-            } else {
-                let oval = reg_vals[off.ext_usize()];
-                reg_vals.push(oval);
-                off += 1;
-            }
+    fn set_rwkv(&mut self, new_rwkv: BitSet32, my_vals: &[u64; MAX_REGS], reg_vals: &mut Vec<u64>) {
+        self.regs_with_known_val = new_rwkv;
+        let new_off = reg_vals.len();
+        for reg in new_rwkv.set_bits() {
+            reg_vals.push(my_vals[reg.ext_usize()]);
         }
         self.reg_vals_off = new_off.narrow().unwrap();
+
     }
     fn reduce_rwkv(&mut self, new_rwkv: BitSet32, reg_vals: &mut Vec<u64>) {
         let old_rwkv = self.regs_with_known_val;
@@ -134,7 +125,8 @@ pub enum GrokSwitchFail {
 }
 
 impl CodeMapBBData {
-    fn bb_for_off(&mut self, off: usize, queue: &mut VecDeque<usize>) -> &mut BabyBlock {
+    fn bb_for_off(&mut self, off: usize, queue: &mut VecDeque<usize>) -> (&mut BabyBlock, bool /*is_new*/) {
+        //println!("bb_for_off 0x{:x}", off);
         let slot = off / CODEMAP_BB_GRAIN;
         let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
         let mut x = &mut self.bbs[slot];
@@ -144,11 +136,13 @@ impl CodeMapBBData {
                 x.flags.set_valid(true);
                 x.start_off = slot_off;
                 x.end_off = (CODEMAP_BB_GRAIN - 1) as u8;
-                return x;
+                //println!("cae 0");
+                return (x, true);
             }
             let start_off = x.start_off;
             if slot_off == start_off {
-                return x;
+                //println!("cae 1");
+                return (x, false);
             } else if slot_off < start_off {
                 let idx: u32 = self.extra_bbs.len().narrow().unwrap();
                 let mut new = BabyBlock::zeroed();
@@ -162,7 +156,8 @@ impl CodeMapBBData {
 
                 self.extra_bbs.push(old);
                 let x = self.extra_bbs.last_mut().unwrap();
-                return x;
+                //println!("cae 2");
+                return (x, true);
             } else { // slot_off > start_off
                 let past_end = slot_off > x.end_off;
                 if past_end && x.flags.have_next_block() {
@@ -172,7 +167,10 @@ impl CodeMapBBData {
                     x = &mut hack_extra_bbs[x.next_block.ext_usize()];
                     continue;
                 } else {
+                    //println!("cae 3 x.so={:x} eo={:x}", x.start_off, x.end_off);
                     let idx: u32 = self.extra_bbs.len().narrow().unwrap();
+                    let next_block = x.next_block;
+                    let have_next_block = x.flags.have_next_block();
                     x.next_block = idx;
                     x.flags.set_have_next_block(true);
                     if !past_end {
@@ -186,11 +184,17 @@ impl CodeMapBBData {
                     drop(x);
                     let mut new = BabyBlock::zeroed();
                     new.flags.set_valid(true);
+                    new.flags.set_have_next_block(have_next_block);
+                    new.next_block = next_block;
                     new.start_off = slot_off;
-                    new.end_off = (CODEMAP_BB_GRAIN - 1) as u8;
+                    new.end_off = if have_next_block {
+                        self.extra_bbs[next_block.ext_usize()].start_off - 1
+                    } else {
+                        (CODEMAP_BB_GRAIN - 1) as u8
+                    };
                     self.extra_bbs.push(new);
                     let x = self.extra_bbs.last_mut().unwrap();
-                    return x;
+                    return (x, true);
                 }
             }
         }
@@ -200,7 +204,7 @@ impl CodeMapBBData {
 impl<'a> CodeMap<'a> {
     pub fn new(region_start: VMA, insn_data: &'a [ReadCell<u8>], endian: Endian, segs: &'a [Segment]) -> Self {
         let region_size = insn_data.len();
-        let num_bbs = region_size / CODEMAP_BB_GRAIN;
+        let num_bbs = (region_size + CODEMAP_BB_GRAIN - 1) / CODEMAP_BB_GRAIN;
         CodeMap {
             region_start: region_start,
             region_size: region_size,
@@ -244,8 +248,10 @@ impl<'a> CodeMap<'a> {
     pub fn off_to_addr(&self, off: usize) -> VMA {
         self.region_start + (off as u64)
     }
-    fn bb_for_off(&mut self, off: usize) -> &mut BabyBlock {
-        self.bb_data.bb_for_off(off, &mut self.queue)
+    fn bb_for_off_existing(&mut self, off: usize) -> &mut BabyBlock {
+        let (bb, new) = self.bb_data.bb_for_off(off, &mut self.queue);
+        assert!(!new);
+        bb
     }
     fn do_bb(&mut self, start_off: usize, reg_vals: &mut [u64; MAX_REGS], handler: &mut GenericHandler) {
         'beginning: loop {
@@ -256,15 +262,20 @@ impl<'a> CodeMap<'a> {
             let reg_vals_off: usize;
             let once_completed: bool;
             {
-                let bb = self.bb_for_off(start_off);
+                let bb = self.bb_for_off_existing(start_off);
                 regs_with_known_val = bb.regs_with_known_val;
                 end_off = bb.end_off;
                 once_completed = bb.flags.once_completed();
                 reg_vals_off = bb.reg_vals_off.ext();
             }
-            for reg in regs_with_known_val.set_bits() {
-                let reg = reg.ext_usize();
-                reg_vals[reg] = self.reg_vals[reg + reg_vals_off];
+            println!("do_bb: start_off=0x{:x}/{} rwkv=0x{:x}", start_off, self.off_to_addr(start_off), regs_with_known_val.bits);
+            {
+                let mut off = reg_vals_off;
+                for reg in regs_with_known_val.set_bits() {
+                    let reg = reg.ext_usize();
+                    reg_vals[reg] = self.reg_vals[off];
+                    off += 1;
+                }
             }
             loop {
                 let (size, info) = self.decode(handler, base + slot_off.ext_usize());
@@ -303,7 +314,7 @@ impl<'a> CodeMap<'a> {
                             if target_off > start_off && target_off <= (base + end_off.ext_usize()) {
                                 let target_slot_off = (target_off % CODEMAP_BB_GRAIN) as u8;
                                 if target_slot_off > slot_off {
-                                    end_off = target_slot_off;
+                                    end_off = target_slot_off - 1;
                                 } else {
                                     continue 'beginning;
                                 }
@@ -322,30 +333,39 @@ impl<'a> CodeMap<'a> {
                     self.potentially_out_of_range_offs.push(base + slot_off.ext_usize());
                 }
 
-                let next_off = slot_off + (size as u8);
-                if next_off > end_off {
-                    self.mark_flow(base + next_off.ext_usize(), regs_with_known_val, reg_vals);
+                let next_slot_off = slot_off + (size as u8);
+                if next_slot_off > end_off {
+                    let next_off = base + next_slot_off.ext_usize();
+                    if next_off < self.region_size {
+                        self.mark_flow(next_off, regs_with_known_val, reg_vals);
+                    }
                     break;
                 }
-                slot_off = next_off;
+                slot_off = next_slot_off;
             }
             {
-                let bb = self.bb_for_off(start_off);
+                let bb = self.bb_for_off_existing(start_off);
                 bb.end_off = end_off;
                 bb.flags.set_queued(false);
                 bb.flags.set_once_completed(true);
             }
+            return;
         }
     }
     fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[u64; MAX_REGS]) {
-        let bb = self.bb_data.bb_for_off(to_off, &mut self.queue);
-        let mut new_rwkv = bb.regs_with_known_val & regs_with_known_val;
-        for regn in new_rwkv.set_bits() {
-            if bb.reg_val(Reg(regn as i8), &self.reg_vals).unwrap() != reg_vals[regn.ext_usize()] {
-                new_rwkv.remove(regn);
+        let (bb, is_new) = self.bb_data.bb_for_off(to_off, &mut self.queue);
+        if is_new {
+            bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
+        } else {
+            let mut new_rwkv = bb.regs_with_known_val & regs_with_known_val;
+            for regn in new_rwkv.set_bits() {
+                if bb.reg_val(Reg(regn as i8), &self.reg_vals).unwrap() != reg_vals[regn.ext_usize()] {
+                    new_rwkv.remove(regn);
+                }
             }
-        }
-        if new_rwkv != bb.regs_with_known_val {
+            if new_rwkv == bb.regs_with_known_val {
+                return;
+            }
             bb.reduce_rwkv(new_rwkv, &mut self.reg_vals);
         }
         if !bb.flags.queued() {
@@ -354,7 +374,7 @@ impl<'a> CodeMap<'a> {
         }
     }
     pub fn mark_root(&mut self, off: usize) {
-        let bb = self.bb_data.bb_for_off(off, &mut self.queue);
+        let (bb, _) = self.bb_data.bb_for_off(off, &mut self.queue);
         if !bb.flags.queued() {
             self.queue.push_back(off);
             bb.flags.set_queued(true);
