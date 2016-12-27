@@ -29,17 +29,32 @@ struct BabyBlock {
 }
 unsafe impl Zeroable for BabyBlock {}
 
+#[derive(Clone, Copy, PartialEq)]
+enum SetKind {
+    None,
+    AddReg,
+    Other,
+}
+impl Default for SetKind { fn default() -> Self { SetKind::None } }
+
+#[derive(Clone, Copy, PartialEq, Default)]
+struct RegVal {
+    val: u64,
+    set_kind: SetKind,
+    set_off: u32,
+}
+
 impl BabyBlock {
     #[inline]
-    fn reg_val(&self, reg: Reg, reg_vals: &[u64]) -> Option<u64> {
+    fn reg_val<'a>(&self, reg: Reg, reg_vals: &'a mut [RegVal]) -> Option<&'a mut RegVal> {
         let reg = reg.0 as u8;
         let rwkv = self.regs_with_known_val;
         if rwkv.has(reg) {
             let position = (self.reg_vals_off.ext_usize()) + (rwkv.subset(0..reg).count().ext_usize());
-            Some(reg_vals[position])
+            Some(&mut reg_vals[position])
         } else { None }
     }
-    fn set_rwkv(&mut self, new_rwkv: BitSet32, my_vals: &[u64; MAX_REGS], reg_vals: &mut Vec<u64>) {
+    fn set_rwkv(&mut self, new_rwkv: BitSet32, my_vals: &[RegVal; MAX_REGS], reg_vals: &mut Vec<RegVal>) {
         self.regs_with_known_val = new_rwkv;
         let new_off = reg_vals.len();
         for reg in new_rwkv.set_bits() {
@@ -48,7 +63,7 @@ impl BabyBlock {
         self.reg_vals_off = new_off.narrow().unwrap();
 
     }
-    fn reduce_rwkv(&mut self, new_rwkv: BitSet32, reg_vals: &mut Vec<u64>) {
+    fn reduce_rwkv(&mut self, new_rwkv: BitSet32, reg_vals: &mut Vec<RegVal>) {
         let old_rwkv = self.regs_with_known_val;
         let removed_bits = old_rwkv & !new_rwkv;
         if removed_bits.is_empty() { return; }
@@ -82,20 +97,13 @@ pub struct CodeMap<'a> {
     region_size: usize,
     insn_data: &'a [ReadCell<u8>],
     bb_data: CodeMapBBData,
-    reg_vals: Vec<u64>,
+    reg_vals: Vec<RegVal>,
     queue: VecDeque<usize>,
-    //switchlike_br_idxs: Vec<InsnIdx>,
+    switchlike_br_offs: Vec<usize>,
     endian: Endian,
 
     segs: &'a [Segment],
     pub potentially_out_of_range_offs: Vec<usize>,
-
-    /*
-    // last_setter state
-    ls_generation: usize,
-    ls_result_idx: Option<InsnIdx>,
-    ls_result_kind: InsnKind,
-    */
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,15 +223,10 @@ impl<'a> CodeMap<'a> {
             },
             reg_vals: Vec::new(),
             queue: VecDeque::new(),
-            //switchlike_br_idxs: Vec::new(),
+            switchlike_br_offs: Vec::new(),
             endian: endian,
             segs: segs,
             potentially_out_of_range_offs: Vec::new(),
-            /*
-            ls_generation: 0,
-            ls_result_idx: None,
-            ls_result_kind: InsnKind::Other,
-            */
         }
     }
     pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
@@ -253,7 +256,7 @@ impl<'a> CodeMap<'a> {
         assert!(!new);
         bb
     }
-    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [u64; MAX_REGS], handler: &mut GenericHandler) {
+    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], handler: &mut GenericHandler) {
         'beginning: loop {
             let mut slot_off = (start_off % CODEMAP_BB_GRAIN) as u8;
             let base = start_off - slot_off.ext_usize();
@@ -283,16 +286,16 @@ impl<'a> CodeMap<'a> {
                     end_off = slot_off;
                     break;
                 }
-                let set: Option<(Reg, u64)> = match info.kind {
+                let set: Option<(Reg, SetKind, u64)> = match info.kind {
                     InsnKind::Set(reg, Addrish::Imm(val)) =>
-                        Some((reg, val)),
+                        Some((reg, SetKind::Other, val)),
                     InsnKind::Set(reg, Addrish::AddImm(base_reg, addend))
                         if regs_with_known_val.has(base_reg.0 as u8) =>
-                            Some((reg, reg_vals[base_reg.idx()].wrapping_add(addend))),
+                            Some((reg, SetKind::Other, reg_vals[base_reg.idx()].val.wrapping_add(addend))),
                     InsnKind::Set(reg, Addrish::AddReg(base_reg, addend_reg, shift))
                         if regs_with_known_val.has(base_reg.0 as u8) &&
                            regs_with_known_val.has(addend_reg.0 as u8) =>
-                            Some((reg, reg_vals[base_reg.idx()].wrapping_add(reg_vals[addend_reg.idx()] << shift))),
+                            Some((reg, SetKind::AddReg, reg_vals[base_reg.idx()].val.wrapping_add(reg_vals[addend_reg.idx()].val << shift))),
                     _ => None,
                 };
                 // this has to be after the above checks
@@ -301,9 +304,10 @@ impl<'a> CodeMap<'a> {
                         regs_with_known_val.remove(kill.0 as u8);
                     }
                 }
-                if let Some((reg, val)) = set {
+                let this_off = base + slot_off.ext_usize();
+                if let Some((reg, set_kind, val)) = set {
                     regs_with_known_val.add(reg.0 as u8);
-                    reg_vals[reg.idx()] = val;
+                    reg_vals[reg.idx()] = RegVal { val: val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, };
                 }
 
                 let mut potentially_oor = false;
@@ -330,9 +334,22 @@ impl<'a> CodeMap<'a> {
                 }
                 if potentially_oor && !once_completed {
                     // this can have dupes because of splitting, but not too many
-                    self.potentially_out_of_range_offs.push(base + slot_off.ext_usize());
+                    self.potentially_out_of_range_offs.push(this_off);
                 }
 
+                if let InsnKind::Br(target) = info.kind {
+                    if regs_with_known_val.has(target.0 as u8) &&
+                       reg_vals[target.idx()].set_kind == SetKind::AddReg {
+                        self.switchlike_br_offs.push(this_off);
+                    }
+                }
+
+                let should_cont = match info.kind {
+                    InsnKind::Tail | InsnKind::Unidentified | InsnKind::Br(_) => false,
+                    _ => true,
+                };
+
+                if !should_cont { break; }
                 let next_slot_off = slot_off + (size as u8);
                 if next_slot_off > end_off {
                     let next_off = base + next_slot_off.ext_usize();
@@ -352,21 +369,28 @@ impl<'a> CodeMap<'a> {
             return;
         }
     }
-    fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[u64; MAX_REGS]) {
+    fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[RegVal; MAX_REGS]) {
         let (bb, is_new) = self.bb_data.bb_for_off(to_off, &mut self.queue);
         if is_new {
             bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
         } else {
             let mut new_rwkv = bb.regs_with_known_val & regs_with_known_val;
+            let mut changed_vals = false;
             for regn in new_rwkv.set_bits() {
-                if bb.reg_val(Reg(regn as i8), &self.reg_vals).unwrap() != reg_vals[regn.ext_usize()] {
+                let old = bb.reg_val(Reg(regn as i8), &mut self.reg_vals).unwrap();
+                let new = reg_vals[regn.ext_usize()];
+                if old.val != new.val {
                     new_rwkv.remove(regn);
+                } else if old.set_kind != SetKind::None && (new.set_kind == SetKind::None || old.set_off != new.set_off) {
+                    old.set_kind = SetKind::None;
+                    changed_vals = true;
                 }
             }
-            if new_rwkv == bb.regs_with_known_val {
+            if new_rwkv != bb.regs_with_known_val {
+                bb.reduce_rwkv(new_rwkv, &mut self.reg_vals);
+            } else if !changed_vals {
                 return;
             }
-            bb.reduce_rwkv(new_rwkv, &mut self.reg_vals);
         }
         if !bb.flags.queued() {
             bb.flags.set_queued(true);
@@ -388,7 +412,7 @@ impl<'a> CodeMap<'a> {
         (size, *info)
     }
     fn go_round(&mut self, handler: &mut GenericHandler) {
-        let mut reg_vals = [0; MAX_REGS];
+        let mut reg_vals = [RegVal::default(); MAX_REGS];
         while let Some(off) = self.queue.pop_front() {
             self.do_bb(off, &mut reg_vals, handler);
         }
@@ -488,117 +512,6 @@ impl<'a> CodeMap<'a> {
             }
         }
         Ok(())
-    }
-
-    fn value_for_reg(&mut self, handler: &mut GenericHandler, mut before_idx: InsnIdx, mut can_be_at: bool, mut reg: Reg) -> Result<u64, LastSetterFail> {
-        let mut i = 0;
-        let mut addend: u64 = 0;
-        loop {
-            let (setter_idx, setter_kind) = try!(self.last_setter(handler, before_idx, can_be_at, reg));
-            match setter_kind {
-                InsnKind::Set(_, Addrish::Imm(val)) =>
-                    return Ok(val.wrapping_add(addend)),
-                InsnKind::Set(_, Addrish::AddImm(other_reg, xaddend)) => {
-                    addend = addend.wrapping_add(xaddend);
-                    reg = other_reg;
-                    before_idx = setter_idx;
-                    can_be_at = false;
-                },
-                _ => return Err(LastSetterFail::VFRUnknownSetter),
-            }
-            i += 1;
-            if i >= 5 { return Err(LastSetterFail::VFROverflow); }
-        }
-    }
-
-    fn last_setter(&mut self, handler: &mut GenericHandler, before_idx: InsnIdx, can_be_at: bool, reg: Reg) -> Result<(InsnIdx, InsnKind), LastSetterFail> {
-        self.ls_generation += 1;
-        self.ls_result_idx = None;
-        try!(self.last_setter_inner(handler, before_idx, can_be_at, reg, 0));
-        Ok((self.ls_result_idx.unwrap(), self.ls_result_kind))
-    }
-
-    #[inline]
-    fn last_setter_rec(&mut self, handler: &mut GenericHandler, at_or_before_idx: InsnIdx, reg: Reg, depth: usize) -> Result<(), LastSetterFail> {
-        //println!("last_setter_rec: {:?} @ {}/{}", reg, at_or_before_idx, self.idx_to_addr(at_or_before_idx));
-        if depth > 20 {
-            return Err(LastSetterFail::StackOverflow);
-        }
-        {
-            let ls_generation = self.ls_generation;
-            let iso = self.get_or_make_insn_state_other(at_or_before_idx);
-            if iso.is_root {
-                return Err(LastSetterFail::FoundRoot);
-            }
-            if iso.ls_generation == ls_generation {
-                if iso.ls_finished {
-                    // cached result
-                    //println!("-> cached");
-                    return Ok(());
-                } else {
-                    return Err(LastSetterFail::Loop);
-                }
-            } else {
-                iso.ls_generation = ls_generation;
-                iso.ls_finished = false;
-            }
-        }
-        try!(self.last_setter_inner(handler, at_or_before_idx, /*can_be_at*/ true, reg, depth));
-        {
-            let iso = &mut self.insn_state_other[self.insn_state[at_or_before_idx].ext_usize()];
-            iso.ls_finished = true;
-        }
-        //println!("-> got it");
-        Ok(())
-    }
-
-    fn last_setter_inner(&mut self, handler: &mut GenericHandler, at_or_before_idx: InsnIdx, can_be_at: bool, reg: Reg, depth: usize) -> Result<(), LastSetterFail> {
-        let mut idx = at_or_before_idx;
-        loop {
-            if can_be_at || idx != at_or_before_idx {
-                if self.ls_result_idx == Some(idx) {
-                    return Ok(());
-                }
-                let (_, info) = self.decode(handler, idx);
-                if info.kills_reg(reg) {
-                    // idx is a possible value
-                    if self.ls_result_idx.is_some() {
-                        return Err(LastSetterFail::DifferentValues);
-                    }
-                    self.ls_result_idx = Some(idx);
-                    self.ls_result_kind = info.kind;
-                    return Ok(());
-                }
-            }
-            let state_word = self.insn_state[idx];
-            //println!("idx={} state_word={}", idx, state_word);
-            if state_word < 0 {
-                idx = idx.wrapping_add(state_word.ext_usize());
-            } else if state_word > 0 {
-                let mut ok = false;
-                let mut i = 0;
-                //println!("flows_from({})={:?}", self.idx_to_addr(idx), self.insn_state_other[state_word.ext_usize()].flows_from);
-                loop {
-                    let from_idx = {
-                        let flows_from = &self.insn_state_other[state_word.ext_usize()].flows_from;
-                        *some_or!(flows_from.get(i), { break; })
-                    };
-                    i += 1;
-                    let res = self.last_setter_rec(handler, from_idx, reg, depth + 1);
-                    if res == Err(LastSetterFail::Loop) {
-                        // this path is a loop but others may not be
-                        continue;
-                    }
-                    // but other failures are fatal
-                    try!(res);
-                    ok = true;
-                }
-                if !ok { return Err(LastSetterFail::Loop); }
-                return Ok(());
-            } else {
-                panic!("last_setter_inner: unseen?");
-            }
-        }
     }
     fn sole_pred(&mut self, idx: InsnIdx) -> Option<InsnIdx> {
         let state_word = self.insn_state[idx];
