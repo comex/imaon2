@@ -14,8 +14,7 @@ simple_bitflags! {
         valid/set_valid: bool << 0,
         have_next_block/set_have_next_block: bool << 1,
         queued/set_queued: bool << 2,
-        once_completed/set_once_completed: bool << 3,
-        switch_queued/switch_queued: bool << 4,
+        switch_queued/set_switch_queued: bool << 4,
     }
 }
 
@@ -27,6 +26,7 @@ struct BabyBlock {
     // these refer to the beginning of the block
     regs_with_known_val: BitSet32,
     reg_vals_off: u32,
+    notables_off: u32,
 }
 unsafe impl Zeroable for BabyBlock {}
 
@@ -46,10 +46,7 @@ struct RegVal {
 }
 
 
-struct SwitchStuff {
-    prev_vals: [RegVal; CODEMAP_BB_GRAIN],
-
-}
+type PrevVals = [Option<(Reg, RegVal)>; CODEMAP_BB_GRAIN];
 impl BabyBlock {
     #[inline]
     fn reg_val<'a>(&self, reg: Reg, reg_vals: &'a mut [RegVal]) -> Option<&'a mut RegVal> {
@@ -93,7 +90,13 @@ impl BabyBlock {
 
 pub const CODEMAP_BB_GRAIN: usize = 32;
 
-pub struct CodeMapBBData {
+struct Notable {
+    valid: bool,
+    off: u32,
+    target_addr: VMA,
+}
+
+struct CodeMapBBData {
     bbs: Vec<BabyBlock>,
     extra_bbs: Vec<BabyBlock>,
 }
@@ -106,10 +109,10 @@ pub struct CodeMap<'a> {
     reg_vals: Vec<RegVal>,
     queue: VecDeque<usize>,
     switch_queue: Vec<usize>,
+    notables: Vec<Notable>,
     endian: Endian,
 
     segs: &'a [Segment],
-    pub potentially_out_of_range_offs: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,8 +141,28 @@ pub enum GrokSwitchFail {
     TableReadError,
 }
 
+fn do_enqueue(bb: &mut BabyBlock, off: usize, queue: &mut VecDeque<usize>, notables: &mut Vec<Notable>) {
+    if !bb.flags.queued() {
+        queue.push_back(off);
+        bb.flags.set_queued(true);
+        if bb.notables_off != 0 {
+            let end = off + (bb.end_off - bb.start_off).ext_usize();
+            let mut idx = bb.notables_off.ext_usize();
+            loop {
+                if let Some(n) = notables.get_mut(idx) {
+                    if n.valid && n.off.ext_usize() <= end {
+                        n.valid = false;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
 impl CodeMapBBData {
-    fn bb_for_off(&mut self, off: usize, queue: &mut VecDeque<usize>) -> (&mut BabyBlock, bool /*is_new*/) {
+    fn bb_for_off<'a>(&'a mut self, off: usize, queue: &mut VecDeque<usize>, notables: &mut Vec<Notable>) -> (&'a mut BabyBlock, bool /*is_new*/) {
         //println!("bb_for_off 0x{:x}", off);
         let slot = off / CODEMAP_BB_GRAIN;
         let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
@@ -150,7 +173,7 @@ impl CodeMapBBData {
                 x.flags.set_valid(true);
                 x.start_off = slot_off;
                 x.end_off = (CODEMAP_BB_GRAIN - 1) as u8;
-                //println!("cae 0");
+                //println!("case 0");
                 return (x, true);
             }
             let start_off = x.start_off;
@@ -175,10 +198,12 @@ impl CodeMapBBData {
             } else { // slot_off > start_off
                 let past_end = slot_off > x.end_off;
                 if past_end && x.flags.have_next_block() {
+                    let next_block = x.next_block.ext_usize();
+                    drop(x);
                     // XXX with nonlexical lifetimes this shouldn't be necessary
                     // as self.extra_bbs should be definitely unborrowed after the drop() calls
                     let hack_extra_bbs: &'static mut Vec<BabyBlock> = unsafe { transmute(&mut self.extra_bbs) };
-                    x = &mut hack_extra_bbs[x.next_block.ext_usize()];
+                    x = &mut hack_extra_bbs[next_block];
                     continue;
                 } else {
                     //println!("cae 3 x.so={:x} eo={:x}", x.start_off, x.end_off);
@@ -190,10 +215,8 @@ impl CodeMapBBData {
                     if !past_end {
                         // truncate; need to rescan
                         x.end_off = slot_off - 1;
-                        if !x.flags.queued() {
-                            queue.push_back(slot * CODEMAP_BB_GRAIN + x.start_off.ext_usize());
-                            x.flags.set_queued(true);
-                        }
+                        let off = slot * CODEMAP_BB_GRAIN + x.start_off.ext_usize();
+                        do_enqueue(x, off, queue, notables);
                     }
                     drop(x);
                     let mut new = BabyBlock::zeroed();
@@ -229,9 +252,10 @@ impl<'a> CodeMap<'a> {
             },
             reg_vals: Vec::new(),
             queue: VecDeque::new(),
+            switch_queue: Vec::new(),
+            notables: Vec::new(),
             endian: endian,
             segs: segs,
-            potentially_out_of_range_offs: Vec::new(),
         }
     }
     pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
@@ -257,11 +281,28 @@ impl<'a> CodeMap<'a> {
         self.region_start + (off as u64)
     }
     fn bb_for_off_existing(&mut self, off: usize) -> &mut BabyBlock {
-        let (bb, new) = self.bb_data.bb_for_off(off, &mut self.queue);
-        assert!(!new);
-        bb
+        //println!("bb_for_off 0x{:x}", off);
+        let slot = off / CODEMAP_BB_GRAIN;
+        let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
+        let mut x = &mut self.bb_data.bbs[slot];
+        loop {
+            assert!(x.flags.valid());
+            let start_off = x.start_off;
+            if slot_off == start_off {
+                return x;
+            } else if slot_off > start_off {
+                assert!(x.flags.have_next_block());
+                let next_block = x.next_block.ext_usize();
+                drop(x);
+                let hack_extra_bbs: &'static mut Vec<BabyBlock> = unsafe { transmute(&mut self.bb_data.extra_bbs) };
+                x = &mut hack_extra_bbs[next_block];
+                continue;
+            } else {
+                panic!();
+            }
+        }
     }
-    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], prev_vals: &mut [RegVal; CODEMAP_BB_GRAIN], handler: &mut GenericHandler, switch_mode: bool) {
+    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], prev_vals: &mut PrevVals, handler: &mut GenericHandler, switch_mode: bool) {
         'beginning: loop {
             let mut slot_off = (start_off % CODEMAP_BB_GRAIN) as u8;
             let base = start_off - slot_off.ext_usize();
@@ -269,15 +310,14 @@ impl<'a> CodeMap<'a> {
             let mut end_off: u8;
             let mut switch_queued: bool;
             let reg_vals_off: usize;
-            let once_completed: bool;
             {
                 let bb = self.bb_for_off_existing(start_off);
                 regs_with_known_val = bb.regs_with_known_val;
                 end_off = bb.end_off;
-                once_completed = bb.flags.once_completed();
                 switch_queued = bb.flags.switch_queued();
                 reg_vals_off = bb.reg_vals_off.ext();
             }
+            let mut notables_off: u32 = 0;
             println!("do_bb: start_off=0x{:x}/{} rwkv=0x{:x}", start_off, self.off_to_addr(start_off), regs_with_known_val.bits);
             {
                 let mut off = reg_vals_off;
@@ -312,38 +352,39 @@ impl<'a> CodeMap<'a> {
                     }
                 }
                 let this_off = base + slot_off.ext_usize();
+                let mut prev = None;
                 if let Some((reg, set_kind, val)) = set {
                     regs_with_known_val.add(reg.0 as u8);
                     let rv = RegVal { val: val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, };
+                    prev = Some((reg, reg_vals[reg.idx()]));
                     reg_vals[reg.idx()] = rv;
-                    prev_vals[slot_off.ext_usize()] = rv;
                 }
+                prev_vals[slot_off.ext_usize()] = prev;
 
-                let mut potentially_oor = false;
                 match info.target_addr {
-                    TargetAddr::Code(target_addr) => {
-                        if let Some(target_off) = self.addr_to_off(target_addr) {
-                            self.mark_flow(target_off, regs_with_known_val, reg_vals);
-                            if target_off > start_off && target_off <= (base + end_off.ext_usize()) {
-                                let target_slot_off = (target_off % CODEMAP_BB_GRAIN) as u8;
-                                if target_slot_off > slot_off {
-                                    end_off = target_slot_off - 1;
-                                } else {
-                                    continue 'beginning;
+                    TargetAddr::Code(target_addr) | TargetAddr::Data(target_addr) => {
+                        let target_off = self.addr_to_off(target_addr);
+                        if let Some(target_off) = target_off {
+                            if let TargetAddr::Code(_) = info.target_addr {
+                                self.mark_flow(target_off, regs_with_known_val, reg_vals);
+                                if target_off > start_off && target_off <= (base + end_off.ext_usize()) {
+                                    let target_slot_off = (target_off % CODEMAP_BB_GRAIN) as u8;
+                                    if target_slot_off > slot_off {
+                                        end_off = target_slot_off - 1;
+                                    } else {
+                                        continue 'beginning;
+                                    }
                                 }
                             }
-                        } else {
-                            potentially_oor = true;
+                        }
+                        if target_off.is_none() {
+                            if notables_off == 0 {
+                                notables_off = self.notables.len().narrow().unwrap();
+                            }
+                            self.notables.push(Notable { valid: true, off: this_off.narrow().unwrap(), target_addr: target_addr });
                         }
                     },
-                    TargetAddr::Data(target_addr) => {
-                        if self.addr_to_off(target_addr).is_none() { potentially_oor = true; }
-                    },
-                    _ => (),
-                }
-                if potentially_oor && !once_completed {
-                    // this can have dupes because of splitting, but not too many
-                    self.potentially_out_of_range_offs.push(this_off);
+                    TargetAddr::None => (),
                 }
 
                 if let InsnKind::Br(target) = info.kind {
@@ -374,15 +415,15 @@ impl<'a> CodeMap<'a> {
             {
                 let bb = self.bb_for_off_existing(start_off);
                 bb.end_off = end_off;
+                bb.notables_off = notables_off;
                 bb.flags.set_queued(false);
                 bb.flags.set_switch_queued(switch_queued);
-                bb.flags.set_once_completed(true);
             }
             return;
         }
     }
     fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[RegVal; MAX_REGS]) {
-        let (bb, is_new) = self.bb_data.bb_for_off(to_off, &mut self.queue);
+        let (bb, is_new) = self.bb_data.bb_for_off(to_off, &mut self.queue, &mut self.notables);
         if is_new {
             bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
         } else {
@@ -404,17 +445,11 @@ impl<'a> CodeMap<'a> {
                 return;
             }
         }
-        if !bb.flags.queued() {
-            bb.flags.set_queued(true);
-            self.queue.push_back(to_off);
-        }
+        do_enqueue(bb, to_off, &mut self.queue, &mut self.notables);
     }
     pub fn mark_root(&mut self, off: usize) {
-        let (bb, _) = self.bb_data.bb_for_off(off, &mut self.queue);
-        if !bb.flags.queued() {
-            self.queue.push_back(off);
-            bb.flags.set_queued(true);
-        }
+        let (bb, _) = self.bb_data.bb_for_off(off, &mut self.queue, &mut self.notables);
+        do_enqueue(bb, off, &mut self.queue, &mut self.notables);
     }
     #[inline(always)]
     fn decode(&self, handler: &mut GenericHandler, off: usize) -> (usize, InsnInfo) {
@@ -425,9 +460,9 @@ impl<'a> CodeMap<'a> {
     }
     fn go_round(&mut self, handler: &mut GenericHandler) {
         let mut reg_vals = [RegVal::default(); MAX_REGS];
-        let mut prev_vals = [RegVal::default(); CODEMAP_BB_GRAIN]; // only useful for switch mode
+        let mut prev_vals = [None; CODEMAP_BB_GRAIN]; // only useful for switch mode
         while let Some(off) = self.queue.pop_front() {
-            self.do_bb(off, &mut reg_vals, &mut prev_vals, handler);
+            self.do_bb(off, &mut reg_vals, &mut prev_vals, handler, false);
         }
 
     }
