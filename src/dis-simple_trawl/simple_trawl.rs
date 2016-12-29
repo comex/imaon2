@@ -277,13 +277,11 @@ impl<'a> CodeMap<'a> {
     pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
         while !self.queue.is_empty() {
             self.go_round(handler);
-            /*
-            let idxs = replace(&mut self.switchlike_br_idxs, Vec::new());
-            //println!("switch idxs = {:?}", idxs);
-            for idx in idxs {
-                self.grok_switch(handler, idx, read).unwrap(); // xxx
+            let offs = replace(&mut self.switch_queue, Vec::new());
+            println!("switch offs = {:?}", offs);
+            for off in offs {
+                self.grok_switches(handler, off, read).unwrap(); // xxx
             }
-            */
         }
     }
     #[inline]
@@ -454,10 +452,13 @@ impl<'a> CodeMap<'a> {
             let mut new_rwkv = bb.regs_with_known_val & regs_with_known_val;
             let mut changed_vals = false;
             for regn in new_rwkv.set_bits() {
-                let old = bb.reg_val(Reg(regn as i8), &mut self.reg_vals).unwrap();
+                let p = bb.reg_val(Reg(regn as i8), &mut self.reg_vals).unwrap();
                 let new = &reg_vals[regn.ext_usize()];
-                *old = old.intersect(new);
-                changed_vals = true;
+                let intersected = p.intersect(new);
+                if intersected != *p {
+                    *p = intersected;
+                    changed_vals = true;
+                }
             }
             if !changed_vals {
                 return;
@@ -483,14 +484,42 @@ impl<'a> CodeMap<'a> {
         }
 
     }
+    fn grok_switches<'x>(&mut self, handler: &mut GenericHandler, bb_off: usize, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
+        let mut offs: ArrayVec<[usize; CODEMAP_BB_GRAIN]> = ArrayVec::new();
+        {
+            let start; let end;
+            {
+                let bb = self.bb_for_off_existing(bb_off).unwrap();
+                if !bb.flags.switch_queued() { return Ok(()); }
+                let base = bb_off - (bb_off % CODEMAP_BB_GRAIN);
+                start = bb.start_off.ext_usize() + base;
+                end = bb.end_off.ext_usize() + base;
+            }
+            let mut off = start;
+            while off <= end {
+                let (size, info) = self.decode(handler, off);
+                if let InsnKind::Br(_) = info.kind {
+                    offs.push(off);
+                }
+                off += size;
+            }
+        }
+        for off in offs {
+            try!(self.grok_switch(handler, off, read));
+        }
+
+        self.bb_for_off_existing(bb_off).unwrap().flags.set_switch_queued(false);
+        Ok(())
+    }
     fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_off: usize, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
         println!("grok_switch: {}", self.off_to_addr(br_off));
         let br_reg = match self.decode(handler, br_off).1.kind {
             InsnKind::Br(r) => r, _ => panic!(),
         };
-        let addr_setter = try!(self.last_setter_for_reg(handler, br_off, br_reg).ok_or(GrokSwitchFail::GettingSetterOfBrAddr));
+        let addr_setter = some_or!(self.last_setter_for_reg(handler, br_off, br_reg), { return Ok(()); });
         let (r1, r2) = match self.decode(handler, addr_setter.set_off.ext()).1.kind {
-            InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2), _ => panic!(),
+            InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2),
+            _ => return Ok(()),
         };
         let (r1rv, r2rv) = (
             try!(self.last_setter_for_reg(handler, addr_setter.set_off.ext(), r1).ok_or(GrokSwitchFail::GettingSetterOfAddR1)),
@@ -600,27 +629,32 @@ impl<'a> CodeMap<'a> {
         if before_off == 0 { return false; }
         let le_off = before_off - 1;
         let mut lscache = replace(&mut self.lscache, None).unwrap();
-        if le_off >= lscache.start_off && before_off <= lscache.end_off {
-            self.lscache = Some(lscache);
-            return true;
+        let ret;
+        'lol: loop {
+            if le_off >= lscache.start_off && before_off <= lscache.end_off {
+                ret = true;
+                break 'lol;
+            }
+            let end_off;
+            {
+                let bb = some_or!(self.bb_for_off_existing(le_off), { ret = false; break 'lol; });
+                let base = le_off - (le_off % CODEMAP_BB_GRAIN);
+                lscache.start_off = base + bb.start_off.ext_usize();
+                lscache.end_off = base + bb.end_off.ext_usize();
+                lscache.regs_with_known_val = bb.regs_with_known_val;
+                lscache.reg_vals_off = bb.reg_vals_off;
+                end_off = bb.end_off;
+            }
+            let rwkv = {
+                let lscache = &mut *lscache; // needed for multi-field borrowing, lol
+                self.do_bb(lscache.start_off, &mut lscache.end_reg_vals, Some(&mut lscache.new_vals), handler)
+            };
+            lscache.end_rwkv = rwkv;
+            debug_assert!(self.bb_for_off_existing(le_off).unwrap().end_off == end_off);
+            ret = true;
+            break 'lol;
         }
-        let end_off;
-        {
-            let bb = some_or!(self.bb_for_off_existing(le_off), { return false; });
-            let base = le_off - (le_off % CODEMAP_BB_GRAIN);
-            lscache.start_off = base + bb.start_off.ext_usize();
-            lscache.end_off = base + bb.end_off.ext_usize();
-            lscache.regs_with_known_val = bb.regs_with_known_val;
-            lscache.reg_vals_off = bb.reg_vals_off;
-            end_off = bb.end_off;
-        }
-        let rwkv = {
-            let lscache = &mut *lscache; // needed for multi-field borrowing, lol
-            self.do_bb(lscache.start_off, &mut lscache.end_reg_vals, Some(&mut lscache.new_vals), handler)
-        };
-        lscache.end_rwkv = rwkv;
         self.lscache = Some(lscache);
-        debug_assert!(self.bb_for_off_existing(le_off).unwrap().end_off == end_off);
-        return true;
+        return ret;
     }
 }
