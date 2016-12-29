@@ -30,6 +30,7 @@ struct BabyBlock {
 }
 unsafe impl Zeroable for BabyBlock {}
 
+/*
 #[derive(Clone, Copy, PartialEq)]
 enum SetKind {
     None,
@@ -37,12 +38,11 @@ enum SetKind {
     Other,
 }
 impl Default for SetKind { fn default() -> Self { SetKind::None } }
+*/
 
 #[derive(Clone, Copy, PartialEq, Default)]
 struct RegVal {
     val: u64,
-    set_kind: SetKind,
-    set_off: u32,
 }
 
 
@@ -318,6 +318,7 @@ impl<'a> CodeMap<'a> {
                 reg_vals_off = bb.reg_vals_off.ext();
             }
             let mut notables_off: u32 = 0;
+            let mut last_addreg_target = Reg::invalid();
             println!("do_bb: start_off=0x{:x}/{} rwkv=0x{:x}", start_off, self.off_to_addr(start_off), regs_with_known_val.bits);
             {
                 let mut off = reg_vals_off;
@@ -333,29 +334,33 @@ impl<'a> CodeMap<'a> {
                     end_off = slot_off;
                     break;
                 }
-                let set: Option<(Reg, SetKind, u64)> = match info.kind {
+                let set: Option<(Reg, u64)> = match info.kind {
                     InsnKind::Set(reg, Addrish::Imm(val)) =>
-                        Some((reg, SetKind::Other, val)),
+                        Some((reg, val)),
                     InsnKind::Set(reg, Addrish::AddImm(base_reg, addend))
                         if regs_with_known_val.has(base_reg.0 as u8) =>
-                            Some((reg, SetKind::Other, reg_vals[base_reg.idx()].val.wrapping_add(addend))),
+                            Some((reg, reg_vals[base_reg.idx()].val.wrapping_add(addend))),
                     InsnKind::Set(reg, Addrish::AddReg(base_reg, addend_reg, shift))
                         if regs_with_known_val.has(base_reg.0 as u8) &&
                            regs_with_known_val.has(addend_reg.0 as u8) =>
-                            Some((reg, SetKind::AddReg, reg_vals[base_reg.idx()].val.wrapping_add(reg_vals[addend_reg.idx()].val << shift))),
+                            Some((reg, reg_vals[base_reg.idx()].val.wrapping_add(reg_vals[addend_reg.idx()].val << shift))),
                     _ => None,
                 };
                 // this has to be after the above checks
                 for &kill in &info.kills_reg {
                     if kill != Reg::invalid() {
                         regs_with_known_val.remove(kill.0 as u8);
+                        if last_addreg_target == kill { last_addreg_target = Reg::invalid(); }
                     }
+                }
+                if let InsnKind::Set(reg, Addrish::AddReg(..)) = info.kind {
+                    last_addreg_target = reg;
                 }
                 let this_off = base + slot_off.ext_usize();
                 let mut prev = None;
-                if let Some((reg, set_kind, val)) = set {
+                if let Some((reg, val)) = set {
                     regs_with_known_val.add(reg.0 as u8);
-                    let rv = RegVal { val: val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, };
+                    let rv = RegVal { val: val };
                     prev = Some((reg, reg_vals[reg.idx()]));
                     reg_vals[reg.idx()] = rv;
                 }
@@ -388,9 +393,7 @@ impl<'a> CodeMap<'a> {
                 }
 
                 if let InsnKind::Br(target) = info.kind {
-                    if regs_with_known_val.has(target.0 as u8) &&
-                       reg_vals[target.idx()].set_kind == SetKind::AddReg &&
-                       !switch_mode && !switch_queued {
+                    if target == last_addreg_target && !switch_mode && !switch_queued {
                         switch_queued = true;
                         self.switch_queue.push(start_off);
                     }
@@ -434,10 +437,10 @@ impl<'a> CodeMap<'a> {
                 let new = reg_vals[regn.ext_usize()];
                 if old.val != new.val {
                     new_rwkv.remove(regn);
-                } else if old.set_kind != SetKind::None && (new.set_kind == SetKind::None || old.set_off != new.set_off) {
+                }/* else if old.set_kind != SetKind::None && (new.set_kind == SetKind::None || old.set_off != new.set_off) {
                     old.set_kind = SetKind::None;
                     changed_vals = true;
-                }
+                }*/
             }
             if new_rwkv != bb.regs_with_known_val {
                 bb.reduce_rwkv(new_rwkv, &mut self.reg_vals);
