@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdlib.h>
+#include <assert.h>
 struct rust_str {
     char *bytes;
     size_t length;

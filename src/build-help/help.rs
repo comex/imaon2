@@ -163,7 +163,10 @@ pub fn dis_llvm_x_generated(kind: &'static str) {
     for variant_name in VARIANTS {
         let ddpath = ddpath.clone();
         handles.push(std::thread::spawn(move || {
+
+            let out_subdir = get_out_dir().join(variant_name);
             gcc::Config::new()
+                .out_dir(out_subdir)
                 .file("boilerplate.c")
                 .include(ddpath)
                 .define(&format!("VARIANT_{}", variant_name), None)
