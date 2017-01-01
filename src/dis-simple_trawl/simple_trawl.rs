@@ -58,6 +58,7 @@ struct RegVal {
 unsafe impl Zeroable for RegVal {}
 impl RegVal {
     fn intersect(&self, other: &RegVal) -> RegVal {
+        if self.have_val && !other.have_val { println!(" <intersect killing val; self={:?}, other={:?}>", self, other); }
         debug_assert!(self.reg == other.reg);
         RegVal {
             have_val: self.have_val && other.have_val && self.val == other.val,
@@ -71,16 +72,6 @@ impl RegVal {
 
 
 impl BabyBlock {
-    #[inline]
-    fn reg_val<'a>(&self, reg: Reg, reg_vals: &'a mut [RegVal]) -> Option<&'a mut RegVal> {
-        let xreg = reg.0 as u8;
-        let rwkv = self.regs_with_known_val;
-        if rwkv.has(xreg) {
-            let position = (self.reg_vals_off.ext_usize()) + (rwkv.subset(0..xreg).count().ext_usize());
-            debug_assert!(reg_vals[position].reg == reg);
-            Some(&mut reg_vals[position])
-        } else { None }
-    }
     fn set_rwkv(&mut self, new_rwkv: BitSet32, my_vals: &[RegVal; MAX_REGS], reg_vals: &mut Vec<RegVal>) {
         self.regs_with_known_val = new_rwkv;
         self.flags.set_rwkv_meaningful(true);
@@ -141,6 +132,7 @@ pub enum GrokSwitchFail {
     GettingTableAddrValue,
     FindingCmp,
     CmpWeirdInsn,
+    CmpWrongReg,
     //CmpIdxRegKilled,
     TableTooBig,
     TableReadError,
@@ -331,8 +323,13 @@ impl<'a> CodeMap<'a> {
             {
                 let mut off = reg_vals_off;
                 for reg in regs_with_known_val.set_bits() {
-                    let reg = reg.ext_usize();
-                    reg_vals[reg] = self.reg_vals[off];
+                    let rv = self.reg_vals[off];
+                    if !rv.have_val && rv.set_kind == SetKind::None {
+                        println!("...but unknown {:?}", reg);
+                        regs_with_known_val.remove(reg);
+                    } else {
+                        reg_vals[reg.ext_usize()] = rv;
+                    }
                     off += 1;
                 }
             }
@@ -448,16 +445,21 @@ impl<'a> CodeMap<'a> {
         if !bb.flags.rwkv_meaningful() {
             bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
         } else {
-            let new_rwkv = bb.regs_with_known_val & regs_with_known_val;
             let mut changed_vals = false;
-            for regn in new_rwkv.set_bits() {
-                let p = bb.reg_val(Reg(regn as i8), &mut self.reg_vals).unwrap();
-                let new = &reg_vals[regn.ext_usize()];
-                let intersected = p.intersect(new);
+            let mut off = bb.reg_vals_off.ext_usize();
+            for regn in bb.regs_with_known_val.set_bits() {
+                let p = &mut self.reg_vals[off];
+                let new = if regs_with_known_val.has(regn) {
+                    reg_vals[regn.ext_usize()]
+                } else {
+                    RegVal { val: 0, have_val: false, set_kind: SetKind::None, reg: Reg(regn as i8), set_off: 0 }
+                };
+                let intersected = p.intersect(&new);
                 if intersected != *p {
                     *p = intersected;
                     changed_vals = true;
                 }
+                off += 1;
             }
             if !changed_vals {
                 return;
@@ -527,8 +529,8 @@ impl<'a> CodeMap<'a> {
             },
         };
         let (r1rv, r2rv) = (
-            try!(self.last_setter_for_reg(handler, addr_setter.set_off.ext(), r1).ok_or(GrokSwitchFail::GettingSetterOfAddR1)),
-            try!(self.last_setter_for_reg(handler, addr_setter.set_off.ext(), r2).ok_or(GrokSwitchFail::GettingSetterOfAddR2)),
+            try!(self.last_rv_for_reg(handler, addr_setter.set_off.ext(), r1).ok_or(GrokSwitchFail::GettingSetterOfAddR1)),
+            try!(self.last_rv_for_reg(handler, addr_setter.set_off.ext(), r2).ok_or(GrokSwitchFail::GettingSetterOfAddR2)),
         );
         let rs = &[r1rv, r2rv];
         // find the table - would be nice to use loop-break-val for this
@@ -536,6 +538,7 @@ impl<'a> CodeMap<'a> {
         let mut table_addr_reg = Reg::invalid(); let mut table_idx_reg = Reg::invalid();
         let mut table_item_size = Size8; let mut table_item_signedness = Unsigned;
         for (i, rnrv) in rs.iter().enumerate() {
+            if rnrv.set_kind == SetKind::None { continue; }
             let rnkind = self.decode(handler, rnrv.set_off.ext()).1.kind;
             match rnkind {
                 InsnKind::Load(_, Addrish::AddReg(table_addr, table_idx, shift), size, signedness) => {
@@ -555,19 +558,28 @@ impl<'a> CodeMap<'a> {
         }
         // the other should just be a static offset from PC
         let table_abase_rv = rs[1 - which_is_load];
-        let table_abase = try!(self.value_for_reg(handler, table_abase_rv.set_off.ext_usize() + 1, table_abase_rv.reg).ok_or(GrokSwitchFail::GettingTableAbaseValue));
-        let load_idx = rs[which_is_load].set_off.ext_usize();
-        let table_addr = try!(self.value_for_reg(handler, load_idx, table_addr_reg).ok_or(GrokSwitchFail::GettingTableAddrValue));
+        if !table_abase_rv.have_val {
+            return Err(GrokSwitchFail::GettingTableAbaseValue);
+        }
+        let table_abase = VMA(table_abase_rv.val);
 
-        let table_addr = VMA(table_addr);
-        let table_abase = VMA(table_abase);
+        let load_off = rs[which_is_load].set_off.ext_usize();
+        let table_addr = VMA(try!(self.value_for_reg(handler, load_off, table_addr_reg).ok_or(GrokSwitchFail::GettingTableAddrValue)));
 
         // one more thing: find the cmp to establish table size
         let cmp_rv = try!(self.last_setter_for_reg(handler, br_off, FLAGS_REG).ok_or(GrokSwitchFail::FindingCmp));
-        println!("cmp@{}", self.off_to_addr(cmp_rv.set_off.ext()));
-        let (_, info) = self.decode(handler, cmp_rv.set_off.ext());
+        let cmp_off = cmp_rv.set_off.ext_usize();
+        println!("cmp@{}", self.off_to_addr(cmp_off));
+        let (_, info) = self.decode(handler, cmp_off);
         let table_len = match info.kind {
-            InsnKind::CmpImm(r, u) if r == table_idx_reg => u,
+            InsnKind::CmpImm(r, u) => {
+                if r != table_idx_reg {
+                    if !self.regs_look_equiv(handler, load_off, table_idx_reg, cmp_off, r) {
+                        return Err(GrokSwitchFail::CmpWrongReg);
+                    }
+                }
+                u
+            },
             _ => return Err(GrokSwitchFail::CmpWeirdInsn),
         };
         // xxx - this doesn't check for killing idx in between
@@ -583,6 +595,7 @@ impl<'a> CodeMap<'a> {
         let table: &[ReadCell<u8>] = some_or!(read(table_addr, table_bytes as u64), {
             return Err(GrokSwitchFail::TableReadError);
         });
+        self.move_lscache_to(br_off, handler);
         let lscache = replace(&mut self.lscache, None).unwrap();
         for (i, chunk) in table.chunks(bytes).enumerate() {
             let val = exec::dynsized_integer_from_slice(chunk, table_item_signedness, self.endian);
@@ -673,5 +686,26 @@ impl<'a> CodeMap<'a> {
         }
         self.lscache = Some(lscache);
         return ret;
+    }
+    fn regs_look_equiv(&mut self, handler: &mut GenericHandler, off1: usize, r1: Reg, off2: usize, r2: Reg) -> bool {
+        // ugh - goddamn clang
+        // a true result is NOT guaranteed to be accurate because doing this properly would require tracking phis and stuff
+        let last_setter_1 = self.last_setter_for_reg(handler, off1, r1);
+        let last_setter_2 = self.last_setter_for_reg(handler, off2, r2);
+        if let Some(rv) = last_setter_1 {
+            print!("=> {:?}", self.decode(handler, rv.set_off.ext()));
+            if let InsnKind::Set(_, Addrish::AddImm(base, 0)) = self.decode(handler, rv.set_off.ext()).1.kind {
+                if base == r2 { return true; }
+            }
+        }
+        if let Some(rv) = last_setter_2 {
+            if let InsnKind::Set(_, Addrish::AddImm(base, 0)) = self.decode(handler, rv.set_off.ext()).1.kind {
+                if base == r1 { return true; }
+            }
+        }
+        if let (Some(last_setter_1), Some(last_setter_2)) = (last_setter_1, last_setter_2) {
+            if last_setter_1.set_off == last_setter_2.set_off { return true; }
+        }
+        return false;
     }
 }

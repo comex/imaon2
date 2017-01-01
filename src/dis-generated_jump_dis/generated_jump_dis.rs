@@ -129,16 +129,41 @@ impl aarch64::Handler for AArch64Handler {
         self.info.kills_reg[0] = reg(Rd);
     }
     #[inline]
-    fn Rd_out_174_ADCSWr(&mut self, Rd: u32) -> Self::Res {
+    fn Rd_out_170_ADCSWr(&mut self, Rd: u32) -> Self::Res {
         self.info.kills_reg[0] = reg(Rd);
     }
     #[inline]
-    fn ADDXri_skipped_Rd_out_Rn_imm_1_ADDXri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
+    fn ADDri_skipped_Rd_out_Rn_imm_2_ADDWri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
         self.info.kind = InsnKind::Set(reg(Rd), Addrish::AddImm(reg(Rn), imm as u64));
         self.info.kills_reg[0] = reg(Rd);
     }
     #[inline]
-    fn ADDXrs_skipped_Rd_out_skipped_Rm_skipped_Rn_skipped_dst_out_shift_src1_src2_1_ADDXrs(&mut self, dst: u32, src1: u32, xshift: u32, src2: u32) -> Self::Res {
+    fn ANDri_skipped_Rd_out_Rn_imm_1_ANDXri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
+        if imm == 0x101f {
+            // AND x1, x2, #0xffffffff
+            self.info.kind = InsnKind::Set(reg(Rd), Addrish::AddImm(reg(Rn), 0));
+        }
+    }
+    #[inline]
+    fn ORRri_skipped_Rd_out_Rn_imm_2_ORRWri(&mut self, Rd: u32, Rn: u32, imm: u32) -> Self::Res {
+        if imm == 0 {
+            self.info.kind = InsnKind::Set(reg(Rd), Addrish::AddImm(reg(Rn), 0));
+        }
+        self.info.kills_reg[0] = reg(Rd);
+    }
+    #[inline]
+    fn ORRrs_skipped_Rd_out_skipped_Rm_skipped_Rn_skipped_dst_out_shift_src1_src2_2_ORRWrs(&mut self, dst: u32, src1: u32, shift: u32, src2: u32) -> Self::Res {
+        if shift == 0 {
+            if src1 == 0x1f {
+                self.info.kind = InsnKind::Set(reg(dst), Addrish::AddImm(reg(src2), 0));
+            } else if src2 == 0x1f {
+                self.info.kind = InsnKind::Set(reg(dst), Addrish::AddImm(reg(src1), 0));
+            }
+        }
+        self.info.kills_reg[0] = reg(dst);
+    }
+    #[inline]
+    fn ADDrs_skipped_Rd_out_skipped_Rm_skipped_Rn_skipped_dst_out_shift_src1_src2_2_ADDWrs(&mut self, dst: u32, src1: u32, xshift: u32, src2: u32) -> Self::Res {
         self.info.kills_reg[0] = reg(dst);
         let shift = xshift >> 6;
         let imm6 = xshift & 0b111111;
@@ -151,7 +176,7 @@ impl aarch64::Handler for AArch64Handler {
         self.info.kind = InsnKind::CmpImm(reg(Rn), imm as u64);
     }
     #[inline]
-    fn Rd_out_skipped_dst_out_23_ADDSWrs(&mut self, dst: u32) -> Self::Res {
+    fn Rd_out_skipped_dst_out_20_ADDSWrs(&mut self, dst: u32) -> Self::Res {
         self.info.kills_reg[0] = reg(dst);
     }
     #[inline]

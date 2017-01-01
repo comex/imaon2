@@ -2069,9 +2069,10 @@ function hookishCoalesce(submode) {
                 break;
             case 'AArch64':
                 if(submode == 'jump') {
-                    if(insn.name.match(/^(Bcc|BR|ADDXri|ADDXrs)$/)) {
+                    // all these AND/ORR variants are needed to catch various versions of mov
+                    if(insn.name.match(/^(Bcc|BR|(ADD|ORR)[WX]r[si]|ANDXri)$/)) {
                         forceAllInteresting = true;
-                        fakeVarName = insn.name;
+                        fakeVarName = insn.name.replace(/[WX]/, '');
                     } else if(insn.isBranchy && !insn.isCall)
                         fakeVarName = insn.name.match(/^[TC]BN?Z/) ? 'condbranchy' : 'branchy';
                     else if(insn.name == 'ADRP')
