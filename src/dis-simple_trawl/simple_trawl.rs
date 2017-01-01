@@ -7,16 +7,18 @@ extern crate arrayvec;
 use self::dis_generated_jump_dis::{Reg, MAX_REGS, GenericHandler, TargetAddr, InsnInfo, InsnKind, Addrish, Size8};
 use std::collections::VecDeque;
 use self::exec::{VMA, Segment};
-use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32, Zeroable, Ext, ExtWrapper, unlikely};
-use std::mem::{replace, transmute, uninitialized};
+use util::{Narrow, Endian, Unsigned, ReadCell, BitSet32, Zeroable, Ext, ExtWrapper};
+use std::mem::{replace, transmute};
+use std::cmp::min;
 
 use arrayvec::ArrayVec;
 
 simple_bitflags! {
     BBFlags: u8 {
         valid/set_valid: bool << 0,
-        have_next_block/set_have_next_block: bool << 1,
-        queued/set_queued: bool << 2,
+        rwkv_meaningful/set_rwkv_meaningful: bool << 1,
+        have_next_block/set_have_next_block: bool << 2,
+        queued/set_queued: bool << 3,
         switch_queued/set_switch_queued: bool << 4,
     }
 }
@@ -35,7 +37,7 @@ struct BabyBlock {
 }
 unsafe impl Zeroable for BabyBlock {}
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetKind {
     None,
     AddReg,
@@ -45,7 +47,7 @@ enum SetKind {
 }
 impl Default for SetKind { fn default() -> Self { SetKind::None } }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 struct RegVal {
     val: u64,
     have_val: bool,
@@ -68,7 +70,6 @@ impl RegVal {
 }
 
 
-type PrevVals = [Option<(Reg, RegVal)>; CODEMAP_BB_GRAIN];
 impl BabyBlock {
     #[inline]
     fn reg_val<'a>(&self, reg: Reg, reg_vals: &'a mut [RegVal]) -> Option<&'a mut RegVal> {
@@ -82,22 +83,22 @@ impl BabyBlock {
     }
     fn set_rwkv(&mut self, new_rwkv: BitSet32, my_vals: &[RegVal; MAX_REGS], reg_vals: &mut Vec<RegVal>) {
         self.regs_with_known_val = new_rwkv;
+        self.flags.set_rwkv_meaningful(true);
         let new_off = reg_vals.len();
         for reg in new_rwkv.set_bits() {
             reg_vals.push(my_vals[reg.ext_usize()]);
         }
         self.reg_vals_off = new_off.narrow().unwrap();
-
     }
 }
 
 pub const CODEMAP_BB_GRAIN: usize = 32;
 
 #[derive(Copy, Clone)]
-struct Notable {
-    valid: bool,
-    off: u32,
-    target_addr: VMA,
+pub struct Notable {
+    pub valid: bool,
+    pub off: u32,
+    pub target_addr: VMA,
 }
 
 struct CodeMapBBData {
@@ -116,8 +117,6 @@ pub struct CodeMap<'a> {
     notables: Vec<Notable>,
     endian: Endian,
     lscache: Option<Box<LastSetterCache>>,
-
-    segs: &'a [Segment],
 }
 
 struct LastSetterCache {
@@ -125,7 +124,7 @@ struct LastSetterCache {
     end_off: usize,
     regs_with_known_val: BitSet32,
     reg_vals_off: u32,
-    new_vals: ArrayVec<[RegVal; CODEMAP_BB_GRAIN]>,
+    new_vals: ArrayVec<[(u8, RegVal); CODEMAP_BB_GRAIN]>,
     end_reg_vals: [RegVal; MAX_REGS],
     end_rwkv: BitSet32,
 
@@ -154,21 +153,20 @@ fn do_enqueue(bb: &mut BabyBlock, off: usize, queue: &mut VecDeque<usize>, notab
         if bb.notables_off != 0 {
             let end = off + (bb.end_off - bb.start_off).ext_usize();
             let mut idx = bb.notables_off.ext_usize();
-            loop {
-                if let Some(n) = notables.get_mut(idx) {
-                    if n.valid && n.off.ext_usize() <= end {
-                        n.valid = false;
-                        continue;
-                    }
+            while let Some(n) = notables.get_mut(idx) {
+                idx += 1;
+                if n.valid && n.off.ext_usize() <= end {
+                    n.valid = false;
+                } else {
+                    break;
                 }
-                break;
             }
         }
     }
 }
 
 impl CodeMapBBData {
-    fn bb_for_off<'a>(&'a mut self, off: usize, queue: &mut VecDeque<usize>, notables: &mut Vec<Notable>) -> (&'a mut BabyBlock, bool /*is_new*/) {
+    fn bb_for_off<'a>(&'a mut self, off: usize, queue: &mut VecDeque<usize>, notables: &mut Vec<Notable>) -> &'a mut BabyBlock {
         //println!("bb_for_off 0x{:x}", off);
         let slot = off / CODEMAP_BB_GRAIN;
         let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
@@ -180,12 +178,12 @@ impl CodeMapBBData {
                 x.start_off = slot_off;
                 x.end_off = (CODEMAP_BB_GRAIN - 1) as u8;
                 //println!("case 0");
-                return (x, true);
+                return x;
             }
             let start_off = x.start_off;
             if slot_off == start_off {
                 //println!("cae 1");
-                return (x, false);
+                return x;
             } else if slot_off < start_off {
                 let idx: u32 = self.extra_bbs.len().narrow().unwrap();
                 let mut new = BabyBlock::zeroed();
@@ -195,12 +193,8 @@ impl CodeMapBBData {
                 new.start_off = slot_off;
                 new.end_off = start_off - 1;
                 let old = replace(x, new);
-                drop(x);
-
                 self.extra_bbs.push(old);
-                let x = self.extra_bbs.last_mut().unwrap();
-                //println!("cae 2");
-                return (x, true);
+                return x;
             } else { // slot_off > start_off
                 let past_end = slot_off > x.end_off;
                 if past_end && x.flags.have_next_block() {
@@ -237,7 +231,7 @@ impl CodeMapBBData {
                     };
                     self.extra_bbs.push(new);
                     let x = self.extra_bbs.last_mut().unwrap();
-                    return (x, true);
+                    return x;
                 }
             }
         }
@@ -245,7 +239,7 @@ impl CodeMapBBData {
 }
 
 impl<'a> CodeMap<'a> {
-    pub fn new(region_start: VMA, insn_data: &'a [ReadCell<u8>], endian: Endian, segs: &'a [Segment]) -> Self {
+    pub fn new(region_start: VMA, insn_data: &'a [ReadCell<u8>], endian: Endian, _segs: &'a [Segment]) -> Self {
         let region_size = insn_data.len();
         let num_bbs = (region_size + CODEMAP_BB_GRAIN - 1) / CODEMAP_BB_GRAIN;
         CodeMap {
@@ -271,7 +265,7 @@ impl<'a> CodeMap<'a> {
                 end_rwkv: BitSet32::empty(),
             })),
 
-            segs: segs,
+            //segs: segs,
         }
     }
     pub fn go<'x>(&mut self, handler: &mut GenericHandler, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) {
@@ -292,19 +286,19 @@ impl<'a> CodeMap<'a> {
     #[inline]
     #[allow(dead_code)]
     pub fn off_to_addr(&self, off: usize) -> VMA {
+        assert!(off <= self.region_size);
         self.region_start + (off as u64)
     }
-    fn bb_for_off_existing(&mut self, off: usize) -> Option<&mut BabyBlock> {
+    fn bb_containing_off_existing(&mut self, off: usize) -> Option<&mut BabyBlock> {
         //println!("bb_for_off 0x{:x}", off);
         let slot = off / CODEMAP_BB_GRAIN;
         let slot_off = (off % CODEMAP_BB_GRAIN) as u8;
         let mut x = &mut self.bb_data.bbs[slot];
         loop {
             if !x.flags.valid() { return None; }
-            let start_off = x.start_off;
-            if slot_off == start_off {
-                return Some(x);
-            } else if slot_off > start_off {
+            if slot_off < x.start_off {
+                return None;
+            } else if slot_off > x.end_off {
                 if !x.flags.have_next_block() { return None; }
                 let next_block = x.next_block.ext_usize();
                 drop(x);
@@ -312,11 +306,11 @@ impl<'a> CodeMap<'a> {
                 x = &mut hack_extra_bbs[next_block];
                 continue;
             } else {
-                return None;
+                return Some(x);
             }
         }
     }
-    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], mut new_vals: Option<&mut ArrayVec<[RegVal; CODEMAP_BB_GRAIN]>>, handler: &mut GenericHandler) -> BitSet32 {
+    fn do_bb(&mut self, start_off: usize, reg_vals: &mut [RegVal; MAX_REGS], mut new_vals: Option<&mut ArrayVec<[(u8, RegVal); CODEMAP_BB_GRAIN]>>, handler: &mut GenericHandler) -> BitSet32 {
         'beginning: loop {
             let mut slot_off = (start_off % CODEMAP_BB_GRAIN) as u8;
             let base = start_off - slot_off.ext_usize();
@@ -325,14 +319,15 @@ impl<'a> CodeMap<'a> {
             let mut switch_queued: bool;
             let reg_vals_off: usize;
             {
-                let bb = self.bb_for_off_existing(start_off).unwrap();
+                let bb = self.bb_containing_off_existing(start_off).unwrap();
+                debug_assert_eq!(bb.start_off, slot_off);
                 regs_with_known_val = bb.regs_with_known_val;
                 end_off = bb.end_off;
                 switch_queued = bb.flags.switch_queued();
                 reg_vals_off = bb.reg_vals_off.ext();
             }
             let mut notables_off: u32 = 0;
-            println!("do_bb: start_off=0x{:x}/{} rwkv=0x{:x}", start_off, self.off_to_addr(start_off), regs_with_known_val.bits);
+            println!("do_bb: start_off=0x{:x}/{} rwkv={}", start_off, self.off_to_addr(start_off), regs_with_known_val);
             {
                 let mut off = reg_vals_off;
                 for reg in regs_with_known_val.set_bits() {
@@ -342,7 +337,9 @@ impl<'a> CodeMap<'a> {
                 }
             }
             loop {
-                let (size, info) = self.decode(handler, base + slot_off.ext_usize());
+                let this_off = base + slot_off.ext_usize();
+                let (size, info) = self.decode(handler, this_off);
+                println!(" {} rwkv={} size={} info={:?}", self.off_to_addr(this_off), regs_with_known_val, size, info);
                 if size == 0 {
                     end_off = slot_off;
                     break;
@@ -361,7 +358,7 @@ impl<'a> CodeMap<'a> {
                             Some((reg, SetKind::AddReg, false, 0))
                         }
                     },
-                    InsnKind::Set(reg, _) =>
+                    InsnKind::Set(reg, _) | InsnKind::Load(reg, ..) =>
                         Some((reg, SetKind::Whatever, false, 0)),
                     InsnKind::CmpImm(..) =>
                         Some((FLAGS_REG, SetKind::Cmp, false, 0)),
@@ -373,13 +370,12 @@ impl<'a> CodeMap<'a> {
                         regs_with_known_val.remove(kill.0 as u8);
                     }
                 }
-                let this_off = base + slot_off.ext_usize();
                 if let Some((reg, set_kind, have_val, val)) = set {
                     regs_with_known_val.add(reg.0 as u8);
                     let rv = RegVal { val: val, have_val: have_val, set_off: this_off.narrow().unwrap(), set_kind: set_kind, reg: reg, };
                     reg_vals[reg.idx()] = rv;
                     if let Some(ref mut new_vals) = new_vals {
-                        new_vals.push(rv);
+                        new_vals.push((slot_off, rv));
                     }
                 }
 
@@ -422,9 +418,11 @@ impl<'a> CodeMap<'a> {
                     InsnKind::Tail | InsnKind::Unidentified | InsnKind::Br(_) => false,
                     _ => true,
                 };
-
-                if !should_cont { break; }
                 let next_slot_off = slot_off + (size as u8);
+                if !should_cont {
+                    end_off = min(end_off, next_slot_off);
+                    break;
+                }
                 if next_slot_off > end_off {
                     let next_off = base + next_slot_off.ext_usize();
                     if next_off < self.region_size {
@@ -435,7 +433,7 @@ impl<'a> CodeMap<'a> {
                 slot_off = next_slot_off;
             }
             {
-                let bb = self.bb_for_off_existing(start_off).unwrap();
+                let bb = self.bb_containing_off_existing(start_off).unwrap();
                 bb.end_off = end_off;
                 bb.notables_off = notables_off;
                 bb.flags.set_queued(false);
@@ -445,11 +443,12 @@ impl<'a> CodeMap<'a> {
         }
     }
     fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[RegVal; MAX_REGS]) {
-        let (bb, is_new) = self.bb_data.bb_for_off(to_off, &mut self.queue, &mut self.notables);
-        if is_new {
+        println!("  mark_flow -> {} rwkv={}", self.off_to_addr(to_off), regs_with_known_val);
+        let bb = self.bb_data.bb_for_off(to_off, &mut self.queue, &mut self.notables);
+        if !bb.flags.rwkv_meaningful() {
             bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
         } else {
-            let mut new_rwkv = bb.regs_with_known_val & regs_with_known_val;
+            let new_rwkv = bb.regs_with_known_val & regs_with_known_val;
             let mut changed_vals = false;
             for regn in new_rwkv.set_bits() {
                 let p = bb.reg_val(Reg(regn as i8), &mut self.reg_vals).unwrap();
@@ -467,7 +466,7 @@ impl<'a> CodeMap<'a> {
         do_enqueue(bb, to_off, &mut self.queue, &mut self.notables);
     }
     pub fn mark_root(&mut self, off: usize) {
-        let (bb, _) = self.bb_data.bb_for_off(off, &mut self.queue, &mut self.notables);
+        let bb = self.bb_data.bb_for_off(off, &mut self.queue, &mut self.notables);
         do_enqueue(bb, off, &mut self.queue, &mut self.notables);
     }
     #[inline(always)]
@@ -489,7 +488,7 @@ impl<'a> CodeMap<'a> {
         {
             let start; let end;
             {
-                let bb = self.bb_for_off_existing(bb_off).unwrap();
+                let bb = self.bb_containing_off_existing(bb_off).unwrap();
                 if !bb.flags.switch_queued() { return Ok(()); }
                 let base = bb_off - (bb_off % CODEMAP_BB_GRAIN);
                 start = bb.start_off.ext_usize() + base;
@@ -508,7 +507,7 @@ impl<'a> CodeMap<'a> {
             try!(self.grok_switch(handler, off, read));
         }
 
-        self.bb_for_off_existing(bb_off).unwrap().flags.set_switch_queued(false);
+        self.bb_containing_off_existing(bb_off).unwrap().flags.set_switch_queued(false);
         Ok(())
     }
     fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_off: usize, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
@@ -516,10 +515,16 @@ impl<'a> CodeMap<'a> {
         let br_reg = match self.decode(handler, br_off).1.kind {
             InsnKind::Br(r) => r, _ => panic!(),
         };
-        let addr_setter = some_or!(self.last_setter_for_reg(handler, br_off, br_reg), { return Ok(()); });
+        let addr_setter = some_or!(self.last_setter_for_reg(handler, br_off, br_reg), {
+            println!("no ls 1");
+            return Ok(());
+        });
         let (r1, r2) = match self.decode(handler, addr_setter.set_off.ext()).1.kind {
             InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2),
-            _ => return Ok(()),
+            _ => {
+                println!("no ls 2");
+                return Ok(())
+            },
         };
         let (r1rv, r2rv) = (
             try!(self.last_setter_for_reg(handler, addr_setter.set_off.ext(), r1).ok_or(GrokSwitchFail::GettingSetterOfAddR1)),
@@ -559,6 +564,7 @@ impl<'a> CodeMap<'a> {
 
         // one more thing: find the cmp to establish table size
         let cmp_rv = try!(self.last_setter_for_reg(handler, br_off, FLAGS_REG).ok_or(GrokSwitchFail::FindingCmp));
+        println!("cmp@{}", self.off_to_addr(cmp_rv.set_off.ext()));
         let (_, info) = self.decode(handler, cmp_rv.set_off.ext());
         let table_len = match info.kind {
             InsnKind::CmpImm(r, u) if r == table_idx_reg => u,
@@ -601,6 +607,7 @@ impl<'a> CodeMap<'a> {
     }
     fn last_setter_for_reg(&mut self, handler: &mut GenericHandler, before_off: usize, reg: Reg) -> Option<RegVal> {
         if let Some(rv) = self.last_rv_for_reg(handler, before_off, reg) {
+            println!("rv={:?}", rv);
             if rv.set_kind != SetKind::None {
                 return Some(rv);
             }
@@ -608,17 +615,21 @@ impl<'a> CodeMap<'a> {
         None
     }
     fn last_rv_for_reg(&mut self, handler: &mut GenericHandler, before_off: usize, reg: Reg) -> Option<RegVal> {
+        println!("last_rv_for_reg({:?} before {})", reg, self.off_to_addr(before_off));
         if !self.move_lscache_to(before_off, handler) { return None; }
         let lscache = self.lscache.as_ref().unwrap();
-        let mut xoff = (before_off - 1) - lscache.start_off;
-        while xoff > 0 {
-            let val = &lscache.new_vals[xoff];
+        let before_slot_off = before_off % CODEMAP_BB_GRAIN;
+        for &(slot_off, ref val) in lscache.new_vals.iter().rev() {
+            println!("newval: @0x{:x}(bo=0x{:x}) {:?}", slot_off, before_slot_off, val);
+            if slot_off.ext_usize() >= before_slot_off {
+                continue;
+            }
             if val.reg == reg {
                 return Some(*val);
             }
-            xoff -= 1;
         }
         let rwkv = lscache.regs_with_known_val;
+        println!("reached start rwkv={}", rwkv);
         if rwkv.has(reg.0 as u8) {
             let position = (lscache.reg_vals_off.ext_usize()) + (rwkv.subset(0..(reg.0 as u8)).count().ext_usize());
             return Some(self.reg_vals[position]);
@@ -626,31 +637,37 @@ impl<'a> CodeMap<'a> {
         return None;
     }
     fn move_lscache_to(&mut self, before_off: usize, handler: &mut GenericHandler) -> bool {
-        if before_off == 0 { return false; }
-        let le_off = before_off - 1;
         let mut lscache = replace(&mut self.lscache, None).unwrap();
+        println!("move_lscache_to: before {}/off=0x{:x} existing start_off=0x{:x} end_off=0x{:x}", self.off_to_addr(before_off), before_off, lscache.start_off, lscache.end_off);
         let ret;
-        'lol: loop {
-            if le_off >= lscache.start_off && before_off <= lscache.end_off {
+        'lol: loop { // not actually a loop
+            if before_off >= lscache.start_off && before_off <= lscache.end_off {
+                println!("already there");
                 ret = true;
                 break 'lol;
             }
             let end_off;
             {
-                let bb = some_or!(self.bb_for_off_existing(le_off), { ret = false; break 'lol; });
-                let base = le_off - (le_off % CODEMAP_BB_GRAIN);
+                let bb = some_or!(self.bb_containing_off_existing(before_off), {
+                    println!("fail");
+                    ret = false;
+                    break 'lol;
+                });
+                let base = before_off - (before_off % CODEMAP_BB_GRAIN);
                 lscache.start_off = base + bb.start_off.ext_usize();
                 lscache.end_off = base + bb.end_off.ext_usize();
+                assert!(bb.flags.rwkv_meaningful());
                 lscache.regs_with_known_val = bb.regs_with_known_val;
                 lscache.reg_vals_off = bb.reg_vals_off;
                 end_off = bb.end_off;
             }
             let rwkv = {
                 let lscache = &mut *lscache; // needed for multi-field borrowing, lol
+                lscache.new_vals.clear();
                 self.do_bb(lscache.start_off, &mut lscache.end_reg_vals, Some(&mut lscache.new_vals), handler)
             };
             lscache.end_rwkv = rwkv;
-            debug_assert!(self.bb_for_off_existing(le_off).unwrap().end_off == end_off);
+            debug_assert!(self.bb_containing_off_existing(before_off).unwrap().end_off == end_off);
             ret = true;
             break 'lol;
         }

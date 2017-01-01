@@ -1432,7 +1432,7 @@ impl Display for BitSet32 {
         let mut first = true;
         for bit in self.set_bits() {
             try!(write!(f, "{}{}",
-                        if first { ", " } else { "" },
+                        if first { "" } else { ", " },
                         bit));
             first = false;
         }
