@@ -326,8 +326,8 @@ impl<'a> CodeMap<'a> {
                 let mut off = reg_vals_off;
                 for reg in regs_with_known_val.set_bits() {
                     let rv = self.reg_vals[off];
+                    if !rv.have_val { println!("...but unknown {:?}", reg); }
                     if !rv.have_val && rv.set_kind == SetKind::None {
-                        println!("...but unknown {:?}", reg);
                         regs_with_known_val.remove(reg);
                     } else {
                         reg_vals[reg.ext_usize()] = rv;
@@ -382,6 +382,7 @@ impl<'a> CodeMap<'a> {
                 match info.target_addr {
                     TargetAddr::Code(target_addr) | TargetAddr::Data(target_addr) => {
                         if self.noreturn_addrs.contains(&target_addr) {
+                            //println!("branch to noreturn");
                             should_cont = false;
                         }
                         let target_off = self.addr_to_off(target_addr);

@@ -612,13 +612,15 @@ impl MachODscExtraction for MachO {
             }
             {
                 // TODO sort? only useful if there are many sections like this
-                for chunk in self.localsym.get().chunks(self.nlist_size) {
-                    let nl = copy_nlist_from_slice(chunk, end);
-                    let vma = VMA(nl.n_value as u64);
-                    if let Some(off) = codemap.addr_to_off(vma) {
-                        codemap.mark_root(off);
-                        if strx_to_name(strtab, nl.n_strx.ext()) == stack_chk_fail {
-                            codemap.mark_noreturn_addr(vma);
+                for group in &[self.localsym.get(), self.extdefsym.get()] {
+                    for chunk in group.chunks(self.nlist_size) {
+                        let nl = copy_nlist_from_slice(chunk, end);
+                        let vma = VMA(nl.n_value as u64);
+                        if let Some(off) = codemap.addr_to_off(vma) {
+                            codemap.mark_root(off);
+                            if strx_to_name(strtab, nl.n_strx.ext()) == stack_chk_fail {
+                                codemap.mark_noreturn_addr(vma);
+                            }
                         }
                     }
                 }

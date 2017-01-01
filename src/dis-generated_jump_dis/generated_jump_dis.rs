@@ -279,8 +279,12 @@ impl aarch64::Handler for AArch64Handler {
         self.info.kind = InsnKind::Br(reg(Rn));
     }
     #[inline]
-    fn condbranchy_skipped_target_8_CBNZW(&mut self, target: u32) -> Self::Res {
+    fn cbnz_skipped_target_4_CBNZW(&mut self, target: u32) -> Self::Res {
         self.info.target_addr = TargetAddr::Code(self.addr.wrapping_add((target << 2).sign_extend(21)));
+    }
+    #[inline]
+    fn target_tbnz_skipped_4_TBNZW(&mut self, target: u32) -> Self::Res {
+        self.info.target_addr = TargetAddr::Code(self.addr.wrapping_add((target << 2).sign_extend(16)));
     }
     #[inline]
     fn label_3_LDRDl(&mut self, label: u32) -> Self::Res {

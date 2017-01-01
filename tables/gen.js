@@ -2073,8 +2073,12 @@ function hookishCoalesce(submode) {
                     if(insn.name.match(/^(Bcc|BR|(ADD|ORR)[WX]r[si]|ANDXri)$/)) {
                         forceAllInteresting = true;
                         fakeVarName = insn.name.replace(/[WX]/, '');
+                    } else if(insn.name.match(/^CBN?Z[WX]$/)) {
+                        fakeVarName = 'cbnz';
+                    } else if(insn.name.match(/^TBN?Z[WX]$/)) {
+                        fakeVarName = 'tbnz'; // different width
                     } else if(insn.isBranchy && !insn.isCall)
-                        fakeVarName = insn.name.match(/^[TC]BN?Z/) ? 'condbranchy' : 'branchy';
+                        fakeVarName = 'branchy';
                     else if(insn.name == 'ADRP')
                         fakeVarName = 'adrp';
                     else if(insn.name.match(/^SUBS.ri/)) {
