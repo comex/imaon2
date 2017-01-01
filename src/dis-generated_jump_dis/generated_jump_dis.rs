@@ -12,7 +12,7 @@ mod aarch64 {
 }
 
 pub const MAX_REGS: usize = 32;
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Reg(pub i8);
 impl Default for Reg {
     #[inline] fn default() -> Self { Reg(-1) }

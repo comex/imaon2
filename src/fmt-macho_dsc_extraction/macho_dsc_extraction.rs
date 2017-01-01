@@ -7,7 +7,7 @@ use macho::{MachO, copy_nlist_to_vec, exec_sym_to_nlist_64, copy_nlist_from_slic
 use macho::dyldcache::{ImageCache, ImageCacheEntry, SegMapEntry, DyldCache};
 use std::default::Default;
 use std::vec::Vec;
-use std::mem::{replace, size_of, transmute};
+use std::mem::{replace, transmute};
 use util::{Mem, SliceExt, OptionExt, Endian, LittleEndian, Lazy, Fnv};
 use macho_bind::*;
 use exec::{arch, VMA, SymbolValue, SourceLib, SymbolSource, Exec, SegmentWriter, SWGetSaneError, RelocKind, RelocContext, ReadVMA, Symbol, UlebWriter};
@@ -601,12 +601,13 @@ impl MachODscExtraction for MachO {
             if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
                 continue;
             }
-            let sectdata = self.eb.read(sect.vmaddr, sect.filesize);
-            let sectdata = sectdata.get();
-            if (sectdata.len() as u64) < sect.filesize {
-                errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
-            }
-            let mut codemap = CodeMap::new(sect.vmaddr, sectdata, end, &self.eb.segments);
+            let sectdata = some_or!(self.eb.get_sane(sect.vmaddr, sect.filesize), {
+                errln!("warning: guess_text_relocs: couldn't read section named {}", sect.name.as_ref().unwrap());
+                continue;
+            });
+            let grain_shift: u8 = 2; // xxx
+            let start_addr = sect.vmaddr;
+            let mut codemap = CodeMap::new(start_addr, grain_shift, util::downgrade(sectdata), end, &self.eb.segments);
             if let Some(stack_chk_fail_stub) = stack_chk_fail_stub {
                 codemap.mark_noreturn_addr(stack_chk_fail_stub);
             }
@@ -616,59 +617,32 @@ impl MachODscExtraction for MachO {
                     for chunk in group.chunks(self.nlist_size) {
                         let nl = copy_nlist_from_slice(chunk, end);
                         let vma = VMA(nl.n_value as u64);
-                        if let Some(off) = codemap.addr_to_off(vma) {
-                            codemap.mark_root(off);
+                        if let Some(idx) = codemap.addr_to_idx(vma) {
+                            codemap.mark_root(idx);
                             if strx_to_name(strtab, nl.n_strx.ext()) == stack_chk_fail {
                                 codemap.mark_noreturn_addr(vma);
                             }
+                        } else {
+                            //println!("(not doing {} for {:?} start={} len=0x{:x})", vma, sect.name, start_addr, sectdata.len());
                         }
                     }
                 }
             }
             codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.get_sane(addr, size).map(util::downgrade));
-            for notable in codemap.notables {
-                if !notable.valid { continue; }
-
-            }
-            /*
             for &idx in &codemap.out_of_range_idxs {
-                println!("{}", codemap.idx_to_addr(idx));
-            }
-            */
-            /*
-            self.subtract_dic_from_addr_range(sect.vmaddr, sectdata.len().ext(), |start, size| {
-                let mut data =
-                    &sectdata[(start - sect.vmaddr) as usize ..
-                              (start + size - sect.vmaddr) as usize];
-                let mut addr = start;
-                while data.len() >= 4 {
-                    let insn: u32 = util::copy_from_slice(&data[..4], end);
-                    // the important part
-                    let kind = if insn & 0x7c000000 == 0x14000000 {
-                        Some(RelocKind::Arm64Br26)
-                    /*
-                    } else if insn & 0x9f000000 == 0x90000000 {
-                        Some(RelocKind::Arm64Adrp)
-                        xxx this won't quite work because we need the corresponding adr to find the symbol
-                        */
-                    } else { None };
-                    if let Some(kind) = kind {
-                        let rc = RelocContext {
-                            kind: kind,
-                            pointer_size: pointer_size.ext(),
-                            base_addr: addr,
-                        };
-                        let target = rc.word_to_addr(insn.ext()).unwrap();
-                        if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
-                            relocs.push((addr, kind, target));
-                        }
-                    }
-
-                    data = &data[4..];
-                    addr = addr + 4;
+                let addr = codemap.idx_to_addr(idx);
+                let off: usize = (addr - start_addr).narrow().unwrap();
+                let rc = RelocContext {
+                    kind: RelocKind::Arm64Br26,
+                    pointer_size: pointer_size,
+                    base_addr: addr,
+                    endian: self.eb.endian,
+                };
+                let target = rc.pack_unpack_insn(&sectdata[off..], None).unwrap();
+                if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
+                    relocs.push((addr, rc.kind, target));
                 }
-            });
-            */
+            }
         }
         relocs
     }
@@ -714,7 +688,7 @@ impl MachODscExtraction for MachO {
     }
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache) {
         let _sw = stopwatch("fix_text_relocs_from_cache");
-        let pointer_size = self.eb.pointer_size.ext();
+        let pointer_size = self.eb.pointer_size;
         let end = self.eb.endian;
 
         { // <-
@@ -783,18 +757,17 @@ impl MachODscExtraction for MachO {
                 None
             });
             if let Some(new_target) = *new_target {
+                //println!("OK! {} => {}", source, new_target);
                 let rc = RelocContext {
                     kind: kind,
                     pointer_size: pointer_size,
                     base_addr: source,
+                    endian: end,
                 };
 
                 let cell_ptr = self.eb.get_sane(source, 4).unwrap();
-                let insn: u32 = util::copy_from_slice(cell_ptr, end);
-                let insn = rc.addr_to_word(new_target, insn.ext()).unwrap() as u32;
+                rc.pack_unpack_insn(cell_ptr, Some(new_target)).unwrap();
                 //println!("patching {} -> {:x} newt={}", source, insn, new_target);
-
-                util::copy_to_slice(cell_ptr, &insn, end);
             }
         }
         } // <-
@@ -925,8 +898,13 @@ fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target:
             return None;
         }
         prev = target;
-        let rc = RelocContext { kind: RelocKind::Arm64Br26, pointer_size: 8, base_addr: target };
-        target = rc.word_to_addr(insn.ext()).unwrap();
+        let rc = RelocContext {
+            kind: RelocKind::Arm64Br26,
+            pointer_size: 8,
+            endian: end,
+            base_addr: target,
+        };
+        target = rc.pack_unpack_insn(insn_buf, None).unwrap();
         num += 1;
     }
 }
