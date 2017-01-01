@@ -108,6 +108,7 @@ pub struct CodeMap<'a> {
     notables: Vec<Notable>,
     endian: Endian,
     lscache: Option<Box<LastSetterCache>>,
+    noreturn_addrs: Vec<VMA>,
 }
 
 struct LastSetterCache {
@@ -256,6 +257,7 @@ impl<'a> CodeMap<'a> {
                 end_reg_vals: [RegVal::zeroed(); MAX_REGS],
                 end_rwkv: BitSet32::empty(),
             })),
+            noreturn_addrs: Vec::new(),
 
             //segs: segs,
         }
@@ -376,8 +378,12 @@ impl<'a> CodeMap<'a> {
                     }
                 }
 
+                let mut should_cont = true;
                 match info.target_addr {
                     TargetAddr::Code(target_addr) | TargetAddr::Data(target_addr) => {
+                        if self.noreturn_addrs.contains(&target_addr) {
+                            should_cont = false;
+                        }
                         let target_off = self.addr_to_off(target_addr);
                         if let Some(target_off) = target_off {
                             if let TargetAddr::Code(_) = info.target_addr {
@@ -411,9 +417,10 @@ impl<'a> CodeMap<'a> {
                     }
                 }
 
-                let should_cont = match info.kind {
-                    InsnKind::Tail | InsnKind::Unidentified | InsnKind::Br(_) => false,
-                    _ => true,
+                match info.kind {
+                    InsnKind::Tail | InsnKind::Unidentified | InsnKind::Br(_) =>
+                        should_cont = false,
+                    _ => (),
                 };
                 let next_slot_off = slot_off + (size as u8);
                 if !should_cont {
@@ -466,6 +473,9 @@ impl<'a> CodeMap<'a> {
             }
         }
         do_enqueue(bb, to_off, &mut self.queue, &mut self.notables);
+    }
+    pub fn mark_noreturn_addr(&mut self, addr: VMA) {
+        self.noreturn_addrs.push(addr);
     }
     pub fn mark_root(&mut self, off: usize) {
         let bb = self.bb_data.bb_for_off(off, &mut self.queue, &mut self.notables);

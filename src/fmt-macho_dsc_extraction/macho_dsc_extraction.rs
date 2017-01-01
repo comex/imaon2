@@ -3,7 +3,7 @@ extern crate exec;
 extern crate fmt_macho as macho;
 extern crate fmt_macho_bind as macho_bind;
 #[macro_use] extern crate macros;
-use macho::{MachO, copy_nlist_to_vec, exec_sym_to_nlist_64, copy_nlist_from_slice, ParseDyldBindState, x_nlist_64, DscTabs, MachOLookupExportOptions};
+use macho::{MachO, copy_nlist_to_vec, exec_sym_to_nlist_64, copy_nlist_from_slice, ParseDyldBindState, x_nlist_64, DscTabs, MachOLookupExportOptions, strx_to_name};
 use macho::dyldcache::{ImageCache, ImageCacheEntry, SegMapEntry, DyldCache};
 use std::default::Default;
 use std::vec::Vec;
@@ -30,17 +30,6 @@ struct ReaggregatedSyms {
     sym_name_to_idx: HashMap<ByteString, (usize, u8), Fnv>,
 }
 
-fn strx_to_name(strtab: &[ReadCell<u8>], strx: u64) -> &ByteStr {
-    // todo: fix push_nlist_symbols to use this kind of logic
-    if strx == 0 {
-        ByteStr::from_str("")
-    } else if strx >= strtab.len() as u64 {
-        errln!("strx_to_name: strx out of range ({}/{})", strx, strtab.len());
-        ByteStr::from_str("<?>")
-    } else {
-        util::from_cstr(&strtab[strx as usize..])
-    }
-}
 trait MachODscExtraction {
     fn update_indirectsym(&mut self, sym_name_to_idx: &HashMap<ByteString, (usize, u8), Fnv>);
     fn reaggregate_nlist_syms_from_cache<'a>(&'a self) -> ReaggregatedSyms;
@@ -48,7 +37,7 @@ trait MachODscExtraction {
     fn sect_bounds_named(&self, sectname: &str) -> (VMA, u64);
     fn fix_objc_from_cache<'dc>(&mut self, dc: &'dc DyldCache);
     fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache);
-    fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)>;
+    fn guess_text_relocs(&self, stubs_by_name: &HashMap<&ByteStr, VMA, Fnv>) -> Vec<(VMA, RelocKind, VMA)>;
     fn stub_name_list(&self) -> Vec<(&ByteStr, VMA)>;
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache);
     fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv>;
@@ -354,9 +343,9 @@ impl MachODscExtraction for MachO {
                 }
             }
         }
-        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [ReadCell<u8>]> {
+        let outer_read = |vma: VMA, size: u64| -> Option<&'dc [Cell<u8>]> {
             if vma.0 == 4 { panic!() }
-            let res = dc.eb.read_sane(vma, size);
+            let res = dc.eb.get_sane(vma, size);
             if let None = res {
                 errln!("fix_objc_from_cache: read error at {}", vma);
             }
@@ -597,14 +586,17 @@ impl MachODscExtraction for MachO {
         }
     }
     // currently for cache extraction on arm64 only
-    fn guess_text_relocs(&self) -> Vec<(VMA, RelocKind, VMA)> {
+    fn guess_text_relocs(&self, stubs_by_name: &HashMap<&ByteStr, VMA, Fnv>) -> Vec<(VMA, RelocKind, VMA)> {
         let _sw = stopwatch("guess_text_relocs");
+        let strtab = self.strtab.get();
         let mut relocs = Vec::new();
         if self.eb.arch != arch::AArch64 {
             return relocs;
         }
         let end = self.eb.endian;
         let pointer_size = self.eb.pointer_size;
+        let stack_chk_fail = ByteStr::from_str("___stack_chk_fail");
+        let stack_chk_fail_stub = stubs_by_name.get(stack_chk_fail).map(|&vma| vma);
         for sect in &self.eb.sections {
             if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
                 continue;
@@ -615,6 +607,9 @@ impl MachODscExtraction for MachO {
                 errln!("warning: guess_text_relocs: couldn't read entire section named {}", sect.name.as_ref().unwrap());
             }
             let mut codemap = CodeMap::new(sect.vmaddr, sectdata, end, &self.eb.segments);
+            if let Some(stack_chk_fail_stub) = stack_chk_fail_stub {
+                codemap.mark_noreturn_addr(stack_chk_fail_stub);
+            }
             {
                 // TODO sort? only useful if there are many sections like this
                 for chunk in self.localsym.get().chunks(self.nlist_size) {
@@ -622,10 +617,13 @@ impl MachODscExtraction for MachO {
                     let vma = VMA(nl.n_value as u64);
                     if let Some(off) = codemap.addr_to_off(vma) {
                         codemap.mark_root(off);
+                        if strx_to_name(strtab, nl.n_strx.ext()) == stack_chk_fail {
+                            codemap.mark_noreturn_addr(vma);
+                        }
                     }
                 }
             }
-            codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.read_sane(addr, size));
+            codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.get_sane(addr, size).map(util::downgrade));
             /*
             for &idx in &codemap.out_of_range_idxs {
                 println!("{}", codemap.idx_to_addr(idx));
@@ -712,15 +710,7 @@ impl MachODscExtraction for MachO {
         let _sw = stopwatch("fix_text_relocs_from_cache");
         let pointer_size = self.eb.pointer_size.ext();
         let end = self.eb.endian;
-        let guess = self.guess_text_relocs();
-        if guess.len() == 0 { return; }
 
-        let mut writer = SegmentWriter::new(&mut self.eb.segments);
-        for sect in &self.eb.sections {
-            if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
-                writer.make_seg_rw(sect.seg_idx.unwrap());
-            }
-        }
         { // <-
 
         let mut my_stubs_by_name: HashMap<&ByteStr, VMA, _> = util::new_fnv_hashmap();
@@ -728,6 +718,8 @@ impl MachODscExtraction for MachO {
             my_stubs_by_name.insert(name, stub_addr);
         }
 
+        let guess = self.guess_text_relocs(&my_stubs_by_name);
+        if guess.len() == 0 { return; }
 
         let mut target_cache: HashMap<VMA, Option<VMA>, _> = util::new_fnv_hashmap();
         let bmap: Lazy<_> = Lazy::new();
@@ -791,7 +783,7 @@ impl MachODscExtraction for MachO {
                     base_addr: source,
                 };
 
-                let cell_ptr = writer.get_sane_rw(source, 4).unwrap();
+                let cell_ptr = self.eb.get_sane(source, 4).unwrap();
                 let insn: u32 = util::copy_from_slice(cell_ptr, end);
                 let insn = rc.addr_to_word(new_target, insn.ext()).unwrap() as u32;
                 //println!("patching {} -> {:x} newt={}", source, insn, new_target);
@@ -800,7 +792,6 @@ impl MachODscExtraction for MachO {
             }
         }
         } // <-
-        writer.finish(&mut self.eb.segments);
     }
     fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv> {
         let opts = MachOLookupExportOptions { using_image_cache: Some(unsafe { transmute::<&'a ImageCache, &'static ImageCache>(ic) }) };
@@ -915,7 +906,7 @@ fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target:
             return Some((target, sme));
         }
         // if it's in an image, then it could be a B but not a trampoline, so need to check this first
-        let insn_buf = some_or!(dc.eb.read_sane(target, 4), {
+        let insn_buf = some_or!(dc.eb.get_sane(target, 4), {
             errln!("resolve_arm64_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
                    target, num, refd_by, prev);
             return None;

@@ -222,6 +222,17 @@ pub fn copy_nlist_from_slice(slice: &[ReadCell<u8>], end: Endian) -> x_nlist_64 
     }
 }
 
+pub fn strx_to_name(strtab: &[ReadCell<u8>], strx: u64) -> &ByteStr {
+    if strx == 0 {
+        ByteStr::from_str("")
+    } else if strx >= strtab.len() as u64 {
+        errln!("strx_to_name: strx out of range ({}/{})", strx, strtab.len());
+        ByteStr::from_str("<?>")
+    } else {
+        util::from_cstr(&strtab[strx as usize..])
+    }
+}
+
 pub fn copy_nlist_to_vec(vec: &mut Vec<u8>, nl: &x_nlist_64, end: Endian, is64: bool) {
     if is64 {
         util::copy_to_vec(vec, nl, end);
@@ -957,8 +968,7 @@ impl MachO {
             let n_type = nl.n_type as u32 & N_TYPE;
             let weak = (nl.n_desc as u32 & (N_WEAK_REF | N_WEAK_DEF)) != 0;
             let public = (nl.n_type as u32 & N_EXT) != 0;
-            let name = if nl.n_strx == 0 { ByteStr::from_str("") }
-                                    else { util::from_cstr(&strtab[nl.n_strx as usize..]) };
+            let name = strx_to_name(strtab, nl.n_strx.ext());
             let vma = VMA(nl.n_value as u64);
             let vma = if nl.n_desc as u32 & N_ARM_THUMB_DEF != 0 { vma | 1 } else { vma };
             let is_obj = self.mh.filetype == MH_OBJECT;

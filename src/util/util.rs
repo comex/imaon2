@@ -235,6 +235,11 @@ impl<'a, T: Swap, U: Swap> Cast<&'a mut [U], ()> for &'a mut [T] {
         )
     }
 }
+
+pub fn downgrade<T: Copy>(a: &[Cell<T>]) -> &[ReadCell<T>] {
+    unsafe { transmute(a) }
+}
+
 // These two impls cannot conflict with the generic read-only slice impl because of the Copy bound.
 // ...But rustc thinks they do, hence the dummy parameter.  In the future, hack around this with
 // specialization instead.
@@ -252,6 +257,19 @@ impl<'a, T: Swap, U: Swap> Cast<&'a [Cell<U>], i8> for &'a [Cell<T>] {
     }
 }
 impl<'a, T: Swap, U: Swap> Cast<&'a [ReadCell<U>], i8> for &'a [ReadCell<T>] {
+    type SelfBase = T;
+    type OtherBase = U;
+    fn _len(&self) -> usize { self.len() }
+    #[inline]
+    unsafe fn raw_cast(self) -> &'a [ReadCell<U>] {
+        let len = self.len();
+        slice::from_raw_parts(
+            transmute(self.as_ptr()),
+            len * size_of::<T>() / size_of::<U>()
+        )
+    }
+}
+impl<'a, T: Swap, U: Swap> Cast<&'a [ReadCell<U>], i8> for &'a [Cell<T>] {
     type SelfBase = T;
     type OtherBase = U;
     fn _len(&self) -> usize { self.len() }
@@ -883,6 +901,8 @@ impl<T: Swap> Mem<T> {
         unsafe { transmute(std::slice::from_raw_parts(self.ptr, self.len)) }
     }
 
+    // Note: This is technically illegal because of split reads.  It should be AtomicU8 or
+    // something.  Todo...
     #[inline]
     pub fn get_mut(&self) -> &[Cell<T>] {
         unsafe { transmute(std::slice::from_raw_parts(self.ptr, self.len)) }

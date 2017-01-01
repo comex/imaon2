@@ -534,13 +534,13 @@ impl<'a, 'b> Iterator for ByteSliceIterator<'a, 'b> {
 
 impl ExecBase {
     // exact size, in one segment
-    pub fn read_sane(&self, addr: VMA, size: u64) -> Option<&[ReadCell<u8>]> {
+    pub fn get_sane(&self, addr: VMA, size: u64) -> Option<&[Cell<u8>]> {
         let (seg, off, avail) =
             some_or!(addr_to_seg_off_range(&self.segments, addr),
                      { return None; });
         if size > avail { return None; }
         let data = some_or!(seg.data.as_ref(), { return None; });
-        Some(&data.get()[off as usize .. min(off + size, data.len() as u64) as usize])
+        Some(&data.get_mut()[off as usize .. min(off + size, data.len() as u64) as usize])
     }
     pub fn ptr_from_slice<S: ?Sized + util::ROSlicePtr<u8>>(&self, slice: &S) -> u64 {
         match self.pointer_size {
