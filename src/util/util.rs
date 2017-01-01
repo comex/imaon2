@@ -1271,8 +1271,8 @@ impl<'a> Drop for Stopwatch<'a> {
         if unsafe { ENABLE_STOPWATCH } {
             let duration = Instant::now() - self.start_time.unwrap();
             let duration_f = (duration.as_secs() as f64 * 1000.0) + (duration.subsec_nanos() as f64 * 0.000001);
-            println!("{blank:spaces$}{desc}: {duration:?}ms", blank="", spaces=self.indent,
-                     desc=self.desc, duration=duration_f);
+            errln!("{blank:spaces$}{desc}: {duration:?}ms", blank="", spaces=self.indent,
+                   desc=self.desc, duration=duration_f);
             STOPWATCH_INDENT.with(|cell| cell.set(self.indent));
         }
     }

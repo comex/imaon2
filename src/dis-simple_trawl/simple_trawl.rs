@@ -58,7 +58,7 @@ struct RegVal {
 unsafe impl Zeroable for RegVal {}
 impl RegVal {
     fn intersect(&self, other: &RegVal) -> RegVal {
-        if self.have_val && !other.have_val { println!(" <intersect killing val; self={:?}, other={:?}>", self, other); }
+        //if self.have_val && !other.have_val { println!(" <intersect killing val; self={:?}, other={:?}>", self, other); }
         debug_assert!(self.reg == other.reg);
         RegVal {
             have_val: self.have_val && other.have_val && self.val == other.val,
@@ -105,7 +105,7 @@ pub struct CodeMap<'a> {
     reg_vals: Vec<RegVal>,
     queue: VecDeque<usize>,
     switch_queue: Vec<usize>,
-    notables: Vec<Notable>,
+    pub notables: Vec<Notable>,
     endian: Endian,
     lscache: Option<Box<LastSetterCache>>,
     noreturn_addrs: Vec<VMA>,
@@ -266,7 +266,7 @@ impl<'a> CodeMap<'a> {
         while !self.queue.is_empty() {
             self.go_round(handler);
             let offs = replace(&mut self.switch_queue, Vec::new());
-            println!("switch offs = {:?}", offs);
+            //println!("switch offs = {:?}", offs);
             for off in offs {
                 self.grok_switches(handler, off, read).unwrap(); // xxx
             }
@@ -321,12 +321,12 @@ impl<'a> CodeMap<'a> {
                 reg_vals_off = bb.reg_vals_off.ext();
             }
             let mut notables_off: u32 = 0;
-            println!("do_bb: start_off=0x{:x}/{} rwkv={}", start_off, self.off_to_addr(start_off), regs_with_known_val);
+            //println!("do_bb: start_off=0x{:x}/{} rwkv={}", start_off, self.off_to_addr(start_off), regs_with_known_val);
             {
                 let mut off = reg_vals_off;
                 for reg in regs_with_known_val.set_bits() {
                     let rv = self.reg_vals[off];
-                    if !rv.have_val { println!("...but unknown {:?}", reg); }
+                    //if !rv.have_val { println!("...but unknown {:?}", reg); }
                     if !rv.have_val && rv.set_kind == SetKind::None {
                         regs_with_known_val.remove(reg);
                     } else {
@@ -338,7 +338,7 @@ impl<'a> CodeMap<'a> {
             loop {
                 let this_off = base + slot_off.ext_usize();
                 let (size, info) = self.decode(handler, this_off);
-                println!(" {} rwkv={} size={} info={:?}", self.off_to_addr(this_off), regs_with_known_val, size, info);
+                //println!(" {} rwkv={} size={} info={:?}", self.off_to_addr(this_off), regs_with_known_val, size, info);
                 if size == 0 {
                     end_off = slot_off;
                     break;
@@ -448,7 +448,7 @@ impl<'a> CodeMap<'a> {
         }
     }
     fn mark_flow(&mut self, to_off: usize, regs_with_known_val: BitSet32, reg_vals: &[RegVal; MAX_REGS]) {
-        println!("  mark_flow -> {} rwkv={}", self.off_to_addr(to_off), regs_with_known_val);
+        //println!("  mark_flow -> {} rwkv={}", self.off_to_addr(to_off), regs_with_known_val);
         let bb = self.bb_data.bb_for_off(to_off, &mut self.queue, &mut self.notables);
         if !bb.flags.rwkv_meaningful() {
             bb.set_rwkv(regs_with_known_val, reg_vals, &mut self.reg_vals);
@@ -524,18 +524,18 @@ impl<'a> CodeMap<'a> {
         Ok(())
     }
     fn grok_switch<'x>(&mut self, handler: &mut GenericHandler, br_off: usize, read: &'x mut FnMut(VMA, u64) -> Option<&'x [ReadCell<u8>]>) -> Result<(), GrokSwitchFail> {
-        println!("grok_switch: {}", self.off_to_addr(br_off));
+        //println!("grok_switch: {}", self.off_to_addr(br_off));
         let br_reg = match self.decode(handler, br_off).1.kind {
             InsnKind::Br(r) => r, _ => panic!(),
         };
         let addr_setter = some_or!(self.last_setter_for_reg(handler, br_off, br_reg), {
-            println!("no ls 1");
+            //println!("no ls 1");
             return Ok(());
         });
         let (r1, r2) = match self.decode(handler, addr_setter.set_off.ext()).1.kind {
             InsnKind::Set(_, Addrish::AddReg(r1, r2, 0)) => (r1, r2),
             _ => {
-                println!("no ls 2");
+                //println!("no ls 2");
                 return Ok(())
             },
         };
@@ -580,7 +580,7 @@ impl<'a> CodeMap<'a> {
         // one more thing: find the cmp to establish table size
         let cmp_rv = try!(self.last_setter_for_reg(handler, br_off, FLAGS_REG).ok_or(GrokSwitchFail::FindingCmp));
         let cmp_off = cmp_rv.set_off.ext_usize();
-        println!("cmp@{}", self.off_to_addr(cmp_off));
+        //println!("cmp@{}", self.off_to_addr(cmp_off));
         let (_, info) = self.decode(handler, cmp_off);
         let table_len = match info.kind {
             InsnKind::CmpImm(r, u) => {
@@ -599,7 +599,7 @@ impl<'a> CodeMap<'a> {
         }
 
         // ok!
-        println!("table_addr={} table_abase={} table_len={} item size={:?} sign={:?}", table_addr, table_abase, table_len, table_item_size, table_item_signedness);
+        //println!("table_addr={} table_abase={} table_len={} item size={:?} sign={:?}", table_addr, table_abase, table_len, table_item_size, table_item_signedness);
 
         let bytes = table_item_size.bytes() as usize;
         let table_bytes = (table_len as usize) * bytes;
@@ -631,7 +631,7 @@ impl<'a> CodeMap<'a> {
     }
     fn last_setter_for_reg(&mut self, handler: &mut GenericHandler, before_off: usize, reg: Reg) -> Option<RegVal> {
         if let Some(rv) = self.last_rv_for_reg(handler, before_off, reg) {
-            println!("rv={:?}", rv);
+            //println!("rv={:?}", rv);
             if rv.set_kind != SetKind::None {
                 return Some(rv);
             }
@@ -639,12 +639,12 @@ impl<'a> CodeMap<'a> {
         None
     }
     fn last_rv_for_reg(&mut self, handler: &mut GenericHandler, before_off: usize, reg: Reg) -> Option<RegVal> {
-        println!("last_rv_for_reg({:?} before {})", reg, self.off_to_addr(before_off));
+        //println!("last_rv_for_reg({:?} before {})", reg, self.off_to_addr(before_off));
         if !self.move_lscache_to(before_off, handler) { return None; }
         let lscache = self.lscache.as_ref().unwrap();
         let before_slot_off = before_off % CODEMAP_BB_GRAIN;
         for &(slot_off, ref val) in lscache.new_vals.iter().rev() {
-            println!("newval: @0x{:x}(bo=0x{:x}) {:?}", slot_off, before_slot_off, val);
+            //println!("newval: @0x{:x}(bo=0x{:x}) {:?}", slot_off, before_slot_off, val);
             if slot_off.ext_usize() >= before_slot_off {
                 continue;
             }
@@ -653,7 +653,7 @@ impl<'a> CodeMap<'a> {
             }
         }
         let rwkv = lscache.regs_with_known_val;
-        println!("reached start rwkv={}", rwkv);
+        //println!("reached start rwkv={}", rwkv);
         if rwkv.has(reg.0 as u8) {
             let position = (lscache.reg_vals_off.ext_usize()) + (rwkv.subset(0..(reg.0 as u8)).count().ext_usize());
             return Some(self.reg_vals[position]);
@@ -662,18 +662,18 @@ impl<'a> CodeMap<'a> {
     }
     fn move_lscache_to(&mut self, before_off: usize, handler: &mut GenericHandler) -> bool {
         let mut lscache = replace(&mut self.lscache, None).unwrap();
-        println!("move_lscache_to: before {}/off=0x{:x} existing start_off=0x{:x} end_off=0x{:x}", self.off_to_addr(before_off), before_off, lscache.start_off, lscache.end_off);
+        //println!("move_lscache_to: before {}/off=0x{:x} existing start_off=0x{:x} end_off=0x{:x}", self.off_to_addr(before_off), before_off, lscache.start_off, lscache.end_off);
         let ret;
         'lol: loop { // not actually a loop
             if before_off >= lscache.start_off && before_off <= lscache.end_off {
-                println!("already there");
+                //println!("already there");
                 ret = true;
                 break 'lol;
             }
             let end_off;
             {
                 let bb = some_or!(self.bb_containing_off_existing(before_off), {
-                    println!("fail");
+                    //println!("fail");
                     ret = false;
                     break 'lol;
                 });
@@ -704,7 +704,6 @@ impl<'a> CodeMap<'a> {
         let last_setter_1 = self.last_setter_for_reg(handler, off1, r1);
         let last_setter_2 = self.last_setter_for_reg(handler, off2, r2);
         if let Some(rv) = last_setter_1 {
-            print!("=> {:?}", self.decode(handler, rv.set_off.ext()));
             if let InsnKind::Set(_, Addrish::AddImm(base, 0)) = self.decode(handler, rv.set_off.ext()).1.kind {
                 if base == r2 { return true; }
             }

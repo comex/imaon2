@@ -626,6 +626,10 @@ impl MachODscExtraction for MachO {
                 }
             }
             codemap.go(&mut AArch64Handler::new(), &mut |addr, size| self.eb.get_sane(addr, size).map(util::downgrade));
+            for notable in codemap.notables {
+                if !notable.valid { continue; }
+
+            }
             /*
             for &idx in &codemap.out_of_range_idxs {
                 println!("{}", codemap.idx_to_addr(idx));
