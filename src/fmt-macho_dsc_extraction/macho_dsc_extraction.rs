@@ -586,7 +586,7 @@ impl MachODscExtraction for MachO {
         }
     }
     // currently for cache extraction on arm64 only
-    fn guess_text_relocs(&self, stubs_by_name: &HashMap<&ByteStr, VMA, Fnv>) -> Vec<(VMA, RelocKind, VMA)> {
+    fn guess_text_relocs(&self, get_final_stub_target: &Fn(&ByteStr) -> Option<VMA>) -> Vec<(VMA, RelocKind, VMA)> {
         let _sw = stopwatch("guess_text_relocs");
         let strtab = self.strtab.get();
         let mut relocs = Vec::new();
@@ -596,7 +596,11 @@ impl MachODscExtraction for MachO {
         let end = self.eb.endian;
         let pointer_size = self.eb.pointer_size;
         let stack_chk_fail = ByteStr::from_str("___stack_chk_fail");
-        let stack_chk_fail_stub = stubs_by_name.get(stack_chk_fail).map(|&vma| vma);
+        let stack_chk_fail_stub = stubs_by_name.get(stack_chk_fail).map(|&vma| {
+            resolve_trampolines(self, ?ic?, vma, 0, self.eb.endian
+            
+        
+        });
         for sect in &self.eb.sections {
             if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
                 continue;
@@ -638,7 +642,13 @@ impl MachODscExtraction for MachO {
                     base_addr: addr,
                     endian: self.eb.endian,
                 };
-                let target = rc.pack_unpack_insn(&sectdata[off..], None).unwrap();
+                let target = match rc.pack_unpack_insn(&sectdata[off..], None) {
+                    Ok(target) => target,
+                    Err(e) => {
+                        errln!("guess_text_relocs: unexpected instruction at {} ({:?}) - probably data being marked as code", addr, e);
+                        continue
+                    },
+                };
                 if exec::addr_to_seg_off_range(&self.eb.segments, target).is_none() {
                     relocs.push((addr, rc.kind, target));
                 }
@@ -706,7 +716,7 @@ impl MachODscExtraction for MachO {
         let this: &MachO = self;
         for (source, kind, target) in guess {
             let new_target = target_cache.entry(target).or_insert_with(|| {
-                let (target, sme) = some_or!(resolve_arm64_trampolines(dc, ic, target, source, self.eb.endian),
+                let (target, sme) = some_or!(resolve_trampolines(dc, ic, target, source, self.eb.endian),
                                              return None);
                 let ice = &ic.cache[sme.image_idx];
                 if let Err(ref e) = ice.mo {
@@ -877,7 +887,7 @@ impl MachODscExtraction for MachO {
     }
 }
 
-fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<(VMA, &'a SegMapEntry)> {
+fn resolve_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target: VMA, refd_by: VMA, end: Endian) -> Option<(VMA, &'a SegMapEntry)> {
     let mut num = 0usize;
     let mut prev = refd_by;
     loop {
@@ -886,14 +896,14 @@ fn resolve_arm64_trampolines<'a>(dc: &DyldCache, ic: &'a ImageCache, mut target:
         }
         // if it's in an image, then it could be a B but not a trampoline, so need to check this first
         let insn_buf = some_or!(dc.eb.get_sane(target, 4), {
-            errln!("resolve_arm64_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
+            errln!("resolve_trampolines: invalid address {} (ref'd after following {} trampoline(s) from {}, most recently {})",
                    target, num, refd_by, prev);
             return None;
         });
         let insn: u32 = util::copy_from_slice(insn_buf, end);
         // stricter mask as BL is no good
         if insn & 0xfc000000 != 0x14000000 {
-            errln!("resolve_arm64_trampolines: address {} not found in image, but is not a B (insn = 0x{:08x}) \
+            errln!("resolve_trampolines: address {} not found in image, but is not a B (insn = 0x{:08x}) \
                     (ref'd by {}, most recently by {})", target, insn, refd_by, prev);
             return None;
         }

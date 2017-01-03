@@ -798,6 +798,7 @@ pub struct ImageCache {
     pub seg_map: Vec<SegMapEntry>,
     pub cache: Vec<ImageCacheEntry>,
     pub path_map: HashMap<ByteString, usize, Fnv>,
+    pub noreturn_addrs: Option<Vec<VMA>>,
 }
 
 pub struct ImageCacheEntry {
