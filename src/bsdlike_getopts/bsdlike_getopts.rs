@@ -867,7 +867,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
     let mut slice_start = 0;
     let mut last_start = 0;
     let mut last_end = 0;
-    let mut state = A;
+    let state = std::cell::Cell::new(A);
     let mut fake_i = ss.len();
     let mut lim = lim;
 
@@ -890,7 +890,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
             OverLim
         };
 
-        state = match (state, whitespace, limit) {
+        state.set(match (state.get(), whitespace, limit) {
             (A, Ws, _) => A,
             (A, Cr, _) => {
                 slice_start = i;
@@ -934,7 +934,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
                 A
             }
             (C, Ws, UnderLim) => C,
-        };
+        });
 
         *cont
     };
@@ -943,7 +943,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
 
     // Let the automaton 'run out' by supplying trailing whitespace
     while cont &&
-          match state {
+          match state.get() {
         B | C => true,
         A => false,
     } {
