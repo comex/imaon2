@@ -1675,17 +1675,17 @@ function printOpPositions(insns, name) {
 function coalesceInsnsWithMap(insns, func) {
     let byGroupAndBits = new DumbMap();
     let byGroup = new DumbMap();
-    for(let insn of insns) {
-        let key = func(insn);
-        //console.log(`${insn.name} -> ${key}`);
-        if(key === null)
-            continue;
-        let locs = '' + insn.inst.map(bit => Array.isArray(bit) ? bit : '');
-        let keyAndBits = [key, locs];
-        let gbinsns = setdefault_hashmap(byGroupAndBits, keyAndBits, []);
-        let ginsns = setdefault_hashmap(byGroup, key, []);
-        gbinsns.push(insn);
-        ginsns.push(insn);
+    for(let baseInsn of insns) {
+        for(let insn of func(baseInsn)) {
+            let key = insn.key;
+            //console.log(`${insn.name} -> ${key}`);
+            let locs = '' + insn.inst.map(bit => Array.isArray(bit) ? bit : '');
+            let keyAndBits = [key, locs];
+            let gbinsns = setdefault_hashmap(byGroupAndBits, keyAndBits, []);
+            let ginsns = setdefault_hashmap(byGroup, key, []);
+            gbinsns.push(insn);
+            ginsns.push(insn);
+        }
     }
     // for each group, continually coalesce instructions which are the same but for one bit, until we can do no more.  probably slooow
     // actually, not enough insns to be slow
@@ -1985,12 +1985,13 @@ function hookishCoalesce(submode) {
     default:
         throw new Error('bad mode');
     }
-    let separateUndefined = submode != 'jump';
+    let separateUndefined = true;
     let uninterestingReturn = insn => {
         if(!separateUndefined)
-            return null;
+            return [];
         insn.inst = insn.inst.map((bit, i) => Array.isArray(bit) ? '?' : bit);
-        return 'uninteresting';
+        insn.key = 'uninteresting';
+        return [insn];
     };
     return coalesceInsnsWithMap(insns, insn => {
         // This is not fully general.  But I don't think it's important to hook
@@ -2221,11 +2222,14 @@ function hookishCoalesce(submode) {
             }
         }
 
-        insn.inst = insn.inst.map((bit, i) => {
+        let haveForcedVals = false;
+        let origInst = insn.inst;
+        insn.inst = origInst.map((bit, i) => {
             if(!Array.isArray(bit))
                 return bit;
             let stats = varInfo[bit[0]];
             if(stats.forcedVal) {
+                haveForcedVals = true;
                 let v = stats.forcedVal[bit[1]];
                 if (!v) throw '!';
                 return v;
@@ -2234,6 +2238,17 @@ function hookishCoalesce(submode) {
             else
                 return bit;
         });
+
+        let myInsns = [insn];
+        if(haveForcedVals && separateUndefined) {
+            let dupeInsn = {};
+            for(let prop in insn)
+                dupeInsn[prop] = insn[prop];
+            dupeInsn.inst = origInst.map(bit => Array.isArray(bit) ? '?' : bit);
+            dupeInsn.name = 'uninterestingvariant_' + insn.name;
+            dupeInsn.key = 'uninteresting';
+            myInsns.push(dupeInsn)
+        }
 
         /*
         happens sometimes
@@ -2253,8 +2268,9 @@ function hookishCoalesce(submode) {
         }
         nameBits.sort();
         let name = nameBits.join(',') || 'x';
+        insn.key = name;
         //console.log('representing', insn.name, 'as', name, '<<', varInfo);
-        return name;
+        return myInsns;
     });
 }
 function genHookishDisassembler(submode, outfile) {

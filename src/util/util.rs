@@ -583,6 +583,7 @@ impl ByteStr {
     pub fn from_bytes_mut(s: &mut [u8]) -> &mut ByteStr {
         unsafe { transmute(s) }
     }
+    #[inline]
     pub fn find(&self, pat: u8) -> Option<usize> {
         slice_find_byte(&self.0, pat)
     }

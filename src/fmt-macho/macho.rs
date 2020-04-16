@@ -1739,6 +1739,23 @@ impl MachO {
         });
         out
     }
+
+    pub fn parse_function_starts(&self) -> Vec<VMA> {
+        let mut out = Vec::new();
+        let mut function_starts = self.function_starts.get();
+        let mut addr: VMA = some_or!(self.dyld_base, {
+            if function_starts.len() != 0 {
+                errln!("parse_function_starts: have function_starts data but no dyld_base?");
+            }
+            return out;
+        });
+        let mut it = ByteSliceIterator(&mut function_starts);
+        while let Some(diff) = exec::read_leb128_inner_noisy(&mut it, false, "parse_function_starts") {
+            addr = addr.wrapping_add(diff);
+            out.push(addr);
+        }
+        out
+    }
 }
 
 pub struct MachOProber;

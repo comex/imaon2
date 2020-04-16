@@ -290,19 +290,12 @@ impl aarch64::Handler for AArch64Handler {
     fn label_3_LDRDl(&mut self, label: u32) -> Self::Res {
         self.info.target_addr = TargetAddr::Data(self.addr.wrapping_add((label << 2).sign_extend(21)));
     }
-    /*
-    #[inline]
-    fn uninteresting_2023_ABSv16i8(&mut self) -> Self::Res {
-        println!(">uninteresting");
-    }
     #[inline]
     fn unidentified(&mut self) -> Self::Res {
-        println!(">unidentified");
         self.info.kind = InsnKind::Unidentified;
     }
-    */
     #[inline]
-    fn unidentified(&mut self) -> Self::Res {
+    fn uninteresting_2025_ABSv16i8(&mut self) -> Self::Res {
     }
 }
 

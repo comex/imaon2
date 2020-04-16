@@ -484,6 +484,7 @@ pub fn read_leb128_inner<It: Iterator<Item=u8>>(it: &mut It, signed: bool) -> Op
     }
 }
 
+#[inline]
 pub fn read_leb128_inner_noisy<It: Iterator<Item=u8>>(it: &mut It, signed: bool, func_name: &str) -> Option<u64> {
     if let Some((num, ovf)) = read_leb128_inner(it, signed) {
         if ovf {

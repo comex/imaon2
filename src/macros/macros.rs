@@ -144,6 +144,18 @@ macro_rules! _simple_bitflags_field {
     }
 }
 
+#[macro_export]
+macro_rules! scope {
+    { $lt:tt : $block:block } => {
+        #[allow(unreachable_code)] {
+            $lt: loop {
+                #[warn(unreachable_code)] { $block; }
+                break;
+            }
+        }
+    }
+}
+
 #[test]
 fn test_bitflags() {
     simple_bitflags! {
@@ -158,5 +170,11 @@ fn test_bitflags() {
     foo.set_one(false);
     foo.set_two(true);
     assert!(foo.bits == 0b10);
+
+}
+
+#[test]
+fn test_scope() {
+    scope! { 'foo: { break 'foo; } }
 
 }

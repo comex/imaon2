@@ -37,7 +37,7 @@ trait MachODscExtraction {
     fn sect_bounds_named(&self, sectname: &str) -> (VMA, u64);
     fn fix_objc_from_cache<'dc>(&mut self, dc: &'dc DyldCache);
     fn check_no_other_lib_refs<'a>(&'a self, dc: &'a DyldCache);
-    fn guess_text_relocs(&self, stubs_by_name: &HashMap<&ByteStr, VMA, Fnv>) -> Vec<(VMA, RelocKind, VMA)>;
+    fn guess_text_relocs(&self, stack_chk_fail: Option<VMA>) -> Vec<(VMA, RelocKind, VMA)>;
     fn stub_name_list(&self) -> Vec<(&ByteStr, VMA)>;
     fn fix_text_relocs_from_cache(&mut self, ic: &ImageCache, dc: &DyldCache);
     fn backwards_reexport_map<'a>(&'a self, ic: &'a ImageCache) -> HashMap<ByteString, &'a ByteStr, Fnv>;
@@ -586,24 +586,22 @@ impl MachODscExtraction for MachO {
         }
     }
     // currently for cache extraction on arm64 only
-    fn guess_text_relocs(&self, get_final_stub_target: &Fn(&ByteStr) -> Option<VMA>) -> Vec<(VMA, RelocKind, VMA)> {
+    fn guess_text_relocs(&self, stack_chk_fail: Option<VMA>) -> Vec<(VMA, RelocKind, VMA)> {
         let _sw = stopwatch("guess_text_relocs");
-        let strtab = self.strtab.get();
         let mut relocs = Vec::new();
         if self.eb.arch != arch::AArch64 {
             return relocs;
         }
         let end = self.eb.endian;
         let pointer_size = self.eb.pointer_size;
-        let stack_chk_fail = ByteStr::from_str("___stack_chk_fail");
-        let stack_chk_fail_stub = stubs_by_name.get(stack_chk_fail).map(|&vma| {
-            resolve_trampolines(self, ?ic?, vma, 0, self.eb.endian
-            
-        
-        });
         for sect in &self.eb.sections {
             if self.sect_private[sect.private].flags & S_ATTR_SOME_INSTRUCTIONS == 0 {
                 continue;
+            }
+            if let Some(ref name) = sect.name {
+                if name == "__stubs" || name == "__stub_helper" {
+                    continue;
+                }
             }
             let sectdata = some_or!(self.eb.get_sane(sect.vmaddr, sect.filesize), {
                 errln!("warning: guess_text_relocs: couldn't read section named {}", sect.name.as_ref().unwrap());
@@ -612,8 +610,8 @@ impl MachODscExtraction for MachO {
             let grain_shift: u8 = 2; // xxx
             let start_addr = sect.vmaddr;
             let mut codemap = CodeMap::new(start_addr, grain_shift, util::downgrade(sectdata), end, &self.eb.segments);
-            if let Some(stack_chk_fail_stub) = stack_chk_fail_stub {
-                codemap.mark_noreturn_addr(stack_chk_fail_stub);
+            if let Some(stack_chk_fail) = stack_chk_fail {
+                codemap.mark_noreturn_addr(stack_chk_fail);
             }
             {
                 // TODO sort? only useful if there are many sections like this
@@ -623,9 +621,6 @@ impl MachODscExtraction for MachO {
                         let vma = VMA(nl.n_value as u64);
                         if let Some(idx) = codemap.addr_to_idx(vma) {
                             codemap.mark_root(idx);
-                            if strx_to_name(strtab, nl.n_strx.ext()) == stack_chk_fail {
-                                codemap.mark_noreturn_addr(vma);
-                            }
                         } else {
                             //println!("(not doing {} for {:?} start={} len=0x{:x})", vma, sect.name, start_addr, sectdata.len());
                         }
@@ -708,7 +703,8 @@ impl MachODscExtraction for MachO {
             my_stubs_by_name.insert(name, stub_addr);
         }
 
-        let guess = self.guess_text_relocs(&my_stubs_by_name);
+        let __stack_chk_fail = ic_get_known_addrs(ic).__stack_chk_fail;
+        let guess = self.guess_text_relocs(__stack_chk_fail);
         if guess.len() == 0 { return; }
 
         let mut target_cache: HashMap<VMA, Option<VMA>, _> = util::new_fnv_hashmap();
@@ -718,6 +714,7 @@ impl MachODscExtraction for MachO {
             let new_target = target_cache.entry(target).or_insert_with(|| {
                 let (target, sme) = some_or!(resolve_trampolines(dc, ic, target, source, self.eb.endian),
                                              return None);
+                let image_name = &dc.image_info[sme.image_idx].path[..];
                 let ice = &ic.cache[sme.image_idx];
                 if let Err(ref e) = ice.mo {
                     errln!("warning: fix_text_relocs_from_cache: addr {} (ref'd by {}) points to bad image ({})", target, source, e);
@@ -725,7 +722,7 @@ impl MachODscExtraction for MachO {
                 };
                 let syms = ice_get_addr_syms(ice);
                 let idx = some_or!(syms.binary_search_by(|sym| sym.val.some_vma().unwrap().cmp(&target)).ok(), {
-                    errln!("warning: fix_text_relocs_from_cache: found image for {} (ref'd by {}), but no symbol", target, source);
+                    errln!("warning: fix_text_relocs_from_cache: found image '{}' for {} (ref'd by {}), but no symbol", image_name, target, source);
                     return None;
                 });
                 let min_idx = (0..idx).rev().take_while(|&idx2| syms[idx2].val.some_vma().unwrap() == target)
@@ -935,6 +932,36 @@ fn ice_get_addr_syms(this: &ImageCacheEntry) -> &Vec<exec::Symbol<'static>> {
     });
     any.downcast_ref().unwrap()
 }
+
+#[derive(Default)]
+struct KnownAddrs {
+    __stack_chk_fail: Option<VMA>,
+}
+
+fn ic_get_known_addrs(this: &ImageCache) -> &KnownAddrs {
+    let any = this.known_addrs.get(|| {
+        let mut ka = Box::new(KnownAddrs::default());
+        scope! { 'foo: {
+            let libsystem_c = some_or!(this.lookup_path(ByteStr::from_str("/usr/lib/system/libsystem_c.dylib")).and_then(|ice| ice.mo.as_ref().ok()), {
+                errln!("ic_get_known_addrs: no libsystem_c.dylib so won't find __stack_chk_fail");
+                break 'foo;
+            });
+            let lex = libsystem_c.lookup_export(ByteStr::from_str("___stack_chk_fail"), None);
+            let sym = some_or!(lex.first(), {
+                errln!("ic_get_known_addrs: __stack_chk_fail symbol not found in libsystem_c.dylib");
+                break 'foo;
+            });
+            if let SymbolValue::Addr(vma) = sym.val {
+                ka.__stack_chk_fail = Some(vma);
+            } else {
+                errln!("ic_get_known_addrs: __stack_chk_fail symbol not found in libsystem_c.dylib");
+            }
+        } }
+        ka
+    });
+    any.downcast_ref().unwrap()
+}
+
 
 fn decode_stub(stub: &[ReadCell<u8>], stub_addr: VMA, end: Endian, arch: Arch) -> Option<VMA> {
     match arch {

@@ -798,7 +798,7 @@ pub struct ImageCache {
     pub seg_map: Vec<SegMapEntry>,
     pub cache: Vec<ImageCacheEntry>,
     pub path_map: HashMap<ByteString, usize, Fnv>,
-    pub noreturn_addrs: Option<Vec<VMA>>,
+    pub known_addrs: Lazy<Box<Any+Send>>, // see macho_dsc_extraction
 }
 
 pub struct ImageCacheEntry {
@@ -830,14 +830,15 @@ impl ImageCache {
                     });
                 }
             }
-            path_map.insert(ii.path.clone(), cache.len());
+            path_map.insert(ii.path.clone(), i);
+            assert_eq!(i, cache.len());
             cache.push(ImageCacheEntry {
                 mo: res,
                 addr_syms: Lazy::new(),
             });
         }
         seg_map.sort_by_key(|entry| entry.addr);
-        ImageCache { seg_map: seg_map, cache: cache, path_map: path_map }
+        ImageCache { seg_map: seg_map, cache: cache, path_map: path_map, known_addrs: Lazy::new() }
     }
     pub fn lookup_addr(&self, addr: VMA) -> Option<&SegMapEntry> {
         self.seg_map.binary_search_by(|entry| {
