@@ -6,7 +6,6 @@ node_modules
 out
 out-common
 outopt
-Cargo.lock
 externals/rust-bindgen/bindgen
 externals/rust-bindgen/bindgen.dSYM
 tables/llvm-tblgen

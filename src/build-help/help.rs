@@ -1,5 +1,5 @@
-extern crate gcc;
-extern crate libbindgen;
+extern crate cc;
+extern crate bindgen;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::fmt::Write as FmtWrite;
@@ -22,11 +22,11 @@ pub fn do_bind(header_file_name: &str,
                                        .parent().unwrap()
                                        .to_owned();
     for c in include_components { include_path.push(c); }
-    let bindings = libbindgen::builder()
+    let bindings = bindgen::builder()
         .header(header_file.to_str().expect("invalid Unicode in path to header file"))
         .clang_arg(format!("-I{}", include_path.to_str().expect("invalid Unicode in include path")))
         .clang_arg("-MMD").clang_arg("-MF").clang_arg(depfile.to_str().expect("invalid Unicode in depfile path"))
-        .no_unstable_rust()
+        .derive_default(true)
         .generate()
         .unwrap()
         .to_string();
@@ -34,11 +34,13 @@ pub fn do_bind(header_file_name: &str,
         let mut x = m.at(0).unwrap().to_owned();
         let mut swap_decl = String::new();
         if !re!(r"\*(const|mut)").is_match(&x) {
-            x = format!("{}Default, {}{}{}{}", m.at(1).unwrap(), m.at(2).unwrap(), m.at(3).unwrap(), m.at(4).unwrap(), m.at(5).unwrap());
+            x = format!("{}{}{}{}{}", m.at(1).unwrap(), m.at(2).unwrap(), m.at(3).unwrap(), m.at(4).unwrap(), m.at(5).unwrap());
             let struct_name = m.at(4).unwrap();
             swap_decl = format!("impl Swap for {} {{\nfn bswap(&mut self) {{\n", struct_name);
             for n in re!("pub ([^ ]*):").captures_iter(&x) {
-                write!(&mut swap_decl, "self.{}.bswap();\n", n.at(1).unwrap()).unwrap();
+                let name = n.at(1).unwrap();
+                if name == "__opaque" { continue; }
+                write!(&mut swap_decl, "self.{}.bswap();\n", name).unwrap();
             }
             write!(&mut swap_decl, "{}", "}\n}\n").unwrap();
         }
@@ -165,13 +167,13 @@ pub fn dis_llvm_x_generated(kind: &'static str) {
         handles.push(std::thread::spawn(move || {
 
             let out_subdir = get_out_dir().join(variant_name);
-            gcc::Config::new()
+            cc::Build::new()
                 .out_dir(out_subdir)
                 .file("boilerplate.c")
                 .include(ddpath)
                 .define(&format!("VARIANT_{}", variant_name), None)
-                .define("FUNC_NAME", Some(&format!("{}_dis_{}", kind, variant_name)))
-                .define("INCLUDE_PATH", Some(&format!("\"{}-dis-{}.c\"", kind, variant_name)))
+                .define("FUNC_NAME", Some(&*format!("{}_dis_{}", kind, variant_name)))
+                .define("INCLUDE_PATH", Some(&*format!("\"{}-dis-{}.c\"", kind, variant_name)))
                 .compile(&format!("lib{}.a", variant_name));
         }));
     }

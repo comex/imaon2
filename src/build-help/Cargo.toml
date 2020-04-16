@@ -2,15 +2,14 @@
 [build-dependencies]
 
 [dependencies]
-[dependencies.gcc]
-version = "0.3.38"
+[dependencies.bindgen]
+version = "0.53.2"
+
+[dependencies.cc]
+version = "1.0.50"
 
 [dependencies.lazy_static]
 version = "0.2.2"
-
-[dependencies.libbindgen]
-features = []
-path = "/usr/src/servo-bindgen/libbindgen"
 
 [dependencies.macros]
 path = "../macros"

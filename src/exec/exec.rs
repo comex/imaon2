@@ -552,8 +552,8 @@ impl ExecBase {
     }
     pub fn ptr_to_slice<'a, S: util::RWSlicePtr<'a, u8>>(&'a self, slice: S, ptr: u64) {
         match self.pointer_size {
-            8 => util::copy_to_slice::<'a, u64, _>(slice, &ptr, self.endian),
-            4 => util::copy_to_slice::<'a, u32, _>(slice, &ptr.narrow().unwrap(), self.endian),
+            8 => util::copy_to_slice::<u64, _>(slice, &ptr, self.endian),
+            4 => util::copy_to_slice::<u32, _>(slice, &ptr.narrow().unwrap(), self.endian),
             _ => panic!("pointer_size")
         }
     }

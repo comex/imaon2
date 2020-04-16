@@ -878,7 +878,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
         lim = fake_i;
     }
 
-    let mut machine = |cont: &mut bool, (i, c): (usize, char)| -> bool {
+    let mut machine = |state: &mut SplitWithinState, cont: &mut bool, (i, c): (usize, char)| -> bool {
         let whitespace = if c.is_whitespace() {
             Ws
         } else {
@@ -890,7 +890,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
             OverLim
         };
 
-        state = match (state, whitespace, limit) {
+        *state = match (*state, whitespace, limit) {
             (A, Ws, _) => A,
             (A, Cr, _) => {
                 slice_start = i;
@@ -939,7 +939,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
         *cont
     };
 
-    ss.char_indices().all(|x| machine(&mut cont, x));
+    ss.char_indices().all(|x| machine(&mut state, &mut cont, x));
 
     // Let the automaton 'run out' by supplying trailing whitespace
     while cont &&
@@ -947,7 +947,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool
         B | C => true,
         A => false,
     } {
-        machine(&mut cont, (fake_i, ' '));
+        machine(&mut state, &mut cont, (fake_i, ' '));
         fake_i += 1;
     }
     cont
